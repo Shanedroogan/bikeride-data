@@ -65,6 +65,7 @@ import Testing
         #expect(timetable.routeCount == 4)   // M15 has no trips
         let sbs = timetable.route(timetable.tripRoute(try #require(timetable.trip("BX12-1"))))
         #expect(sbs.shortName == "Bx12-SBS" && sbs.color == 0x00AEEF && sbs.agencyGTFSID == "MTA NYCT")
+        #expect(sbs.longName == "Pelham Bay - Inwood")   // route_desc is PATH's long name only
 
         for id in ["X27", "X28", "BM1", "BXM10", "BxM2", "QM21", "SIM1C", "SIM4X"] {
             #expect(GTFSTimetableCompiler.mode(system: .bus, routeID: id) == .expressBus, "\(id)")
@@ -159,6 +160,15 @@ import Testing
         #expect(stats.guaranteedTripTransfers == 1)
     }
 
+    @Test func flagsPeakTrips() throws {
+        // trips.txt peak_offpeak: GO_3 is 1, the others 0.
+        let go1 = try #require(timetable.trip("GO_1")), go3 = try #require(timetable.trip("GO_3"))
+        #expect(timetable.isPeak(trip: go3) && timetable.tripFlags(go3) == .peak)
+        #expect(!timetable.isPeak(trip: go1) && timetable.tripFlags(go1) == [])
+        #expect(timetable.raw.tripFlags.count == timetable.tripCount)
+        #expect(stats.tripsPeak == 1)
+    }
+
     @Test func dropsStationsNoTrainServes() throws {
         #expect(timetable.stop(gtfsID: "26") == nil)
         let go1 = try #require(timetable.trip("GO_1"))
@@ -174,6 +184,54 @@ import Testing
 extension Timetable {
     fileprivate func lookupsExactTripIDs() -> Bool {
         (0..<tripCount).allSatisfy { trips(gtfsID: tripGTFSID($0)) == [$0] }
+    }
+}
+
+@Suite struct FrequenciesTests {
+    @Test func failsOnFrequencyBasedTrips() throws {
+        let scratch = try ScratchDirectory()
+        // A header alone (siferry ships one) is fine.
+        let empty = try scratch.feed("ferry-empty", Fixture.ferry)
+        #expect(try GTFSFeed.parse(empty, source: GTFSSourceInfo(name: "siferry", slot: "siferry")).frequencyRows == 0)
+        var files = Fixture.ferry
+        files["frequencies.txt"]! += "weekdaystgeorge000000,06:00:00,09:00:00,900,1\nweekdaystgeorge000000,16:00:00,19:00:00,900,1\n"
+        let feed = try scratch.feed("ferry-frequencies", files)
+        #expect(throws: GTFSError.frequenciesNotSupported(feed: feed.location, rows: 2)) {
+            try GTFSFeed.parse(feed, source: GTFSSourceInfo(name: "siferry", slot: "siferry"))
+        }
+    }
+
+    @Test func ignoresFrequencyRowsThatNameNoTrip() throws {
+        let scratch = try ScratchDirectory()
+        // A trailing line of bare commas and a row for a trip the feed doesn't have mis-model nothing.
+        var files = Fixture.ferry
+        files["frequencies.txt"]! += ",,,,\nnosuchtrip,06:00:00,09:00:00,900,1\n"
+        let parsed = try GTFSFeed.parse(try scratch.feed("ferry-blank-frequencies", files),
+                                        source: GTFSSourceInfo(name: "siferry", slot: "siferry"))
+        #expect(parsed.frequencyRows == 0)
+        #expect(parsed.issues["frequencies.txt: row without a known trip_id (ignored)"] == 2)
+        // One row naming a real trip among them still fails.
+        files["frequencies.txt"]! += "weekdaywhitehall003000,16:00:00,19:00:00,900,1\n"
+        let feed = try scratch.feed("ferry-mixed-frequencies", files)
+        #expect(throws: GTFSError.frequenciesNotSupported(feed: feed.location, rows: 1)) {
+            try GTFSFeed.parse(feed, source: GTFSSourceInfo(name: "siferry", slot: "siferry"))
+        }
+    }
+}
+
+@Suite struct StopKindSanitizingTests {
+    @Test func treatsLocationTypesOutsideGTFSAsStops() throws {
+        let scratch = try ScratchDirectory()
+        // The writer and every reader refuse stop kinds past 4, so the parser maps them to 0 and
+        // notes it rather than failing the whole build.
+        var files = Fixture.ferry
+        files["stops.txt"] = files["stops.txt"]!.replacingOccurrences(of: "-74.012666,0", with: "-74.012666,5")
+        #expect(files["stops.txt"]!.hasSuffix(",5"))
+        let feed = try GTFSFeed.parse(try scratch.feed("ferry-location-type", files), source: GTFSSourceInfo(name: "siferry", slot: "siferry"))
+        #expect(feed.issues["stops.txt: location_type not 0–4 (treated as 0)"] == 1)
+        let (data, _) = try GTFSTimetableCompiler.compile(system: .ferry, feeds: [feed], options: GTFSCompileOptions(windowStart: Fixture.windowStart))
+        let timetable = try roundTrip(data, scratch: scratch)
+        #expect(timetable.stopKind(try #require(timetable.stop(gtfsID: "whitehall"))) == .stop)
     }
 }
 

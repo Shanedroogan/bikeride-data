@@ -25,6 +25,9 @@ public final class MappedStations: @unchecked Sendable {
     public let count: Int
     /// The profile whose costs chose each path. Its speed does not scale the stored lengths.
     public let matrixProfile: BikeProfile
+    /// The payload's extension tail. No stations extension ids are defined yet; readers skip any
+    /// they find (`docs/formats.md`, "Compatibility").
+    public let extensions: ExtensionTable
 
     private let storage: Data
     private let ownedCopy: UnsafeMutableRawBufferPointer?
@@ -94,7 +97,7 @@ public final class MappedStations: @unchecked Sendable {
                 throw StationsFormatError.badPayloadMagic
             }
             let revision = try reader.read(UInt32.self)
-            guard revision == StationsFormat.draftRevision else { throw StationsFormatError.unsupportedDraftRevision(revision) }
+            guard revision == StationsFormat.payloadRevision else { throw StationsFormatError.unsupportedPayloadRevision(revision) }
             let rawCount = try reader.read(UInt64.self)
             guard rawCount < UInt64(UInt16.max) else { throw StationsFormatError.valueOutOfRange(section: "count", index: 0) }
             let n = Int(rawCount)
@@ -129,7 +132,14 @@ public final class MappedStations: @unchecked Sendable {
             walkDecimeters = try array(UInt16.self, "walkSnapDecimeters", count: n)
             matrixHigh = try array(UInt8.self, "matrixHigh", count: n * n)
             matrixLow = try array(UInt8.self, "matrixLow", count: n * n)
-            guard reader.isAtEnd else { throw StationsFormatError.trailingBytes(reader.remaining) }
+            // Tail errors (ids out of order, bytes after it) surface as `DataFormatError`. The
+            // reader's bytes may be the private copy freed in `deinit`, so each section is re-sliced
+            // from `storage` (same offsets), which the table then keeps alive on its own.
+            let tail = try reader.readExtensions()
+            let storage = self.storage
+            extensions = ExtensionTable(sections: tail.sections.mapValues { section in
+                storage[storage.startIndex + section.startIndex..<storage.startIndex + section.endIndex]
+            })
 
             guard profile.allSatisfy({ $0.isFinite && $0 > 0 }) else {
                 throw StationsFormatError.valueOutOfRange(section: "matrixProfile", index: 0)
@@ -141,7 +151,7 @@ public final class MappedStations: @unchecked Sendable {
             )
             try Self.validate(
                 stringOffsets: stringOffsets, stringBytes: stringBytes, fields: [ids, names, shortNames, regions],
-                ids: ids, idOrder: idOrder, flags: flagBits,
+                ids: ids, idOrder: idOrder, capacities: capacities, flags: flagBits,
                 snaps: [(bikeSegments, bikeFractions, StationFlags.bikeSnapped), (walkSegments, walkFractions, .walkSnapped)],
                 matrixHigh: matrixHigh, matrixLow: matrixLow, count: n
             )
@@ -158,7 +168,7 @@ public final class MappedStations: @unchecked Sendable {
     private static func validate(
         stringOffsets: UnsafeBufferPointer<UInt32>, stringBytes: UnsafeBufferPointer<UInt8>,
         fields: [UnsafeBufferPointer<UInt32>], ids: UnsafeBufferPointer<UInt32>, idOrder: UnsafeBufferPointer<UInt32>,
-        flags: UnsafeBufferPointer<UInt8>, snaps: [(UnsafeBufferPointer<UInt32>, UnsafeBufferPointer<Float>, StationFlags)],
+        capacities: UnsafeBufferPointer<UInt16>, flags: UnsafeBufferPointer<UInt8>, snaps: [(UnsafeBufferPointer<UInt32>, UnsafeBufferPointer<Float>, StationFlags)],
         matrixHigh: UnsafeBufferPointer<UInt8>, matrixLow: UnsafeBufferPointer<UInt8>, count n: Int
     ) throws {
         guard stringOffsets.count >= 1, stringOffsets[0] == 0, Int(stringOffsets[stringOffsets.count - 1]) == stringBytes.count else {
@@ -168,6 +178,21 @@ public final class MappedStations: @unchecked Sendable {
             throw StationsFormatError.notMonotonic(section: "stringOffsets", index: i)
         }
         let strings = stringOffsets.count - 1
+        // The pool is UTF-8 and each string starts on a character boundary, so every string is too.
+        // When the pool isn't, some string isn't on its own (the offsets cover every byte): name it.
+        func invalid(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+            transcode(bytes.makeIterator(), from: UTF8.self, to: UTF32.self, stoppingOnError: true, into: { _ in })
+        }
+        if invalid(stringBytes) {
+            let bad = (0..<strings).first { s in
+                invalid(UnsafeBufferPointer(rebasing: stringBytes[Int(stringOffsets[s])..<Int(stringOffsets[s + 1])]))
+            }
+            throw StationsFormatError.invalidString(index: bad ?? 0)
+        }
+        for s in 0..<strings {
+            let start = Int(stringOffsets[s])
+            if start < stringBytes.count, stringBytes[start] & 0xC0 == 0x80 { throw StationsFormatError.invalidString(index: s) }
+        }
         for field in fields {
             if let bad = field.firstIndex(where: { Int($0) >= strings }) {
                 throw StationsFormatError.valueOutOfRange(section: "stationStrings", index: bad)
@@ -183,9 +208,11 @@ public final class MappedStations: @unchecked Sendable {
         for i in 1..<max(1, n) where !bytes(ids[Int(idOrder[i - 1])]).lexicographicallyPrecedes(bytes(ids[Int(idOrder[i])])) {
             throw StationsFormatError.idsNotSorted(index: i)
         }
-        for i in 0..<n where !StationFlags.known.contains(StationFlags(rawValue: flags[i])) {
-            throw StationsFormatError.valueOutOfRange(section: "stationFlags", index: i)
+        if let bad = capacities.firstIndex(of: 0) {
+            throw StationsFormatError.valueOutOfRange(section: "stationCapacities", index: bad)
         }
+        // Undefined flag bits (4–7) are ignored, not rejected: a later format-1 writer may set one
+        // as a hint (`docs/formats.md`, "Compatibility").
         for (segments, fractions, flag) in snaps {
             for i in 0..<n {
                 let snapped = StationFlags(rawValue: flags[i]).contains(flag)
@@ -221,7 +248,8 @@ public final class MappedStations: @unchecked Sendable {
     }
     /// Nominal dock count (always positive; live counts may exceed it).
     public func capacity(_ station: Int) -> Int { Int(capacities[station]) }
-    public func flags(_ station: Int) -> StationFlags { StationFlags(rawValue: flagBits[station]) }
+    /// The station's defined flags; undefined bits are ignored.
+    public func flags(_ station: Int) -> StationFlags { StationFlags(rawValue: flagBits[station]).intersection(.known) }
 
     public func coordinate(_ station: Int) -> Coordinate {
         Coordinate(lat: Double(latE6[station]) / 1e6, lon: Double(lonE6[station]) / 1e6)

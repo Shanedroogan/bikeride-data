@@ -1,5 +1,6 @@
-import BRBuild
+@testable import BRBuild
 import BRCore
+import BRGeo
 import BRTimetable
 import Foundation
 import Testing
@@ -176,13 +177,27 @@ extension Fixture {
     }
 
     @Test func keepsRouteColorsAndThePATHMode() throws {
+        // The long name is PANYNJ's route_desc; route_long_name holds a code (NWK_WTC).
         let red = timetable.route(timetable.tripRoute(try #require(timetable.trip("R1"))))
-        #expect(red.gtfsID == "RED" && red.longName == "NWK_WTC" && red.agencyGTFSID == "151")
+        #expect(red.gtfsID == "RED" && red.longName == "Newark - World Trade Center" && red.agencyGTFSID == "151")
         #expect(red.color == 0xD93A30 && red.textColor == 0xFFFFFF && red.mode == .path && red.gtfsRouteType == 1)
         let yellow = timetable.route(timetable.tripRoute(try #require(timetable.trip("Y1"))))
         #expect(yellow.color == 0xFF9900 && yellow.textColor == 0x000000 && yellow.mode == .path)
         #expect(stats.routesByMode == ["path": 2])
         #expect(GTFSTimetableCompiler.mode(system: .path, routeID: "ATW") == .path)
+        // Without a route_desc the code stays; other systems never use route_desc.
+        let bare = GTFSFeed.Route(id: "X", agencyID: "151", shortName: "X", longName: "JSQ_33", desc: "", type: 1)
+        #expect(GTFSTimetableCompiler.longName(system: .path, route: bare) == "JSQ_33")
+        var described = bare
+        described.desc = "Journal Square - 33rd Street"
+        #expect(GTFSTimetableCompiler.longName(system: .path, route: described) == "Journal Square - 33rd Street")
+        #expect(GTFSTimetableCompiler.longName(system: .bus, route: described) == "JSQ_33")
+    }
+
+    @Test func writesNoTripFlags() throws {
+        #expect(timetable.raw.tripFlags.count == timetable.tripCount)
+        #expect((0..<timetable.tripCount).allSatisfy { timetable.tripFlags($0) == [] && !timetable.isPeak(trip: $0) })
+        #expect(stats.tripsPeak == 0)
     }
 
     @Test func coversTheCalendarAndHonorsRemovedSundays() throws {
@@ -212,6 +227,89 @@ extension Fixture {
         #expect(timetable.scheduledCalls(atStop: grove, direction: 0, in: weekday).map { timetable.tripGTFSID($0.trip) } == ["R1", "R2", "Y1", "R6"])
         #expect(timetable.scheduledCalls(atStop: grove, direction: 0, boardingOnly: true, in: weekday)
             .map { timetable.tripGTFSID($0.trip) } == ["R1", "Y1", "R6"])
+    }
+}
+
+/// PANYNJ draws both directions of a line with one `shape_id`, in one direction only.
+@Suite struct PATHSharedShapeTests {
+    let scratch: ScratchDirectory
+    let timetable: Timetable
+    let stats: GTFSSystemStats
+
+    /// The RED trips all use `NWK_WTC`, drawn Newark → World Trade Center with every station a
+    /// vertex; Y1 uses `OFF`, a line about 1.1 km north of its stops.
+    static let files: [String: String] = {
+        var files = Fixture.path
+        var trips = files["trips.txt"]!.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for index in trips.indices.dropFirst() {
+            if trips[index].hasPrefix("RED,") { trips[index] += "NWK_WTC" }
+            if trips[index].hasPrefix("YEL,WKD,Y1,") { trips[index] += "OFF" }
+        }
+        files["trips.txt"] = trips.joined(separator: "\n")
+        let stations = [(40.734435, -74.164059), (40.73199, -74.062854), (40.719264, -74.04257), (40.71224, -74.012522)]
+        var points: [(Double, Double)] = []
+        for (a, b) in zip(stations, stations.dropFirst()) {
+            for step in 0..<4 { points.append((a.0 + (b.0 - a.0) * Double(step) / 4, a.1 + (b.1 - a.1) * Double(step) / 4)) }
+        }
+        points.append(stations.last!)
+        var shapes = ["shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence"]
+        for (index, point) in points.enumerated() { shapes.append("NWK_WTC,\(point.0),\(point.1),\(index + 1)") }
+        shapes.append("OFF,40.74199,-74.062854,1")
+        shapes.append("OFF,40.729264,-74.04257,2")
+        files["shapes.txt"] = shapes.joined(separator: "\n")
+        return files
+    }()
+
+    init() throws {
+        scratch = try ScratchDirectory()
+        let (data, stats) = try compileFixture(.path, [("path", "path", 0, Self.files)], scratch: scratch)
+        self.stats = stats
+        timetable = try roundTrip(data, scratch: scratch)
+    }
+
+    /// The largest distance from a stop of `pattern` to its shape vertex, in meters.
+    func worstStopToVertex(_ pattern: Int) throws -> Double {
+        let points = timetable.shapePoints(try #require(timetable.patternShape(pattern)))
+        let vertices = Array(timetable.patternShapeVertices(pattern))
+        #expect(zip(vertices, vertices.dropFirst()).allSatisfy { $0 <= $1 })
+        return zip(timetable.patternStops(pattern), vertices).map { stop, vertex in
+            timetable.stopCoordinate(Int(stop)).distance(to: points[Int(vertex)])
+        }.max() ?? 0
+    }
+
+    @Test func matchesEveryStopWithinReachInBothDirections() throws {
+        let r1 = try #require(timetable.trip("R1")), r3 = try #require(timetable.trip("R3"))
+        #expect(timetable.tripDirection(r1) == 0 && timetable.tripDirection(r3) == 1)
+        for pattern in 0..<timetable.patternCount where !timetable.patternFlags(pattern).contains(.synthesizedShape) {
+            #expect(try worstStopToVertex(pattern) <= 100, "pattern \(pattern)")
+        }
+        // Toward New Jersey the reversed polyline is its own row with the same shape_id.
+        let toNY = try #require(timetable.patternShape(timetable.tripPattern(r1)))
+        let toNJ = try #require(timetable.patternShape(timetable.tripPattern(r3)))
+        #expect(toNY != toNJ)
+        #expect(timetable.shapeGTFSID(toNY) == "NWK_WTC" && timetable.shapeGTFSID(toNJ) == "NWK_WTC")
+        #expect(timetable.shapePoints(toNJ) == timetable.shapePoints(toNY).reversed())
+        #expect(Array(timetable.patternShapeVertices(timetable.tripPattern(r3))) == [0, 1, 2, 3])
+        #expect(!timetable.patternFlags(timetable.tripPattern(r3)).contains(.synthesizedShape))
+        // Every other RED pattern (express, Saturday, Sunday) runs toward New York on the forward row.
+        let red = timetable.tripRoute(r1)
+        for pattern in 0..<timetable.patternCount where timetable.patternRoute(pattern) == red && pattern != timetable.tripPattern(r3) {
+            #expect(timetable.patternShape(pattern) == toNY)
+        }
+        #expect(stats.patternsWithReversedShape == 1 && stats.shapesReversed == 1)
+        #expect(stats.maxStopToShapeVertexMeters < 10)   // 121 lies 4.6 m from Grove Street's vertex
+    }
+
+    @Test func drawsALineThroughTheStopsWhenNeitherDirectionFits() throws {
+        let y1 = timetable.tripPattern(try #require(timetable.trip("Y1")))
+        #expect(timetable.patternFlags(y1).contains(.synthesizedShape))
+        let shape = try #require(timetable.patternShape(y1))
+        #expect(timetable.shapeGTFSID(shape) == "")
+        #expect(timetable.shapePoints(shape) == timetable.patternStops(y1).map { timetable.stopCoordinate(Int($0)) })
+        #expect(stats.patternsWithShapeTooFar == 1)
+        // Y2 has no shape_id at all.
+        #expect(stats.patternsWithSynthesizedShape == 2)
+        #expect(!(0..<timetable.shapeCount).contains { timetable.shapeGTFSID($0) == "OFF" })
     }
 }
 

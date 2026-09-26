@@ -75,6 +75,8 @@ public struct TimetableData: Sendable {
     public var tripHeadsign: [UInt32] = []
     public var tripShortName: [UInt32] = []
     public var tripDirection: [UInt8] = []
+    /// ``TripFlags`` raw values, one per trip. Left empty, every trip is written without flags.
+    public var tripFlags: [UInt8] = []
 
     public var stopPatternStart: [UInt32] = [0]
     public var stopPatternRef: [UInt32] = []
@@ -184,6 +186,11 @@ public struct TimetableData: Sendable {
             try check(values.first == 0 && Int(values.last ?? 0) == total, "\(name) does not span its target")
             try check(zip(values, values.dropFirst()).allSatisfy { $0 <= $1 }, "\(name) is not monotone")
         }
+        func known(_ values: [UInt8], _ isKnown: (UInt8) -> Bool, _ name: String) throws {
+            if let index = values.firstIndex(where: { !isKnown($0) }) {
+                throw ValidationError.inconsistent("\(name)[\(index)] holds unknown value \(values[index])")
+            }
+        }
 
         try check(dayCount >= 0, "negative dayCount")
         let sources = sourceName.count
@@ -202,7 +209,7 @@ public struct TimetableData: Sendable {
                   "route arrays differ in length")
         try indexes(routeAgency, below: agencies, "routeAgency")
         try checkStrings(routeGTFSID + routeShortName + routeLongName, "route")
-        try check(routeMode.allSatisfy { RouteMode(rawValue: $0) != nil }, "unknown route mode")
+        try known(routeMode, TimetableEnums.isKnownRouteMode, "routeMode")
 
         let stops = stopGTFSID.count
         try check([stopName.count, stopCode.count, stopLatE6.count, stopLonE6.count, stopParent.count,
@@ -210,6 +217,7 @@ public struct TimetableData: Sendable {
                   "stop arrays differ in length")
         try checkStrings(stopGTFSID + stopName + stopCode + stopEntranceType, "stop")
         try indexes(stopParent, below: stops, allowNone: true, "stopParent")
+        try known(stopKind, TimetableEnums.isKnownStopKind, "stopKind")
 
         let rules = ruleGTFSID.count
         try check([ruleSource.count, ruleWeekdays.count, ruleStartDay.count, ruleEndDay.count].allSatisfy { $0 == rules },
@@ -218,6 +226,7 @@ public struct TimetableData: Sendable {
         try indexes(ruleSource, below: sources, "ruleSource")
         try offsets(ruleExceptionStart, count: rules, total: exceptionDay.count, "ruleExceptionStart")
         try check(exceptionType.count == exceptionDay.count, "exception arrays differ in length")
+        try known(exceptionType, TimetableEnums.isKnownExceptionType, "exceptionType")
         for rule in 0..<rules {
             let days = exceptionDay[Int(ruleExceptionStart[rule])..<Int(ruleExceptionStart[rule + 1])]
             try check(zip(days, days.dropFirst()).allSatisfy { $0 < $1 }, "exceptions of rule \(rule) not ascending")
@@ -262,6 +271,9 @@ public struct TimetableData: Sendable {
         let trips = tripPattern.count
         try check([tripRule.count, tripGTFSID.count, tripHeadsign.count, tripShortName.count,
                    tripDirection.count].allSatisfy { $0 == trips }, "trip arrays differ in length")
+        try check(tripFlags.isEmpty || tripFlags.count == trips, "tripFlags has \(tripFlags.count) entries for \(trips) trips")
+        try check(tripFlags.allSatisfy { $0 & ~TripFlags.known.rawValue == 0 }, "tripFlags sets an undefined bit")
+        try known(tripDirection, TimetableEnums.isKnownDirection, "tripDirection")
         try indexes(tripRule, below: rules, "tripRule")
         try checkStrings(tripGTFSID + tripHeadsign + tripShortName, "trip")
 
@@ -277,6 +289,7 @@ public struct TimetableData: Sendable {
                    transferMinSeconds.count].allSatisfy { $0 == transfers }, "transfer arrays differ in length")
         try indexes(transferFromStop + transferToStop, below: stops, "transfer stop")
         try indexes(transferFromTrip + transferToTrip, below: trips, allowNone: true, "transfer trip")
+        try known(transferType, TimetableEnums.isKnownTransferType, "transferType")
 
         try checkStrings(shapeGTFSID, "shape")
         try offsets(shapePointStart, count: shapes, total: shapeLatE6.count, "shapePointStart")
@@ -287,6 +300,7 @@ public struct TimetableData: Sendable {
                   "subway key arrays differ in length")
         try indexes(subwayKeyTrip, below: trips, "subwayKeyTrip")
         try checkStrings(subwayKeyRoute + subwayKeyPath, "subway key")
+        try known(subwayKeyDirection, TimetableEnums.isKnownSubwayKeyDirection, "subwayKeyDirection")
         try check(tripIDOrder.count == trips && Set(tripIDOrder).count == trips, "tripIDOrder is not a permutation")
         try check(stopIDOrder.count == stops && Set(stopIDOrder).count == stops, "stopIDOrder is not a permutation")
     }
@@ -296,6 +310,12 @@ public struct TimetableData: Sendable {
     /// The payload bytes (without the artifact header), after ``validate()``.
     public func encodedPayload() throws -> Data {
         try validate()
+        return encodedSections()
+    }
+
+    /// The payload bytes without ``validate()``, so tests can hand the reader data the writer
+    /// refuses.
+    func encodedSections() -> Data {
         let wordsPerSource = DayBitset.wordCount(forDays: dayCount)
         var info = [Int64](repeating: 0, count: InfoField.allCases.count)
         var pool = strings
@@ -305,7 +325,7 @@ public struct TimetableData: Sendable {
         info[InfoField.dayCount.rawValue] = Int64(dayCount)
         info[InfoField.timeZone.rawValue] = Int64(timeZoneID)
         info[InfoField.wordsPerSource.rawValue] = Int64(wordsPerSource)
-        info[InfoField.draftRevision.rawValue] = TimetableFormat.draftRevision
+        info[InfoField.payloadRevision.rawValue] = TimetableFormat.payloadRevision
 
         var sections = SectionWriter()
         sections.add(.info, info)
@@ -363,6 +383,7 @@ public struct TimetableData: Sendable {
         sections.add(.tripHeadsign, tripHeadsign)
         sections.add(.tripShortName, tripShortName)
         sections.add(.tripDirection, tripDirection)
+        sections.add(.tripFlags, tripFlags.isEmpty ? [UInt8](repeating: 0, count: tripCount) : tripFlags)
         sections.add(.stopPatternStart, stopPatternStart)
         sections.add(.stopPatternRef, stopPatternRef)
         sections.add(.stopPatternPosition, stopPatternPosition)

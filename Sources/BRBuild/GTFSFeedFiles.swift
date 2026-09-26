@@ -104,6 +104,8 @@ public enum GTFSError: Error, Equatable, CustomStringConvertible {
     case noTimeZone(feed: String)
     /// Boarding stops that could not be given a synthesized parent station (PATH).
     case unmappedPlatforms(feed: String, stops: [String])
+    /// `frequencies.txt` has rows; frequency-based trips are not modelled.
+    case frequenciesNotSupported(feed: String, rows: Int)
 
     public var description: String {
         switch self {
@@ -115,6 +117,8 @@ public enum GTFSError: Error, Equatable, CustomStringConvertible {
         case .noTimeZone(let feed): "\(feed): agency.txt gives no agency_timezone"
         case .unmappedPlatforms(let feed, let stops):
             "\(feed): no parent station for \(stops.count) boarding stop(s): \(stops.joined(separator: ", "))"
+        case .frequenciesNotSupported(let feed, let rows):
+            "\(feed): frequencies.txt has \(rows) row(s); frequency-based trips are not supported"
         }
     }
 }

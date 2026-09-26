@@ -11,14 +11,25 @@ public struct GTFSCompileOptions: Sendable {
     public var maxDays: Int
     /// Douglas–Peucker tolerance for shapes, in meters.
     public var shapeToleranceMeters: Double
+    /// When a pattern's stops match vertices of its shape and some stop's vertex lies farther than
+    /// this from it, the reversed polyline is tried as well and the closer match kept (PANYNJ uses
+    /// one `shape_id` for both directions of a line).
+    public var shapeReverseMeters: Double
+    /// A pattern whose better match still leaves a stop farther than this from its vertex gets a
+    /// line synthesized through its stops instead: the stored guarantee for GTFS shapes. Both
+    /// limits are great-circle meters (`Coordinate.distance`).
+    public var shapeMaxStopMeters: Double
     /// Parent stations and platform transfers synthesized for PATH (only used for `.path`).
     public var pathStations: PATHStationOptions
 
     public init(windowStart: ServiceDate, maxDays: Int = 800, shapeToleranceMeters: Double = 5,
+                shapeReverseMeters: Double = 100, shapeMaxStopMeters: Double = 250,
                 pathStations: PATHStationOptions = PATHStationOptions()) {
         self.windowStart = windowStart
         self.maxDays = maxDays
         self.shapeToleranceMeters = shapeToleranceMeters
+        self.shapeReverseMeters = shapeReverseMeters
+        self.shapeMaxStopMeters = shapeMaxStopMeters
         self.pathStations = pathStations
     }
 }
@@ -71,6 +82,8 @@ public struct GTFSSystemStats: Codable, Sendable {
     public var serviceRules = 0
     public var serviceRulesDropped = 0
     public var trips = 0
+    /// Trips with ``BRTimetable/TripFlags/peak`` (LIRR `peak_offpeak` = 1).
+    public var tripsPeak = 0
     public var tripsDroppedInactive = 0
     public var tripsDroppedTooShort = 0
     public var tripsDroppedMissingEndTimes = 0
@@ -89,7 +102,18 @@ public struct GTFSSystemStats: Codable, Sendable {
     public var shapePointsInput = 0
     public var shapePointsKept = 0
     public var patternsWithBorrowedShape = 0
+    /// Patterns matched to their shape's reversed polyline, and the reversed shape rows stored.
+    public var patternsWithReversedShape = 0
+    public var shapesReversed = 0
+    /// Every pattern given a line through its stops, including ``patternsWithShapeTooFar``.
     public var patternsWithSynthesizedShape = 0
+    /// Patterns whose GTFS shape left a stop more than `shapeMaxStopMeters` from its vertex both
+    /// ways, so they got a line through their stops.
+    public var patternsWithShapeTooFar = 0
+    /// The largest distance from a pattern's stop to its shape vertex (the regression guard for
+    /// route lines; 0 for synthesized shapes), and where it occurs.
+    public var maxStopToShapeVertexMeters = 0.0
+    public var maxStopToShapeVertexAt: String?
     public var transfers = 0
     public var guaranteedTripTransfers = 0
     public var transfersDropped = 0
@@ -108,7 +132,7 @@ public struct GTFSSystemStats: Codable, Sendable {
 /// `stop_times` at the stop; pass-through stops (every call `pickup_type` = `drop_off_type` = 1)
 /// dropped; times interpolated and made monotone; route patterns keyed by route, stops and
 /// pickup/drop-off bits, split so that FIFO holds among trips that share a service day; shapes
-/// simplified; transfers and real-time match tables. For the subway, `entrances` become
+/// matched to the stops (reversed where one shape serves both directions) and simplified; transfers and real-time match tables. For the subway, `entrances` become
 /// `.entrance` stops under their GTFS station. For PATH, parent stations and platform transfers
 /// are first synthesized (``GTFSFeed/synthesizePATHStations(_:)``).
 public enum GTFSTimetableCompiler {
@@ -535,7 +559,7 @@ public enum GTFSTimetableCompiler {
             data.routeAgency.append(UInt32(agencyIndex[route.agencyID]!))
             data.routeGTFSID.append(data.strings.intern(route.id))
             data.routeShortName.append(data.strings.intern(route.shortName))
-            data.routeLongName.append(data.strings.intern(route.longName))
+            data.routeLongName.append(data.strings.intern(Self.longName(system: system, route: route)))
             data.routeColor.append(route.color ?? none)
             data.routeTextColor.append(route.textColor ?? none)
             data.routeMode.append(mode.rawValue)
@@ -619,17 +643,20 @@ public enum GTFSTimetableCompiler {
                 data.tripHeadsign.append(data.strings.intern(feed.texts.bytes(feed.tripHeadsign[local])))
                 data.tripShortName.append(data.strings.intern(feed.texts.bytes(feed.tripShortName[local])))
                 data.tripDirection.append(feed.tripDirection[local])
+                data.tripFlags.append(feed.tripFlags[local])
             }
             data.patternTripStart.append(UInt32(data.tripPattern.count))
         }
         stats.trips = data.tripPattern.count
+        stats.tripsPeak = data.tripFlags.filter { $0 & TripFlags.peak.rawValue != 0 }.count
         stats.storedStopEvents = data.departures.count
         stats.storedArrivals = data.arrivals.count
 
         // Shapes.
         Self.addShapes(to: &data, patterns: finalPatterns.map { ($0.base, $0.trips) }, feeds: feeds,
                        tripSource: tripSource, keptFeed: keptFeed, keptLocal: keptLocal,
-                       tolerance: options.shapeToleranceMeters, stats: &stats)
+                       options: options, stats: &stats)
+        (stats.maxStopToShapeVertexMeters, stats.maxStopToShapeVertexAt) = Self.maxStopToShapeVertex(data)
 
         // Transfers.
         struct TransferRow: Hashable {
@@ -655,14 +682,16 @@ public enum GTFSTimetableCompiler {
                     let final = keptTripOf[feedIndex][Int(local)]
                     return final < 0 ? nil : UInt32(final)
                 }
-                guard let from = stop(transfer.fromStop), let to = stop(transfer.toStop),
+                // GTFS defines transfer_type 0–5; the format stores no other value.
+                guard (0...5).contains(transfer.type),
+                      let from = stop(transfer.fromStop), let to = stop(transfer.toStop),
                       let fromTrip = trip(transfer.fromTrip), let toTrip = trip(transfer.toTrip)
                 else {
                     stats.transfersDropped += 1
                     continue
                 }
                 rows.insert(TransferRow(fromTrip: fromTrip, toTrip: toTrip, fromStop: from, toStop: to,
-                                        type: UInt8(clamping: transfer.type),
+                                        type: UInt8(transfer.type),
                                         minSeconds: transfer.minTransferSeconds.map { UInt32(clamping: $0) } ?? none))
             }
         }
@@ -784,6 +813,12 @@ public enum GTFSTimetableCompiler {
         }
     }
 
+    /// The route's long name. PANYNJ writes codes such as `JSQ_HOB_33` in `route_long_name` and
+    /// the readable name in `route_desc`, so PATH takes `route_desc` when it has one.
+    static func longName(system: TransitSystem, route: GTFSFeed.Route) -> String {
+        system == .path && !route.desc.isEmpty ? route.desc : route.longName
+    }
+
     // MARK: - Entrances
 
     /// Appends one `.entrance` stop per entrance whose station is a kept stop. Ids are
@@ -835,7 +870,8 @@ public enum GTFSTimetableCompiler {
 
     private static func addShapes(
         to data: inout TimetableData, patterns: [(base: Int, trips: [Int])], feeds: [GTFSFeed],
-        tripSource: [Int32], keptFeed: [Int32], keptLocal: [Int32], tolerance: Double, stats: inout GTFSSystemStats
+        tripSource: [Int32], keptFeed: [Int32], keptLocal: [Int32], options: GTFSCompileOptions,
+        stats: inout GTFSSystemStats
     ) {
         let none = TimetableFormat.none
         // Choose each pattern's GTFS shape: the most common among its trips (ties: first seen).
@@ -894,41 +930,97 @@ public enum GTFSTimetableCompiler {
         data.patternShape = [UInt32](repeating: none, count: patterns.count)
         data.patternStopShapeVertex = [UInt32](repeating: none, count: data.patternStopIndex.count)
 
-        // GTFS shapes, each simplified once while keeping every vertex some stop maps to.
-        var users: [ShapeKey: [Int]] = [:]
-        var shapeOrder: [ShapeKey] = []
-        for (pattern, key) in chosen.enumerated() {
-            guard let key else { continue }
-            if users[key] == nil { shapeOrder.append(key) }
-            users[key, default: []].append(pattern)
-        }
-        for key in shapeOrder {
+        // Match each pattern's stops to vertices of its shape: forward, and reversed too when a
+        // stop lands farther than shapeReverseMeters from its vertex (PANYNJ draws both
+        // directions of a line with one shape_id, so the forward scan pins every stop toward New
+        // Jersey to the last vertex). The closer match wins; a pattern whose better match still
+        // leaves a stop beyond shapeMaxStopMeters gets a line through its stops below.
+        struct ShapeUse: Hashable { var key: ShapeKey; var reversed: Bool }
+        var lines: [ShapeKey: [PlanarPoint]] = [:]
+        func planarLine(_ key: ShapeKey) -> [PlanarPoint] {
+            if let cached = lines[key] { return cached }
             let feed = feeds[Int(key.feed)]
             let range = Int(feed.shapePointStart[Int(key.shape)])..<Int(feed.shapePointStart[Int(key.shape) + 1])
-            let line = range.map { ShapeGeometry.planar(latE6: feed.shapeLatE6[$0], lonE6: feed.shapeLonE6[$0]) }
-            var keep = [Bool](repeating: false, count: line.count)
-            var vertices: [(pattern: Int, vertices: [Int])] = []
-            for pattern in users[key]! {
-                let matched = ShapeGeometry.stopVertices(stops: stopPoints(pattern), line: line)
-                for vertex in matched { keep[vertex] = true }
-                vertices.append((pattern, matched))
+            let points = range.map { ShapeGeometry.planar(latE6: feed.shapeLatE6[$0], lonE6: feed.shapeLonE6[$0]) }
+            lines[key] = points
+            return points
+        }
+        func coordinate(_ latE6: Int32, _ lonE6: Int32) -> Coordinate {
+            Coordinate(lat: Double(latE6) / 1e6, lon: Double(lonE6) / 1e6)
+        }
+        var uses = [ShapeUse?](repeating: nil, count: patterns.count)
+        var matches = [[Int]](repeating: [], count: patterns.count)
+        for (pattern, key) in chosen.enumerated() {
+            guard let key else { continue }
+            let points = stopPoints(pattern)
+            let forward = planarLine(key)
+            // The farthest stop from its vertex in great-circle meters, the metric of the report
+            // and formats.md; the planar points only drive the nearest-vertex search.
+            let feed = feeds[Int(key.feed)], first = Int(feed.shapePointStart[Int(key.shape)])
+            let stopCoordinates = data.patternStopIndex[Int(data.patternStopStart[pattern])..<Int(data.patternStopStart[pattern + 1])]
+                .map { coordinate(data.stopLatE6[Int($0)], data.stopLonE6[Int($0)]) }
+            func worst(_ vertices: [Int], reversed: Bool) -> Double {
+                zip(stopCoordinates, vertices).reduce(0) { farthest, match in
+                    let point = first + (reversed ? forward.count - 1 - match.1 : match.1)
+                    return max(farthest, match.0.distance(to: coordinate(feed.shapeLatE6[point], feed.shapeLonE6[point])))
+                }
             }
-            let kept = ShapeGeometry.simplify(line, keep: keep, tolerance: tolerance)
+            var vertices = ShapeGeometry.stopVertices(stops: points, line: forward)
+            var distance = worst(vertices, reversed: false)
+            var reversed = false
+            if distance > options.shapeReverseMeters {
+                let backward = Array(forward.reversed())
+                let backwardVertices = ShapeGeometry.stopVertices(stops: points, line: backward)
+                let backwardDistance = worst(backwardVertices, reversed: true)
+                if backwardDistance < distance {
+                    (vertices, distance, reversed) = (backwardVertices, backwardDistance, true)
+                }
+            }
+            guard distance <= options.shapeMaxStopMeters else {
+                chosen[pattern] = nil
+                stats.patternsWithShapeTooFar += 1
+                continue
+            }
+            uses[pattern] = ShapeUse(key: key, reversed: reversed)
+            matches[pattern] = vertices
+            if reversed { stats.patternsWithReversedShape += 1 }
+        }
+
+        // One shape row per (GTFS shape, direction) in use, each simplified once while keeping
+        // every vertex some stop maps to. A reversed row stores the points last to first.
+        var users: [ShapeUse: [Int]] = [:]
+        var shapeOrder: [ShapeUse] = []
+        for (pattern, use) in uses.enumerated() {
+            guard let use else { continue }
+            if users[use] == nil { shapeOrder.append(use) }
+            users[use, default: []].append(pattern)
+        }
+        for use in shapeOrder {
+            let feed = feeds[Int(use.key.feed)]
+            let range = Int(feed.shapePointStart[Int(use.key.shape)])..<Int(feed.shapePointStart[Int(use.key.shape) + 1])
+            let line = use.reversed ? Array(planarLine(use.key).reversed()) : planarLine(use.key)
+            var keep = [Bool](repeating: false, count: line.count)
+            for pattern in users[use]! {
+                for vertex in matches[pattern] { keep[vertex] = true }
+            }
+            let kept = ShapeGeometry.simplify(line, keep: keep, tolerance: options.shapeToleranceMeters)
             var newIndex = [UInt32](repeating: none, count: line.count)
             for (index, vertex) in kept.enumerated() { newIndex[vertex] = UInt32(index) }
             let shapeIndex = UInt32(data.shapeGTFSID.count)
-            data.shapeGTFSID.append(data.strings.intern(feed.shapeIDs.bytes(UInt32(key.shape))))
+            data.shapeGTFSID.append(data.strings.intern(feed.shapeIDs.bytes(UInt32(use.key.shape))))
             for vertex in kept {
-                data.shapeLatE6.append(feed.shapeLatE6[range.lowerBound + vertex])
-                data.shapeLonE6.append(feed.shapeLonE6[range.lowerBound + vertex])
+                let point = range.lowerBound + (use.reversed ? line.count - 1 - vertex : vertex)
+                data.shapeLatE6.append(feed.shapeLatE6[point])
+                data.shapeLonE6.append(feed.shapeLonE6[point])
             }
             data.shapePointStart.append(UInt32(data.shapeLatE6.count))
             stats.shapePointsInput += line.count
             stats.shapePointsKept += kept.count
-            for (pattern, matched) in vertices {
+            if use.reversed { stats.shapesReversed += 1 }
+            for pattern in users[use]! {
                 data.patternShape[pattern] = shapeIndex
                 let start = Int(data.patternStopStart[pattern])
-                for (position, vertex) in matched.enumerated() {
+                for (position, vertex) in matches[pattern].enumerated() {
                     data.patternStopShapeVertex[start + position] = newIndex[vertex]
                 }
             }
@@ -961,5 +1053,26 @@ public enum GTFSTimetableCompiler {
             stats.patternsWithSynthesizedShape += 1
         }
         stats.shapes = data.shapeGTFSID.count
+    }
+
+    /// The largest distance from a pattern's stop to its stored shape vertex, in meters (rounded
+    /// to 0.1), and the route and stop where it occurs.
+    static func maxStopToShapeVertex(_ data: TimetableData) -> (meters: Double, at: String?) {
+        var worst = 0.0
+        var at: (pattern: Int, stop: Int)?
+        for pattern in 0..<data.patternCount where data.patternShape[pattern] != TimetableFormat.none {
+            let first = Int(data.shapePointStart[Int(data.patternShape[pattern])])
+            for slot in Int(data.patternStopStart[pattern])..<Int(data.patternStopStart[pattern + 1]) {
+                let vertex = data.patternStopShapeVertex[slot]
+                guard vertex != TimetableFormat.none else { continue }
+                let stop = Int(data.patternStopIndex[slot]), point = first + Int(vertex)
+                let distance = Coordinate(lat: Double(data.stopLatE6[stop]) / 1e6, lon: Double(data.stopLonE6[stop]) / 1e6)
+                    .distance(to: Coordinate(lat: Double(data.shapeLatE6[point]) / 1e6, lon: Double(data.shapeLonE6[point]) / 1e6))
+                if distance > worst { (worst, at) = (distance, (pattern, stop)) }
+            }
+        }
+        return ((worst * 10).rounded() / 10, at.map { at in
+            "route \(data.strings.string(data.routeGTFSID[Int(data.patternRoute[at.pattern])])), stop \(data.strings.string(data.stopGTFSID[at.stop]))"
+        })
     }
 }

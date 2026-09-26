@@ -122,7 +122,7 @@ public struct StationsCompiler: Sendable {
         }
         let artifact = try ArtifactOutput.write(
             bytes, to: config.artifactFile, compress: config.compress, runner: runner,
-            formatVersion: ArtifactKind.stations.currentFormatVersion, draftRevision: StationsFormat.draftRevision,
+            formatVersion: ArtifactKind.stations.currentFormatVersion, payloadRevision: StationsFormat.payloadRevision,
             dataVersion: dataVersion, builtAgainst: builtAgainst, seconds: &seconds
         )
         let openStart = Date()

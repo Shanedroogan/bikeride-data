@@ -101,3 +101,110 @@ struct FixtureStreets {
         (0..<UInt32(graph.segmentCount)).filter { graph.name(id: graph.nameID(ofSegment: $0)) == name }
     }
 }
+
+/// Walks a payload's layout by reading each array's `u64` count at the next 8-aligned offset, so
+/// tests can find a field without knowing the counts before it.
+struct PayloadWalker {
+    let payload: Data
+    private(set) var offset: Int
+
+    init(_ payload: Data, from offset: Int) {
+        self.payload = Data(payload)
+        self.offset = offset
+    }
+
+    func load<T: FixedWidthInteger>(_: T.Type, at offset: Int) -> T {
+        payload.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+    }
+
+    mutating func skip(_ bytes: Int) {
+        offset += bytes
+    }
+
+    mutating func u32() -> UInt32 {
+        defer { offset += 4 }
+        return load(UInt32.self, at: offset)
+    }
+
+    /// Skips one array of `elementSize`-byte elements; returns where its elements start.
+    @discardableResult
+    mutating func array(elementSize: Int) -> (start: Int, count: Int) {
+        offset = (offset + 7) / 8 * 8
+        let count = Int(load(UInt64.self, at: offset))
+        let start = offset + 8
+        offset = start + count * elementSize
+        return (start, count)
+    }
+}
+
+/// Byte offsets of the fields the corruption tests change in a `streets` payload.
+struct StreetsPayloadLayout {
+    var edgeFlags = 0
+    var edgeBikeClasses = 0
+    var nameOffsets = 0
+    var nameBytes = 0
+    var nameKinds = 0
+    var gridCellOffsets = 0
+    var gridCellSegments = 0
+    /// Where the regions start (`regionCount`); everything from here to the tail is regions.
+    var regions = 0
+    var regionCodes: [Int] = []
+    var ringCount = 0
+    /// Where the extension tail starts: the payload's fixed part is everything before it.
+    var tail = 0
+
+    init(_ payload: Data) {
+        var walker = PayloadWalker(payload, from: 48) // magic, revision, five u64 counts
+        let sizes = [4, 4, 4, 4, 2, 1, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 1, 1] // nodeCoordinates … nameKinds
+        for (index, size) in sizes.enumerated() {
+            let start = walker.array(elementSize: size).start
+            switch index {
+            case 4: edgeFlags = start
+            case 5: edgeBikeClasses = start
+            case 15: nameOffsets = start
+            case 16: nameBytes = start
+            case 17: nameKinds = start
+            default: break
+            }
+        }
+        walker.skip(24) // grid origin, cell size, shape
+        gridCellOffsets = walker.array(elementSize: 4).start
+        gridCellSegments = walker.array(elementSize: 4).start
+        regions = walker.offset
+        for _ in 0..<Int(walker.u32()) {
+            regionCodes.append(walker.offset)
+            walker.skip(4)
+            let nameLength = Int(walker.u32())
+            walker.skip(nameLength)
+        }
+        walker.array(elementSize: 4) // regionPolygonOffsets
+        walker.array(elementSize: 4) // polygonRingOffsets
+        ringCount = walker.array(elementSize: 4).count - 1 // ringPointOffsets
+        walker.array(elementSize: 4) // ringPoints
+        tail = walker.offset
+    }
+}
+
+extension Data {
+    /// A copy with the little-endian `value` written at `offset`.
+    func replacing<T: FixedWidthInteger>(_ value: T, at offset: Int) -> Data {
+        var copy = Data(self)
+        Swift.withUnsafeBytes(of: value.littleEndian) { copy.replaceSubrange(offset..<offset + MemoryLayout<T>.size, with: $0) }
+        return copy
+    }
+
+    /// `self` (a payload's fixed part) followed by an extension tail written by hand, so ids may
+    /// be out of order. Returns the bytes and the payload offset of each entry's id.
+    func withRawExtensionTail(_ entries: [(id: UInt32, bytes: [UInt8])]) -> (payload: Data, idOffsets: [Int]) {
+        var writer = BinaryWriter()
+        writer.append(bytes: self)
+        writer.append(UInt32(entries.count))
+        var offsets: [Int] = []
+        for entry in entries {
+            offsets.append(writer.count)
+            writer.append(entry.id)
+            writer.append(array: entry.bytes)
+        }
+        return (writer.data, offsets)
+    }
+}

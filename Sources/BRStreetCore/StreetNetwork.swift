@@ -32,6 +32,11 @@ extension StreetNetwork {
 /// ``EdgeFlags`` raw value) and `edgeBikeClassCodes[e]` (a ``BikeClass`` raw value). The reverse
 /// index lists the edges entering `v` at `reverseOffsets[v]..<reverseOffsets[v + 1]`, as their
 /// source node (`reverseSources`) and forward edge index (`reverseEdges`).
+///
+/// A view trusts its arrays and checks nothing: offsets must be in range and never decrease,
+/// targets and sources below the node count, and every class code a ``BikeClass`` raw value
+/// (``bikeClass(ofEdge:)`` traps on any other). ``StreetGraph`` guarantees this by construction,
+/// and ``MappedStreetGraph`` by its checks at open (the index checks only with `validate`).
 public struct StreetGraphView {
     public let nodeCount: Int
     public let edgeCount: Int
@@ -112,14 +117,17 @@ public struct StreetGraphView {
         }
     }
 
+    /// The edge's defined flags; undefined bits are ignored (``EdgeFlags/known``).
     @inline(__always)
     public func flags(ofEdge edge: Int) -> EdgeFlags {
-        EdgeFlags(rawValue: edgeFlagBits[edge])
+        EdgeFlags(rawValue: edgeFlagBits[edge]).intersection(.known)
     }
 
+    /// The edge's class. Traps on a code that isn't a ``BikeClass`` raw value (see the type's
+    /// requirements).
     @inline(__always)
     public func bikeClass(ofEdge edge: Int) -> BikeClass {
-        BikeClass(rawValue: edgeBikeClassCodes[edge]) ?? .shared
+        BikeClass(rawValue: edgeBikeClassCodes[edge])!
     }
 
     /// Forward edge indices leaving `node`.

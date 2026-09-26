@@ -119,3 +119,59 @@ extension StoredSnap {
         graph.snappedPoint(self, query: query)!
     }
 }
+
+/// Byte offsets of the fields the corruption tests change in a `stations` payload, found by
+/// reading each array's `u64` count at the next 8-aligned offset.
+struct StationsPayloadLayout {
+    var stringOffsets = 0
+    var stringCount = 0
+    var stringBytes = 0
+    var stationCapacities = 0
+    var stationFlags = 0
+    /// Where the extension tail starts: the payload's fixed part is everything before it.
+    var tail = 0
+
+    init(_ payload: Data) {
+        let bytes = Data(payload)
+        var offset = 16 // magic, revision, u64 count
+        // matrixProfile, stringOffsets, stringBytes, stationIDs … walkSnapDecimeters, matrixHigh, matrixLow
+        let sizes = [8, 4, 1, 4, 4, 4, 4, 4, 4, 4, 2, 1, 4, 4, 2, 4, 4, 2, 1, 1]
+        for (index, size) in sizes.enumerated() {
+            offset = (offset + 7) / 8 * 8
+            let count = Int(bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self) })
+            switch index {
+            case 1: (stringOffsets, stringCount) = (offset + 8, count - 1)
+            case 2: stringBytes = offset + 8
+            case 10: stationCapacities = offset + 8
+            case 11: stationFlags = offset + 8
+            default: break
+            }
+            offset += 8 + count * size
+        }
+        tail = offset
+    }
+}
+
+extension Data {
+    /// A copy with the little-endian `value` written at `offset`.
+    func replacing<T: FixedWidthInteger>(_ value: T, at offset: Int) -> Data {
+        var copy = Data(self)
+        Swift.withUnsafeBytes(of: value.littleEndian) { copy.replaceSubrange(offset..<offset + MemoryLayout<T>.size, with: $0) }
+        return copy
+    }
+
+    /// `self` (a payload's fixed part) followed by an extension tail written by hand, so ids may
+    /// be out of order. Returns the bytes and the payload offset of each entry's id.
+    func withRawExtensionTail(_ entries: [(id: UInt32, bytes: [UInt8])]) -> (payload: Data, idOffsets: [Int]) {
+        var writer = BinaryWriter()
+        writer.append(bytes: self)
+        writer.append(UInt32(entries.count))
+        var offsets: [Int] = []
+        for entry in entries {
+            offsets.append(writer.count)
+            writer.append(entry.id)
+            writer.append(array: entry.bytes)
+        }
+        return (writer.data, offsets)
+    }
+}

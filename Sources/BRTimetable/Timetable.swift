@@ -7,7 +7,7 @@ import Foundation
 public enum TimetableFormatError: Error, Equatable, Sendable, CustomStringConvertible {
     case notATimetable(ArtifactKind)
     case unsupportedFormatVersion(UInt16)
-    case unsupportedDraftRevision(Int64)
+    case unsupportedPayloadRevision(Int64)
     case badMagic
     case truncated
     case missingSection(TimetableSection)
@@ -15,6 +15,10 @@ public enum TimetableFormatError: Error, Equatable, Sendable, CustomStringConver
     case elementSizeMismatch(TimetableSection, found: UInt32)
     case misalignedSection(TimetableSection)
     case sectionOutOfBounds(TimetableSection)
+    /// A byte outside every section (alignment padding, the table's end) is not zero.
+    case nonZeroPadding(offset: Int)
+    /// An enum-like section holds a value this reader doesn't know.
+    case unknownValue(TimetableSection, UInt8)
     case unknownSystem(Int64)
     case invalidTimeZone(String)
     case inconsistent(String)
@@ -23,7 +27,7 @@ public enum TimetableFormatError: Error, Equatable, Sendable, CustomStringConver
         switch self {
         case .notATimetable(let kind): "artifact \(kind.name) is not a timetable"
         case .unsupportedFormatVersion(let version): "unsupported timetable format version \(version)"
-        case .unsupportedDraftRevision(let revision): "unsupported timetable draft revision \(revision)"
+        case .unsupportedPayloadRevision(let revision): "unsupported timetable payload revision \(revision)"
         case .badMagic: "timetable payload does not start with BRTT"
         case .truncated: "timetable payload is truncated"
         case .missingSection(let section): "timetable section \(section) is missing"
@@ -31,6 +35,8 @@ public enum TimetableFormatError: Error, Equatable, Sendable, CustomStringConver
         case .elementSizeMismatch(let section, let size): "timetable section \(section) has element size \(size)"
         case .misalignedSection(let section): "timetable section \(section) is not 8-aligned"
         case .sectionOutOfBounds(let section): "timetable section \(section) extends past the payload"
+        case .nonZeroPadding(let offset): "timetable padding at payload offset \(offset) is not zero"
+        case .unknownValue(let section, let value): "timetable section \(section) holds unknown value \(value)"
         case .unknownSystem(let code): "unknown transit system code \(code)"
         case .invalidTimeZone(let identifier): "unknown time zone \(identifier)"
         case .inconsistent(let message): "timetable is inconsistent: \(message)"
@@ -97,6 +103,7 @@ public struct TimetableBuffers {
     public let tripHeadsign: UnsafeBufferPointer<UInt32>
     public let tripShortName: UnsafeBufferPointer<UInt32>
     public let tripDirection: UnsafeBufferPointer<UInt8>
+    public let tripFlags: UnsafeBufferPointer<UInt8>
     public let stopPatternStart: UnsafeBufferPointer<UInt32>
     public let stopPatternRef: UnsafeBufferPointer<UInt32>
     public let stopPatternPosition: UnsafeBufferPointer<UInt32>
@@ -249,17 +256,20 @@ public final class Timetable: @unchecked Sendable {
 
         init(base: UnsafeRawPointer, length: Int, kind: ArtifactKind) throws {
             let table = try SectionTable(base: base, length: length)
+            // The payload revision says which sections to expect, so it is checked first: a file of
+            // another revision is reported as such, not by the first section it lacks.
+            let info = try table.view(.info, as: Int64.self)
+            guard info.count >= InfoField.allCases.count else { throw TimetableFormatError.inconsistent("info section too short") }
+            let revision = info[InfoField.payloadRevision.rawValue]
+            guard revision == TimetableFormat.payloadRevision else { throw TimetableFormatError.unsupportedPayloadRevision(revision) }
             let raw = try table.buffers()
+            try table.checkPadding()
             self.raw = raw
             var sizes: [TimetableSection: Int] = [:]
             for section in TimetableSection.allCases {
                 if let entry = table.entries[section.rawValue] { sizes[section] = Int(entry.count) * section.elementSize }
             }
             sectionByteCounts = sizes
-            let info = raw.info
-            guard info.count >= InfoField.allCases.count else { throw TimetableFormatError.inconsistent("info section too short") }
-            let revision = info[InfoField.draftRevision.rawValue]
-            guard revision == TimetableFormat.draftRevision else { throw TimetableFormatError.unsupportedDraftRevision(revision) }
             let systemCode = info[InfoField.system.rawValue]
             guard (0...127).contains(systemCode),
                   let system = TransitSystem(rawValue: String(UnicodeScalar(UInt8(systemCode))))
@@ -605,13 +615,13 @@ public final class Timetable: @unchecked Sendable {
             longName: string(raw.routeLongName[index]),
             color: Self.color(raw.routeColor[index]),
             textColor: Self.color(raw.routeTextColor[index]),
-            mode: RouteMode(rawValue: raw.routeMode[index]) ?? .localBus,
+            mode: routeMode(index),
             gtfsRouteType: Int(raw.routeType[index])
         )
     }
 
     public func routeMode(_ index: Int) -> RouteMode {
-        RouteMode(rawValue: raw.routeMode[index]) ?? .localBus
+        RouteMode(rawValue: raw.routeMode[index])!   // every value was checked at open
     }
 
     private static func color(_ value: UInt32) -> UInt32? {
@@ -625,7 +635,7 @@ public final class Timetable: @unchecked Sendable {
     public func stopID(_ stop: Int) -> StopID { StopID(system: system, gtfsID: stopGTFSID(stop)) }
     public func stopName(_ stop: Int) -> String { string(raw.stopName[stop]) }
     public func stopCode(_ stop: Int) -> String { string(raw.stopCode[stop]) }
-    public func stopKind(_ stop: Int) -> StopKind { StopKind(rawValue: raw.stopKind[stop]) ?? .stop }
+    public func stopKind(_ stop: Int) -> StopKind { StopKind(rawValue: raw.stopKind[stop])! }   // checked at open
 
     public func stopCoordinate(_ stop: Int) -> Coordinate {
         Coordinate(lat: Double(raw.stopLatE6[stop]) / 1e6, lon: Double(raw.stopLonE6[stop]) / 1e6)
@@ -638,7 +648,7 @@ public final class Timetable: @unchecked Sendable {
 
     /// Whether riders may enter and/or leave here. Both for every GTFS stop; entrances may be
     /// entry-only or exit-only.
-    public func stopAccess(_ stop: Int) -> StopAccess { StopAccess(rawValue: raw.stopAccess[stop]) }
+    public func stopAccess(_ stop: Int) -> StopAccess { StopAccess(rawValue: raw.stopAccess[stop]).intersection(.known) }
 
     /// For a subway entrance (``StopKind/entrance``), its type from the data.ny.gov entrances
     /// dataset, e.g. `Stair`, `Elevator`, `Escalator`, `Easement - Street`. Empty otherwise.
@@ -678,7 +688,7 @@ public final class Timetable: @unchecked Sendable {
     // MARK: - Patterns
 
     public func patternRoute(_ pattern: Int) -> Int { Int(raw.patternRoute[pattern]) }
-    public func patternFlags(_ pattern: Int) -> PatternFlags { PatternFlags(rawValue: raw.patternFlags[pattern]) }
+    public func patternFlags(_ pattern: Int) -> PatternFlags { PatternFlags(rawValue: raw.patternFlags[pattern]).intersection(.known) }
     /// Sub-patterns split from one (route, stops, pickup/drop-off) key for FIFO share this value.
     public func patternBaseKey(_ pattern: Int) -> Int { Int(raw.patternBaseKey[pattern]) }
 
@@ -697,6 +707,8 @@ public final class Timetable: @unchecked Sendable {
     }
 
     /// ``StopEventFlags`` raw values, parallel to ``patternStops(_:)``.
+    /// Raw ``StopEventFlags`` bytes, in place: test single bits (bits past ``StopEventFlags/known``
+    /// may be set by a later writer and mean nothing to this reader).
     public func patternStopFlags(_ pattern: Int) -> UnsafeBufferPointer<UInt8> {
         let range = Int(raw.patternStopStart[pattern])..<Int(raw.patternStopStart[pattern + 1])
         return UnsafeBufferPointer(rebasing: raw.patternStopFlags[range])
@@ -755,6 +767,16 @@ public final class Timetable: @unchecked Sendable {
     public func tripDirection(_ trip: Int) -> Int? {
         let direction = raw.tripDirection[trip]
         return direction == 255 ? nil : Int(direction)
+    }
+
+    /// The trip's flags; bits this reader doesn't know are dropped.
+    public func tripFlags(_ trip: Int) -> TripFlags {
+        TripFlags(rawValue: raw.tripFlags[trip]).intersection(.known)
+    }
+
+    /// A peak-fare trip (LIRR `peak_offpeak` = 1). False wherever the feed has no such column.
+    public func isPeak(trip: Int) -> Bool {
+        raw.tripFlags[trip] & TripFlags.peak.rawValue != 0
     }
 
     /// Seconds from the service day's origin.
@@ -1049,6 +1071,8 @@ public final class TimetableDayView: @unchecked Sendable {
 private struct SectionTable {
     let base: UnsafeRawPointer
     let length: Int
+    /// Where the table of contents ends and the sections may begin.
+    let tocEnd: Int
     var entries: [UInt32: (elementSize: UInt32, offset: UInt64, count: UInt64)] = [:]
 
     init(base: UnsafeRawPointer, length: Int) throws {
@@ -1062,6 +1086,7 @@ private struct SectionTable {
         guard count <= 10_000, TimetableFormat.preambleSize + count * TimetableFormat.tocEntrySize <= length else {
             throw TimetableFormatError.truncated
         }
+        tocEnd = TimetableFormat.preambleSize + count * TimetableFormat.tocEntrySize
         for index in 0..<count {
             let entry = TimetableFormat.preambleSize + index * TimetableFormat.tocEntrySize
             let id = base.loadUnaligned(fromByteOffset: entry, as: UInt32.self)
@@ -1089,6 +1114,35 @@ private struct SectionTable {
         return UnsafeBufferPointer(start: entry.count == 0 ? nil : start, count: Int(entry.count))
     }
 
+    /// Every byte after the table of contents that lies in no section, known or not, must be
+    /// zero, and sections must not overlap.
+    func checkPadding() throws {
+        var extents: [(start: Int, end: Int, id: UInt32)] = []
+        extents.reserveCapacity(entries.count)
+        for (id, entry) in entries {
+            let (bytes, overflow) = entry.count.multipliedReportingOverflow(by: UInt64(entry.elementSize))
+            guard !overflow, entry.offset <= UInt64(length), bytes <= UInt64(length) - entry.offset else {
+                if let section = TimetableSection(rawValue: id) { throw TimetableFormatError.sectionOutOfBounds(section) }
+                throw TimetableFormatError.inconsistent("section \(id) extends past the payload")
+            }
+            extents.append((Int(entry.offset), Int(entry.offset + bytes), id))
+        }
+        // Empty sections share their offset with the next one, so order by (start, end).
+        extents.sort { ($0.start, $0.end) < ($1.start, $1.end) }
+        func zero(_ range: Range<Int>) throws {
+            for offset in range where base.load(fromByteOffset: offset, as: UInt8.self) != 0 {
+                throw TimetableFormatError.nonZeroPadding(offset: offset)
+            }
+        }
+        var cursor = tocEnd
+        for extent in extents {
+            guard extent.start >= cursor else { throw TimetableFormatError.inconsistent("section \(extent.id) overlaps another") }
+            try zero(cursor..<extent.start)
+            cursor = extent.end
+        }
+        try zero(cursor..<length)
+    }
+
     func buffers() throws -> TimetableBuffers {
         TimetableBuffers(
             info: try view(.info), stringOffsets: try view(.stringOffsets), stringBytes: try view(.stringBytes),
@@ -1114,7 +1168,7 @@ private struct SectionTable {
             departures: try view(.departures), arrivals: try view(.arrivals),
             tripPattern: try view(.tripPattern), tripRule: try view(.tripRule), tripGTFSID: try view(.tripGTFSID),
             tripHeadsign: try view(.tripHeadsign), tripShortName: try view(.tripShortName),
-            tripDirection: try view(.tripDirection),
+            tripDirection: try view(.tripDirection), tripFlags: try view(.tripFlags),
             stopPatternStart: try view(.stopPatternStart), stopPatternRef: try view(.stopPatternRef),
             stopPatternPosition: try view(.stopPatternPosition),
             transferFromStop: try view(.transferFromStop), transferToStop: try view(.transferToStop),
@@ -1154,6 +1208,9 @@ extension Timetable {
         func same(_ counts: [Int], _ name: String) throws {
             try check(Set(counts).count <= 1, "\(name) arrays differ in length")
         }
+        func known(_ values: UnsafeBufferPointer<UInt8>, _ section: TimetableSection, _ isKnown: (UInt8) -> Bool) throws {
+            for value in values where !isKnown(value) { throw TimetableFormatError.unknownValue(section, value) }
+        }
 
         let strings = raw.stringOffsets.count - 1
         try check(strings >= 1, "string pool is empty")
@@ -1178,17 +1235,20 @@ extension Timetable {
         try same([routes, raw.routeAgency.count, raw.routeShortName.count, raw.routeLongName.count, raw.routeColor.count,
                   raw.routeTextColor.count, raw.routeMode.count, raw.routeType.count], "route")
         try below(raw.routeAgency, agencies, "routeAgency")
+        try known(raw.routeMode, .routeMode, TimetableEnums.isKnownRouteMode)
 
         let stops = raw.stopGTFSID.count
         try same([stops, raw.stopName.count, raw.stopCode.count, raw.stopLatE6.count, raw.stopLonE6.count,
                   raw.stopParent.count, raw.stopKind.count, raw.stopAccess.count, raw.stopEntranceType.count], "stop")
         try below(raw.stopParent, stops, allowNone: true, "stopParent")
+        try known(raw.stopKind, .stopKind, TimetableEnums.isKnownStopKind)
 
         let rules = raw.ruleGTFSID.count
         try same([rules, raw.ruleSource.count, raw.ruleWeekdays.count, raw.ruleStartDay.count, raw.ruleEndDay.count], "rule")
         try below(raw.ruleSource, sources, "ruleSource")
         try offsets(raw.ruleExceptionStart, count: rules, total: raw.exceptionDay.count, "ruleExceptionStart")
         try check(raw.exceptionType.count == raw.exceptionDay.count, "exception arrays differ in length")
+        try known(raw.exceptionType, .exceptionType, TimetableEnums.isKnownExceptionType)
         let dayRange = Int32(minimumDay)...Int32(maximumDay - 1_000)
         for rule in 0..<rules where raw.ruleWeekdays[rule] & ruleHasCalendarBit != 0 {
             try check(dayRange.contains(raw.ruleStartDay[rule]) && dayRange.contains(raw.ruleEndDay[rule]), "rule date out of range")
@@ -1211,7 +1271,7 @@ extension Timetable {
         for pattern in 0..<patterns {
             let stopCount = Int(raw.patternStopStart[pattern + 1] - raw.patternStopStart[pattern])
             let tripCount = Int(raw.patternTripStart[pattern + 1] - raw.patternTripStart[pattern])
-            try check(stopCount >= 1, "pattern without stops")
+            try check(stopCount >= 2, "pattern with fewer than two stops")
             let (events, overflow) = stopCount.multipliedReportingOverflow(by: tripCount)
             try check(!overflow, "pattern event count overflows")
             let departureStart = Int(raw.patternDepartureStart[pattern])
@@ -1236,7 +1296,8 @@ extension Timetable {
         }
 
         try same([trips, raw.tripRule.count, raw.tripGTFSID.count, raw.tripHeadsign.count, raw.tripShortName.count,
-                  raw.tripDirection.count, raw.tripIDOrder.count], "trip")
+                  raw.tripDirection.count, raw.tripFlags.count, raw.tripIDOrder.count], "trip")
+        try known(raw.tripDirection, .tripDirection, TimetableEnums.isKnownDirection)
         try below(raw.tripRule, rules, "tripRule")
         try below(raw.tripIDOrder, trips, "tripIDOrder")
         try check(raw.stopIDOrder.count == stops, "stopIDOrder length")
@@ -1258,9 +1319,11 @@ extension Timetable {
         try below(raw.transferToStop, stops, "transferToStop")
         try below(raw.transferFromTrip, trips, allowNone: true, "transferFromTrip")
         try below(raw.transferToTrip, trips, allowNone: true, "transferToTrip")
+        try known(raw.transferType, .transferType, TimetableEnums.isKnownTransferType)
 
         try same([raw.subwayKeyTrip.count, raw.subwayKeyRoute.count, raw.subwayKeyDirection.count,
                   raw.subwayKeyOrigin.count, raw.subwayKeyPath.count], "subway key")
         try below(raw.subwayKeyTrip, trips, "subwayKeyTrip")
+        try known(raw.subwayKeyDirection, .subwayKeyDirection, TimetableEnums.isKnownSubwayKeyDirection)
     }
 }

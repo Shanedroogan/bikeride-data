@@ -72,7 +72,7 @@ import Testing
             return copy
         }
         #expect(throws: StationsFormatError.badPayloadMagic) { try reader(corrupt(at: 0, 0x58)) }
-        #expect(throws: StationsFormatError.unsupportedDraftRevision(9)) { try reader(corrupt(at: 4, 9)) }
+        #expect(throws: StationsFormatError.unsupportedPayloadRevision(9)) { try reader(corrupt(at: 4, 9)) }
         #expect(throws: (any Error).self) { try reader(bytes.dropLast(3)) }
         #expect(throws: DataFormatError.kindMismatch(expected: .stations, found: .streets)) {
             try MappedStations(artifact: MappedArtifact(fileBytes: fixture.city.bytes))
@@ -82,6 +82,106 @@ import Testing
         bad[0] = 5
         let badBytes = StationsArtifactWriter.artifact(stations: fixture.stations, matrix: bad, profile: .eBike, dataVersion: "x", builtAgainst: [:])
         #expect(throws: StationsFormatError.valueOutOfRange(section: "matrixDiagonal", index: 0)) { try reader(badBytes) }
+    }
+
+    // MARK: Compatibility rules (`docs/formats.md`)
+
+    var header: ArtifactHeader { get throws { try ArtifactHeader.decode(from: bytes).header } }
+    var payload: Data { get throws { Data(try ArtifactHeader.decode(from: bytes).payload) } }
+
+    func reader(payload: Data) throws -> MappedStations {
+        try reader(try header.assemble(payload: payload))
+    }
+
+    /// The fixed part of the payload followed by a tail from ``BinaryWriter/appendExtensions(_:)``.
+    func withExtensions(_ extensions: [(id: UInt32, bytes: [UInt8])]) throws -> Data {
+        let payload = try payload
+        var writer = BinaryWriter()
+        writer.append(bytes: payload.prefix(StationsPayloadLayout(payload).tail))
+        writer.appendExtensions(extensions)
+        return writer.data
+    }
+
+    func expectSameContents(_ a: MappedStations, _ b: MappedStations) {
+        #expect(a.count == b.count && a.matrixProfile.multipliers == b.matrixProfile.multipliers)
+        for i in 0..<a.count {
+            #expect(a.stationID(i) == b.stationID(i) && a.name(i) == b.name(i) && a.shortName(i) == b.shortName(i))
+            #expect(a.regionID(i) == b.regionID(i) && a.capacity(i) == b.capacity(i) && a.flags(i) == b.flags(i))
+            #expect(a.coordinate(i) == b.coordinate(i) && a.bikeSnap(i) == b.bikeSnap(i) && a.walkSnap(i) == b.walkSnap(i))
+            #expect(Array(a.row(from: i)) == Array(b.row(from: i)))
+        }
+    }
+
+    @Test func writesAnEmptyExtensionTail() throws {
+        let payload = try payload
+        #expect(try reader().extensions == .empty)
+        #expect(StationsPayloadLayout(payload).tail == payload.count - 4)
+        #expect(try withExtensions([]) == payload)
+    }
+
+    @Test func skipsUnknownExtensionsAndReadsTheRestUnchanged() throws {
+        let tailed = try withExtensions([(id: 3, bytes: [9, 9]), (id: 12, bytes: Array(0..<17))])
+        let stations = try reader(payload: tailed)
+        #expect(stations.extensions.ids == [3, 12])
+        #expect(stations.extensions[3].map(Array.init) == [9, 9])
+        expectSameContents(stations, try reader())
+
+        // The table outlives the reader, including when the reader viewed a private aligned copy.
+        var shifted = Data([0])
+        shifted.append(try header.assemble(payload: tailed))
+        let extensions = try reader(shifted.dropFirst()).extensions
+        #expect(extensions[12].map(Array.init) == Array(0..<17))
+    }
+
+    @Test func rejectsAMalformedExtensionTail() throws {
+        let payload = try payload
+        let fixed = payload.prefix(StationsPayloadLayout(payload).tail)
+        for ids: [UInt32] in [[9, 7], [7, 7]] {
+            let (bytes, offsets) = fixed.withRawExtensionTail(ids.map { (id: $0, bytes: [1]) })
+            #expect(throws: DataFormatError.extensionIDsNotAscending(offset: offsets[1])) { try reader(payload: bytes) }
+        }
+        #expect(throws: DataFormatError.trailingBytes(1)) { try reader(payload: payload + [0]) }
+        #expect(throws: DataFormatError.trailingBytes(8)) { try reader(payload: try withExtensions([(id: 3, bytes: [5])]) + Data(count: 8)) }
+        #expect(throws: DataFormatError.self) { try reader(payload: fixed) }
+    }
+
+    @Test func rejectsTheOldPayloadRevision() throws {
+        #expect(throws: StationsFormatError.unsupportedPayloadRevision(1)) { try reader(payload: try payload.replacing(UInt32(1), at: 4)) }
+    }
+
+    @Test func ignoresUndefinedStationFlagBits() throws {
+        let payload = try payload
+        let layout = StationsPayloadLayout(payload)
+        var flagged = payload
+        for i in 0..<fixture.stations.count { flagged[layout.stationFlags + i] |= 1 << 6 }
+        let stations = try reader(payload: flagged)
+        expectSameContents(stations, try reader())
+        for (i, station) in fixture.stations.enumerated() {
+            #expect(stations.flags(i) == station.flags)
+        }
+    }
+
+    @Test func rejectsZeroCapacityAndInvalidStrings() throws {
+        var stations = fixture.stations
+        stations[2].capacity = 0
+        let zero = StationsArtifactWriter.artifact(stations: stations, matrix: matrix, profile: .eBike, dataVersion: "x", builtAgainst: [:])
+        #expect(throws: StationsFormatError.valueOutOfRange(section: "stationCapacities", index: 2)) { try reader(zero) }
+
+        // A byte that is not UTF-8: the error names the string holding it. String 0 is empty, so
+        // the pool's first byte is string 1's.
+        let payload = try payload
+        let layout = StationsPayloadLayout(payload)
+        func start(_ s: Int) -> Int {
+            Int(payload.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: layout.stringOffsets + 4 * s, as: UInt32.self) })
+        }
+        #expect(start(0) == 0 && start(1) == 0 && start(2) > 0)
+        #expect(throws: StationsFormatError.invalidString(index: 1)) { try reader(payload: payload.replacing(UInt8(0xFF), at: layout.stringBytes)) }
+        for s in [layout.stringCount / 2, layout.stringCount - 1] {
+            #expect(start(s + 1) > start(s))
+            #expect(throws: StationsFormatError.invalidString(index: s)) {
+                try reader(payload: payload.replacing(UInt8(0xFF), at: layout.stringBytes + start(s + 1) - 1))
+            }
+        }
     }
 
     @Test func storedSnapsRebuildTheSnappedPoint() throws {

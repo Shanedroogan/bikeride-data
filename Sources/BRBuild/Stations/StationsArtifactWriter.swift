@@ -26,6 +26,7 @@ public enum StationsArtifactWriter {
         let idOrder = (0..<UInt32(n)).sorted { stations[Int($0)].id.utf8.lexicographicallyPrecedes(stations[Int($1)].id.utf8) }
         precondition(zip(idOrder, idOrder.dropFirst()).allSatisfy { stations[Int($0)].id != stations[Int($1)].id },
                      "station ids must be unique")
+        precondition(stations.allSatisfy { StationFlags.known.isSuperset(of: $0.flags) }, "undefined station flag bits are written 0")
 
         var strings = StringPool()
         let ids = stations.map { strings.intern($0.id) }
@@ -35,7 +36,7 @@ public enum StationsArtifactWriter {
 
         var writer = BinaryWriter(reservingCapacity: 256 + n * 64 + matrix.count * 2)
         writer.append(bytes: StationsFormat.payloadMagic)
-        writer.append(StationsFormat.draftRevision)
+        writer.append(StationsFormat.payloadRevision)
         writer.append(UInt64(n))
         let multipliers = profile.multipliers
         writer.append(array: [profile.speedMetersPerSecond, profile.dismountSpeedMetersPerSecond,
@@ -61,6 +62,7 @@ public enum StationsArtifactWriter {
         // slowly varying high bytes far better apart from the noisy low ones.
         writer.append(array: matrix.map { UInt8($0 >> 8) })
         writer.append(array: matrix.map { UInt8($0 & 0xFF) })
+        writer.appendExtensions([])
         return writer.data
     }
 }

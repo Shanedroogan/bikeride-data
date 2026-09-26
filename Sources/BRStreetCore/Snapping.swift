@@ -210,7 +210,8 @@ public struct StreetRoute: Sendable, Equatable {
 }
 
 extension MappedStreetGraph {
-    /// The nearest segment usable in `mode` within `maxDistanceMeters`, or `nil`.
+    /// The nearest segment usable in `mode` within `maxDistanceMeters`, or `nil`. Distances
+    /// compare to the millimeter; segments equally close go to the lowest segment index.
     public func snap(_ coordinate: Coordinate, mode: SnapMode = .walk, maxDistanceMeters: Double = 250) -> SnappedPoint? {
         snapCandidates(coordinate, mode: mode, maxDistanceMeters: maxDistanceMeters, limit: 1).first
     }
@@ -221,14 +222,15 @@ extension MappedStreetGraph {
             edges.contains { edge in
                 profile.costMs(
                     lengthDecimeters: b.edgeLengths[Int(edge)],
-                    flags: EdgeFlags(rawValue: b.edgeFlags[Int(edge)]),
-                    bikeClass: BikeClass(rawValue: b.edgeClasses[Int(edge)]) ?? .shared
+                    flags: EdgeFlags(rawValue: b.edgeFlags[Int(edge)]).intersection(.known),
+                    bikeClass: BikeClass(rawValue: b.edgeClasses[Int(edge)])!  // Checked at open.
                 ) != nil
             }
         }.first
     }
 
-    /// Up to `limit` distinct segments usable in `mode`, nearest first.
+    /// Up to `limit` distinct segments usable in `mode`, nearest first (by distance to the
+    /// millimeter, then segment index).
     public func snapCandidates(_ coordinate: Coordinate, mode: SnapMode = .walk, maxDistanceMeters: Double = 250, limit: Int) -> [SnappedPoint] {
         let required = mode.requiredFlags
         return nearestSegments(to: coordinate, maxDistanceMeters: maxDistanceMeters, limit: limit) { b, edges in
@@ -405,15 +407,32 @@ extension MappedStreetGraph {
                         consider(cellX: center.x + ring, y: y)
                     }
                 }
-                // Anything in rings beyond this one is at least `ring` cells away.
+                // Anything in rings beyond this one is at least `ring` cells away. Stop only once
+                // no such segment can even tie, so the result never depends on the scan order.
                 if found.count >= limit {
-                    found.sort { ($0.distanceMeters, $0.segment) < ($1.distanceMeters, $1.segment) }
-                    if found[limit - 1].distanceMeters <= Double(ring) * ringMeters { break }
+                    found.sort { Self.snapOrder($0) < Self.snapOrder($1) }
+                    if Self.snapOrder(found[limit - 1]).millimeters < Self.millimeters(Double(ring) * ringMeters) { break }
                 }
             }
-            found.sort { ($0.distanceMeters, $0.segment) < ($1.distanceMeters, $1.segment) }
+            found.sort { Self.snapOrder($0) < Self.snapOrder($1) }
             return Array(found.prefix(limit))
         }
+    }
+
+    /// Candidates order by distance in whole millimeters, then by segment. Comparing the exact
+    /// distances would let floating-point noise from the projection pick among segments that are
+    /// equally close, such as every segment at a node the point lies on, and that noise differs
+    /// between platforms. Integer keys keep the order a strict weak ordering (no epsilon).
+    @inline(__always)
+    static func snapOrder(_ point: SnappedPoint) -> (millimeters: Int64, segment: UInt32) {
+        (millimeters(point.distanceMeters), point.segment)
+    }
+
+    /// Meters as whole millimeters, rounded to nearest; saturates (non-finite distances sort last).
+    @inline(__always)
+    static func millimeters(_ meters: Double) -> Int64 {
+        let value = (meters * 1000).rounded()
+        return value.isFinite && value < 9e15 ? Int64(value) : Int64(9e15)
     }
 
     /// The closest point of segment `s` to the projection's origin, if within `maxDistance`.

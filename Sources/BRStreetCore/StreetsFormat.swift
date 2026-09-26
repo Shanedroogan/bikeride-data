@@ -6,11 +6,11 @@ import Foundation
 public enum StreetsFormat {
     /// The first four payload bytes, `STRT`.
     public static let payloadMagic: [UInt8] = Array("STRT".utf8)
-    /// Revision of the draft payload layout, bumped on every change while the artifact's
-    /// formatVersion is still 0. Readers reject any other revision. Revision 2 added the New
-    /// Jersey service-area regions; revision 3 narrowed them to Jersey City and Hoboken and widened
-    /// region codes to `u32` (Census place GEOIDs).
-    public static let draftRevision: UInt32 = 3
+    /// The payload's `u32` revision, which a reader requires to be exactly this value. While the
+    /// artifact's formatVersion is still 0 it is bumped on every layout change: revision 2 added
+    /// the New Jersey service-area regions; revision 3 narrowed them to Jersey City and Hoboken and
+    /// widened region codes to `u32` (Census place GEOIDs); revision 4 added the extension tail.
+    public static let payloadRevision: UInt32 = 4
     /// Set in ``MappedStreetGraph/segment(ofEdge:)`` codes when an edge runs from the segment's
     /// end (B) back to its start (A).
     public static let reversedSegmentBit: UInt32 = 1 << 31
@@ -132,11 +132,18 @@ public struct StreetRegion: Sendable, Equatable {
 /// A malformed or incompatible `streets` payload.
 public enum StreetsFormatError: Error, Equatable, Sendable {
     case badPayloadMagic
-    case unsupportedDraftRevision(UInt32)
+    case unsupportedPayloadRevision(UInt32)
     case unsupportedFormatVersion(UInt16)
     case countMismatch(section: String, expected: Int, actual: Int)
     case valueOutOfRange(section: String, index: Int)
     case notMonotonic(section: String, index: Int)
-    case trailingBytes(Int)
     case invalidGrid
+    /// Region codes must be strictly ascending (so unique).
+    case regionsNotSorted(index: Int)
+    /// A region ring whose last point does not repeat its first, or with fewer than 4 points.
+    case ringNotClosed(ring: Int)
+    /// A region polygon with no rings (each lists its exterior, then any holes).
+    case emptyPolygon(polygon: Int)
+    /// Name bytes that are not UTF-8, or a name boundary inside a character.
+    case invalidName(index: Int)
 }

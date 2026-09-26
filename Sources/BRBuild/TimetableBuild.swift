@@ -56,8 +56,14 @@ public struct TimetableBuild: Sendable {
     public func run(log: (String) -> Void = { _ in }) throws -> TimetableBuildReport {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let fetcher = GTFSFetcher(runner: runner, directory: gtfsDirectory)
-        var report = reportURL.flatMap { try? JSONDecoder().decode(TimetableBuildReport.self, from: Data(contentsOf: $0)) }
-            ?? TimetableBuildReport()
+        var report = TimetableBuildReport()
+        if let reportURL, FileManager.default.fileExists(atPath: reportURL.path) {
+            do {
+                report = try TimetableBuildReport.decodePrevious(Data(contentsOf: reportURL))
+            } catch {
+                log("  warning: previous report \(reportURL.path) unreadable (\(error)); it keeps only this run's systems")
+            }
+        }
         report.generatedAt = ISO8601DateFormatter().string(from: Date())
         report.tool = "bikeride-data \(BuildInfo.toolVersion) (Swift \(BuildInfo.swiftVersion))"
         report.windowStart = windowStart.yyyymmdd
@@ -125,7 +131,8 @@ public struct TimetableBuild: Sendable {
             }
             log("  \(system): \(stats.trips) trips, \(stats.patternsAfterFIFO) patterns, \(bytes.count) bytes raw"
                 + (artifact.xzBytes.map { ", \($0) bytes xz" } ?? "")
-                + String(format: " in %.1f s", systemReport.seconds.total))
+                + String(format: ", stops ≤ %.0f m from their shape vertex in %.1f s", stats.maxStopToShapeVertexMeters,
+                         systemReport.seconds.total))
             built.append((system, timetable, systemReport))
         }
 
@@ -353,6 +360,24 @@ public struct TimetableBuildReport: Codable, Sendable {
     public var representativeDayTotals: TimetableSystemReport.Day?
 
     public init() {}
+
+    /// Decodes a report written by this or an earlier tool, so a run that builds some systems
+    /// keeps the others' entries. Stats keys added since the file was written take their defaults
+    /// (synthesized `Codable` would reject the whole report for one missing key).
+    public static func decodePrevious(_ json: Data) throws -> TimetableBuildReport {
+        guard var root = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+              var systems = root["systems"] as? [String: Any]
+        else { return try JSONDecoder().decode(TimetableBuildReport.self, from: json) }
+        let blank = GTFSSystemStats(system: "", timeZone: "", windowStart: "", dayCount: 0)
+        let defaults = try JSONSerialization.jsonObject(with: JSONEncoder().encode(blank)) as? [String: Any] ?? [:]
+        for (name, value) in systems {
+            guard var entry = value as? [String: Any], let stats = entry["stats"] as? [String: Any] else { continue }
+            entry["stats"] = defaults.merging(stats) { $1 }
+            systems[name] = entry
+        }
+        root["systems"] = systems
+        return try JSONDecoder().decode(TimetableBuildReport.self, from: JSONSerialization.data(withJSONObject: root))
+    }
 }
 
 public struct TimetableSystemReport: Codable, Sendable {

@@ -54,7 +54,7 @@ public struct StreetsCompiler: Sendable {
             public var xzStreams: Int?
             public var xzBlocks: Int?
             public var formatVersion: Int
-            public var draftRevision: Int
+            public var payloadRevision: Int
             public var dataVersion: String
         }
 
@@ -197,7 +197,7 @@ public struct StreetsCompiler: Sendable {
         var artifact = Report.Artifact(
             path: artifactURL.path, rawBytes: bytes.count, rawSha256: sha,
             formatVersion: Int(ArtifactKind.streets.currentFormatVersion),
-            draftRevision: Int(StreetsFormat.draftRevision), dataVersion: dataVersion
+            payloadRevision: Int(StreetsFormat.payloadRevision), dataVersion: dataVersion
         )
         if config.compress {
             try timed("xz") {

@@ -38,6 +38,8 @@ public struct GTFSFeed: Sendable {
         public var agencyID: String
         public var shortName: String
         public var longName: String
+        /// `route_desc` (PATH puts its readable names here; see the compiler).
+        public var desc: String = ""
         public var type: Int
         public var color: UInt32?
         public var textColor: UInt32?
@@ -92,6 +94,8 @@ public struct GTFSFeed: Sendable {
     public var tripShortName: [UInt32] = []
     public var tripDirection: [UInt8] = []
     public var tripShape: [Int32] = []
+    /// ``BRTimetable/TripFlags`` raw values: `.peak` from `peak_offpeak` = 1 (LIRR).
+    public var tripFlags: [UInt8] = []
     /// Headsigns and short names.
     public var texts = ByteInterner()
 
@@ -116,6 +120,8 @@ public struct GTFSFeed: Sendable {
     public var shapeLonE6: [Int32] = []
 
     public var transfers: [Transfer] = []
+    /// `frequencies.txt` rows naming a trip of the feed. Always 0 in a parsed feed: the compiler
+    /// does not model frequency-based trips, so ``parse(_:source:)`` rejects a feed that has any.
     public var frequencyRows = 0
     /// Rows skipped or repaired while parsing, by reason.
     public var issues: [String: Int] = [:]
@@ -169,8 +175,25 @@ extension GTFSFeed {
         try feed.parseStopTimes(files)
         try feed.parseShapes(files)
         try feed.parseTransfers(files)
-        try files.forEachRecord(in: "frequencies.txt", required: false) { _, _, _ in feed.frequencyRows += 1 }
+        try feed.checkFrequencies(files)
         return feed
+    }
+
+    /// A frequencies row turns its trip into a template repeated at a headway; compiling the
+    /// template alone would silently drop every repetition, so a row naming a trip fails the
+    /// build. Rows naming no trip of the feed (blank lines of commas, unknown ids) mis-model
+    /// nothing and are only noted.
+    private mutating func checkFrequencies(_ files: some GTFSFeedFiles) throws {
+        var rows = 0
+        try files.forEachRecord(in: "frequencies.txt", required: false) { header, record, _ in
+            let trip = header.index(of: "trip_id").map { GTFSField.trimmed(record[$0].bytes) } ?? []
+            guard !trip.isEmpty, tripIDs.lookup(trip) != nil else {
+                note("frequencies.txt: row without a known trip_id (ignored)")
+                return
+            }
+            rows += 1
+        }
+        guard rows == 0 else { throw GTFSError.frequenciesNotSupported(feed: files.location, rows: rows) }
     }
 
     private mutating func note(_ issue: String, _ count: Int = 1) {
@@ -218,6 +241,7 @@ extension GTFSFeed {
                 agencyID: agency,
                 shortName: header.index(of: "route_short_name").map { GTFSField.string(record[$0].bytes) } ?? "",
                 longName: header.index(of: "route_long_name").map { GTFSField.string(record[$0].bytes) } ?? "",
+                desc: header.index(of: "route_desc").map { GTFSField.string(record[$0].bytes) } ?? "",
                 type: header.index(of: "route_type").flatMap { GTFSField.int(record[$0].bytes) } ?? 3,
                 color: header.index(of: "route_color").flatMap { GTFSField.color(record[$0].bytes) },
                 textColor: header.index(of: "route_text_color").flatMap { GTFSField.color(record[$0].bytes) }
@@ -233,7 +257,12 @@ extension GTFSFeed {
                 note("stops.txt: empty or duplicate stop_id")
                 return
             }
-            let locationType = header.index(of: "location_type").flatMap { GTFSField.int(record[$0].bytes) } ?? 0
+            var locationType = header.index(of: "location_type").flatMap { GTFSField.int(record[$0].bytes) } ?? 0
+            if !(0...4).contains(locationType) {
+                // Outside GTFS's 0–4 the writer (and every reader) would refuse the stop kind.
+                note("stops.txt: location_type not 0–4 (treated as 0)")
+                locationType = 0
+            }
             let lat = header.index(of: "stop_lat").flatMap { GTFSField.microdegrees(record[$0].bytes) }
             let lon = header.index(of: "stop_lon").flatMap { GTFSField.microdegrees(record[$0].bytes) }
             guard let lat, let lon else {
@@ -248,7 +277,7 @@ extension GTFSFeed {
                 name: header.index(of: "stop_name").map { GTFSField.string(record[$0].bytes) } ?? "",
                 latE6: lat,
                 lonE6: lon,
-                locationType: UInt8(clamping: locationType),
+                locationType: UInt8(locationType),
                 parentID: header.index(of: "parent_station").map { GTFSField.string(record[$0].bytes) } ?? ""
             ))
         }
@@ -324,7 +353,10 @@ extension GTFSFeed {
             tripHeadsign.append(header.index(of: "trip_headsign").map { texts.intern(GTFSField.trimmed(record[$0].bytes)) } ?? 0)
             tripShortName.append(header.index(of: "trip_short_name").map { texts.intern(GTFSField.trimmed(record[$0].bytes)) } ?? 0)
             let direction = header.index(of: "direction_id").flatMap { GTFSField.int(record[$0].bytes) }
-            tripDirection.append(direction.map { UInt8(clamping: $0) } ?? 255)
+            if let direction, direction > 1 { note("trips.txt: direction_id not 0 or 1 (treated as absent)") }
+            tripDirection.append(direction.flatMap { $0 <= 1 ? UInt8($0) : nil } ?? 255)
+            let peak = header.index(of: "peak_offpeak").flatMap { GTFSField.int(record[$0].bytes) } == 1
+            tripFlags.append(peak ? TripFlags.peak.rawValue : 0)
             let shape = header.index(of: "shape_id").map { GTFSField.trimmed(record[$0].bytes) } ?? []
             tripShape.append(shape.isEmpty ? -1 : Int32(shapeIDs.intern(shape)))
         }

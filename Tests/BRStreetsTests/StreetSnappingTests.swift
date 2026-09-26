@@ -1,7 +1,7 @@
 @testable import BRBuild
 import BRCore
 import BRGeo
-import BRStreetCore
+@testable import BRStreetCore
 import Foundation
 import Testing
 
@@ -96,6 +96,67 @@ import Testing
             guard let found, let expected else { continue }
             #expect(abs(found.distanceMeters - expected.distance) < 1e-6, "query \(query)")
         }
+    }
+
+    /// A point on a node shared by several segments is equally close to all of them. It snaps to
+    /// the lowest-numbered one the mode can use, whatever noise each projection adds, and so
+    /// does a point one ulp off the node in any direction.
+    @Test func aPointOnASharedNodeSnapsToTheLowestSegment() throws {
+        let graph = f.graph
+        var incident: [UInt32: [UInt32]] = [:]
+        for s in 0..<UInt32(graph.segmentCount) {
+            let (a, b) = graph.endpoints(ofSegment: s)
+            incident[a, default: []].append(s)
+            if b != a { incident[b, default: []].append(s) }
+        }
+        let shared = incident.filter { $0.value.count >= 3 }.sorted { $0.key < $1.key }
+        #expect(shared.count >= 5)
+        func step(_ value: Double, _ direction: Int) -> Double {
+            direction > 0 ? value.nextUp : direction < 0 ? value.nextDown : value
+        }
+        var checked = 0
+        for (node, segments) in shared {
+            let at = graph.coordinate(ofNode: node)
+            for mode in [SnapMode.walk, .bike, .any] {
+                let usable = segments.filter { s in
+                    let (forward, backward) = graph.edges(ofSegment: s)
+                    return [forward, backward].compactMap { $0 }.contains { !graph.flags(ofEdge: Int($0)).isDisjoint(with: mode.requiredFlags) }
+                }
+                guard usable.count >= 2, let lowest = usable.min() else { continue }
+                for dLat in -1...1 {
+                    for dLon in -1...1 {
+                        let query = Coordinate(lat: step(at.lat, dLat), lon: step(at.lon, dLon))
+                        let hit = graph.snap(query, mode: mode)
+                        #expect(hit?.segment == lowest, "node \(node), \(mode), offset (\(dLat), \(dLon))")
+                        #expect((hit?.distanceMeters ?? 1) < 1e-6)
+                    }
+                }
+                checked += 1
+            }
+        }
+        #expect(checked >= 5)
+    }
+
+    /// Candidates order by whole millimeters, then segment: a 1e-12 m difference never outranks
+    /// a lower segment index, a millimeter does, and the order stays strict.
+    @Test func snapOrderIgnoresSubMillimeterNoise() {
+        func candidate(_ segment: UInt32, _ meters: Double) -> SnappedPoint {
+            SnappedPoint(
+                segment: segment, nodeA: 0, nodeB: 1, forwardEdge: nil, backwardEdge: nil, fraction: 0,
+                distanceMeters: meters, coordinate: Coordinate(lat: 0, lon: 0), query: Coordinate(lat: 0, lon: 0)
+            )
+        }
+        let order = MappedStreetGraph.snapOrder
+        for meters in [0, 1e-9, 3.25, 17.0004, 249.9] {
+            let nearerByNoise = candidate(5, meters), lower = candidate(3, meters + 1e-12)
+            #expect(order(lower) < order(nearerByNoise) && !(order(nearerByNoise) < order(lower)))
+            let reversed = candidate(3, meters), fartherByNoise = candidate(5, meters + 1e-12)
+            #expect(order(reversed) < order(fartherByNoise) && !(order(fartherByNoise) < order(reversed)))
+            #expect(!(order(lower) < order(lower)))
+        }
+        #expect(order(candidate(5, 3.000)) < order(candidate(3, 3.001)))
+        #expect(MappedStreetGraph.millimeters(.infinity) == MappedStreetGraph.millimeters(.nan))
+        #expect(MappedStreetGraph.millimeters(250) == 250_000)
     }
 
     @Test func searchSourcesSplitTheEdgeCostAtThePoint() throws {

@@ -24,6 +24,10 @@ public struct EdgeFlags: OptionSet, Hashable, Sendable {
     /// Bikes may be walked here but not ridden (e.g. a connector along a sidewalk); bike
     /// profiles charge walking pace. Always set together with ``bikeForward``.
     public static let dismount = EdgeFlags(rawValue: 1 << 6)
+
+    /// The defined bits (0–6). Writers set no others; readers ignore the others, so a later bit
+    /// can be a hint that older readers safely skip.
+    public static let known: EdgeFlags = [.walk, .bikeForward, .stairs, .bridge, .park, .connector, .dismount]
 }
 
 /// Bike infrastructure on an edge, which scales its bike cost. Raw values are stored in artifacts.

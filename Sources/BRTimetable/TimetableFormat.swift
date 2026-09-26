@@ -3,9 +3,10 @@
 public enum TimetableFormat {
     /// ASCII `BRTT`, the first four payload bytes.
     public static let magic: [UInt8] = Array("BRTT".utf8)
-    /// Revision of the unfrozen (format `0`) layout, stored in ``InfoField/draftRevision``.
-    /// Readers reject any other; bump it whenever a draft change breaks older readers.
-    public static let draftRevision: Int64 = 1
+    /// The payload revision, stored in ``InfoField/payloadRevision``. Readers require exactly this
+    /// value for the formatVersion they read. In the format-0 draft it counts breaking draft
+    /// changes (2 added ``TimetableSection/tripFlags``); it becomes 1 when the format freezes at 1.
+    public static let payloadRevision: Int64 = 2
     /// Bytes per table-of-contents entry: `u32 id, u32 elementSize, u64 offset, u64 count`.
     static let tocEntrySize = 24
     /// Size of the payload preamble before the table of contents: magic + `u32` section count.
@@ -97,6 +98,7 @@ public enum TimetableSection: UInt32, CaseIterable, Sendable {
     case tripHeadsign = 93           // u32 string
     case tripShortName = 94          // u32 string
     case tripDirection = 95          // u8 0, 1, or 255 when absent
+    case tripFlags = 96              // u8 TripFlags: bit 0 = peak (LIRR peak_offpeak = 1)
 
     // Stop → patterns serving it
     case stopPatternStart = 100      // u32 × (stops + 1)
@@ -131,7 +133,7 @@ public enum TimetableSection: UInt32, CaseIterable, Sendable {
         case .info: 8
         case .sourceSelectedDays: 8
         case .stringBytes, .routeMode, .stopKind, .stopAccess, .ruleWeekdays, .exceptionType, .patternFlags,
-             .patternStopFlags, .tripDirection, .transferType, .subwayKeyDirection:
+             .patternStopFlags, .tripDirection, .tripFlags, .transferType, .subwayKeyDirection:
             1
         case .routeType: 2
         default: 4
@@ -151,11 +153,12 @@ public enum InfoField: Int, CaseIterable, Sendable {
     case timeZone = 3
     /// `u64` words per source in `sourceSelectedDays`.
     case wordsPerSource = 4
-    /// ``TimetableFormat/draftRevision`` of the writer.
-    case draftRevision = 5
+    /// ``TimetableFormat/payloadRevision`` of the writer.
+    case payloadRevision = 5
+    // The info array may gain entries past these; readers ignore entries they don't know.
 }
 
-/// How a route is presented and priced.
+/// How a route is presented and priced. Readers reject any other value.
 public enum RouteMode: UInt8, CaseIterable, Sendable, Codable {
     case subway = 0
     case localBus = 1
@@ -169,7 +172,7 @@ public enum RouteMode: UInt8, CaseIterable, Sendable, Codable {
     case path = 6
 }
 
-/// GTFS `location_type`.
+/// GTFS `location_type`. Readers reject any other value.
 public enum StopKind: UInt8, CaseIterable, Sendable {
     case stop = 0
     case station = 1
@@ -186,6 +189,20 @@ public struct PatternFlags: OptionSet, Sendable {
     public static let arrivalEqualsDeparture = PatternFlags(rawValue: 1 << 0)
     /// The pattern's shape was synthesized from its stop coordinates (no usable GTFS shape).
     public static let synthesizedShape = PatternFlags(rawValue: 1 << 1)
+    /// Every bit defined so far; readers mask the rest off.
+    public static let known: PatternFlags = [.arrivalEqualsDeparture, .synthesizedShape]
+}
+
+/// Per-trip flags (``TimetableSection/tripFlags``). Writers write undefined bits as 0; readers
+/// ignore them.
+public struct TripFlags: OptionSet, Sendable, Hashable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
+
+    /// A peak-fare trip (LIRR `trips.txt` `peak_offpeak` = 1).
+    public static let peak = TripFlags(rawValue: 1 << 0)
+    /// Every bit defined so far.
+    public static let known: TripFlags = [.peak]
 }
 
 /// Whether riders may enter or leave the system through a stop. Always both for GTFS stops;
@@ -196,6 +213,8 @@ public struct StopAccess: OptionSet, Sendable, Hashable {
 
     public static let entry = StopAccess(rawValue: 1 << 0)
     public static let exit = StopAccess(rawValue: 1 << 1)
+    /// Every bit defined so far; readers mask the rest off.
+    public static let known: StopAccess = [.entry, .exit]
 }
 
 public struct StopEventFlags: OptionSet, Sendable, Hashable {
@@ -206,7 +225,25 @@ public struct StopEventFlags: OptionSet, Sendable, Hashable {
     public static let pickup = StopEventFlags(rawValue: 1 << 0)
     /// Riders may alight here (`drop_off_type` ≠ 1).
     public static let dropOff = StopEventFlags(rawValue: 1 << 1)
+    /// Every bit defined so far. ``Timetable/patternStopFlags(_:)`` hands out the raw bytes for
+    /// the hot path, so consumers test single bits and never compare whole bytes.
+    public static let known: StopEventFlags = [.pickup, .dropOff]
 }
 
 /// `ruleWeekdays` bit 7: the rule has a `calendar.txt` row (weekday mask and valid range).
 let ruleHasCalendarBit: UInt8 = 1 << 7
+
+/// The values each enum-like `u8` section may hold; a reader rejects any other when it opens the
+/// file (never a silent fallback). New values need a format bump.
+enum TimetableEnums {
+    static func isKnownRouteMode(_ value: UInt8) -> Bool { RouteMode(rawValue: value) != nil }
+    static func isKnownStopKind(_ value: UInt8) -> Bool { StopKind(rawValue: value) != nil }
+    /// `calendar_dates.txt` `exception_type`: 1 added, 2 removed.
+    static func isKnownExceptionType(_ value: UInt8) -> Bool { value == 1 || value == 2 }
+    /// GTFS `transfer_type` 0–5 (4 and 5 are in-seat rows).
+    static func isKnownTransferType(_ value: UInt8) -> Bool { value <= 5 }
+    /// `direction_id` 0 or 1, or 255 when the feed gives none.
+    static func isKnownDirection(_ value: UInt8) -> Bool { value <= 1 || value == 255 }
+    /// ASCII `N` or `S`.
+    static func isKnownSubwayKeyDirection(_ value: UInt8) -> Bool { value == UInt8(ascii: "N") || value == UInt8(ascii: "S") }
+}

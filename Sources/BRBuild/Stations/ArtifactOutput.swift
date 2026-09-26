@@ -12,7 +12,7 @@ public struct BuiltArtifactInfo: Codable, Sendable, Equatable {
     public var xzStreams: Int?
     public var xzBlocks: Int?
     public var formatVersion: Int
-    public var draftRevision: Int
+    public var payloadRevision: Int
     public var dataVersion: String
     public var builtAgainst: [String: String]
 }
@@ -23,7 +23,7 @@ enum ArtifactOutput {
     /// `xz -6 -T1 --check=crc32` and records the stream and block counts.
     static func write(
         _ bytes: Data, to url: URL, compress: Bool, runner: any ToolRunner,
-        formatVersion: UInt16, draftRevision: UInt32, dataVersion: String, builtAgainst: [String: String],
+        formatVersion: UInt16, payloadRevision: UInt32, dataVersion: String, builtAgainst: [String: String],
         seconds: inout [String: Double]
     ) throws -> BuiltArtifactInfo {
         func timed<T>(_ phase: String, _ body: () throws -> T) rethrows -> T {
@@ -36,7 +36,7 @@ enum ArtifactOutput {
         let sha = try timed("hash") { try sha256(ofFileAt: url, runner: runner) }
         var info = BuiltArtifactInfo(
             path: url.path, rawBytes: bytes.count, rawSha256: sha, formatVersion: Int(formatVersion),
-            draftRevision: Int(draftRevision), dataVersion: dataVersion, builtAgainst: builtAgainst
+            payloadRevision: Int(payloadRevision), dataVersion: dataVersion, builtAgainst: builtAgainst
         )
         if compress {
             try timed("xz") {

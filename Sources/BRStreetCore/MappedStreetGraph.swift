@@ -23,8 +23,11 @@ public struct MappedStreetGraph: StreetNetwork {
     public let shapePointCount: Int
     public let nameCount: Int
     public let grid: SnapGridGeometry
-    /// Each borough, in code order.
+    /// Each service-area region (borough or New Jersey municipality), in code order.
     public let regions: [StreetRegion]
+    /// The payload's extension tail. No streets extension ids are defined yet; readers skip any
+    /// they find (`docs/formats.md`, "Compatibility").
+    public let extensions: ExtensionTable
 
     private let payload: Data
     private let layout: Layout
@@ -60,8 +63,10 @@ public struct MappedStreetGraph: StreetNetwork {
         try MappedStreetGraph(contentsOf: directory.appendingPathComponent(fileName), validate: validate)
     }
 
-    /// Maps an artifact file. With `validate`, every index is range-checked once (a few ms for
-    /// the city graph), so later reads can never go out of bounds.
+    /// Maps an artifact file. Counts, offsets' ends, enum values, the regions and the extension
+    /// tail are always checked. With `validate`, every index is also range-checked once (about
+    /// 5 ms for the city graph), so later reads can never go out of bounds; pass `false` only for
+    /// bytes already validated, such as a file this process just wrote and checked.
     public init(contentsOf url: URL, validate: Bool = true) throws {
         try self.init(artifact: MappedArtifact(contentsOf: url, expecting: .streets), validate: validate)
     }
@@ -84,7 +89,7 @@ public struct MappedStreetGraph: StreetNetwork {
             throw StreetsFormatError.badPayloadMagic
         }
         let revision = try reader.read(UInt32.self)
-        guard revision == StreetsFormat.draftRevision else { throw StreetsFormatError.unsupportedDraftRevision(revision) }
+        guard revision == StreetsFormat.payloadRevision else { throw StreetsFormatError.unsupportedPayloadRevision(revision) }
         func count(_ section: String) throws -> Int {
             let value = try reader.read(UInt64.self)
             guard value < UInt64(UInt32.max) else { throw StreetsFormatError.valueOutOfRange(section: section, index: 0) }
@@ -140,10 +145,12 @@ public struct MappedStreetGraph: StreetNetwork {
         (layout.cellSegments, layout.cellSegmentCount) = try array(UInt32.self, "gridCellSegments", count: nil)
 
         regions = try Self.readRegions(&reader)
-        guard reader.isAtEnd else { throw StreetsFormatError.trailingBytes(reader.remaining) }
+        // Tail errors (ids out of order, bytes after it) surface as `DataFormatError`, like every
+        // other malformed-bytes error from the reader.
+        extensions = try reader.readExtensions()
         self.layout = layout
 
-        // Cheap structural checks always; the full index scan on request.
+        // Cheap structural checks and the enum values always; the full index scan on request.
         try withBuffers { b throws(StreetsFormatError) in
             guard b.forwardOffsets[0] == 0, Int(b.forwardOffsets[V]) == E,
                   b.reverseOffsets[0] == 0, Int(b.reverseOffsets[V]) == E,
@@ -151,6 +158,7 @@ public struct MappedStreetGraph: StreetNetwork {
                   b.nameOffsets[0] == 0, Int(b.nameOffsets[nameCount]) == layout.nameByteCount,
                   b.cellOffsets[0] == 0, Int(b.cellOffsets[columns * rows]) == layout.cellSegmentCount
             else { throw StreetsFormatError.countMismatch(section: "offsets", expected: 0, actual: 1) }
+            try Self.checkEnums(b)
         }
         if validate { try self.validate() }
     }
@@ -302,12 +310,13 @@ public struct MappedStreetGraph: StreetNetwork {
         withBuffers { $0.edgeLengths[edge] }
     }
 
+    /// The edge's defined flags; undefined bits (7–15) are ignored.
     public func flags(ofEdge edge: Int) -> EdgeFlags {
-        withBuffers { EdgeFlags(rawValue: $0.edgeFlags[edge]) }
+        withBuffers { EdgeFlags(rawValue: $0.edgeFlags[edge]).intersection(.known) }
     }
 
     public func bikeClass(ofEdge edge: Int) -> BikeClass {
-        withBuffers { BikeClass(rawValue: $0.edgeClasses[edge]) ?? .shared }
+        withBuffers { BikeClass(rawValue: $0.edgeClasses[edge])! }  // Checked at open.
     }
 
     /// The segment an edge traverses, and whether it runs from the segment's end back to its start.
@@ -362,7 +371,7 @@ public struct MappedStreetGraph: StreetNetwork {
 
     public func nameKind(id: UInt32) -> StreetNameKind {
         precondition(Int(id) < nameCount, "name out of range")
-        return withBuffers { StreetNameKind(rawValue: $0.nameKinds[Int(id)]) ?? .derived }
+        return withBuffers { StreetNameKind(rawValue: $0.nameKinds[Int(id)])! }  // Checked at open.
     }
 
     /// Travel direction, in degrees clockwise from north, as an edge starts (`entry`) and as it
@@ -414,8 +423,8 @@ public struct MappedStreetGraph: StreetNetwork {
                     forwardOffsets: Array(b.forwardOffsets),
                     edgeTargets: Array(b.edgeTargets),
                     edgeLengthDecimeters: Array(b.edgeLengths),
-                    edgeFlags: b.edgeFlags.map(EdgeFlags.init(rawValue:)),
-                    edgeBikeClasses: b.edgeClasses.map { BikeClass(rawValue: $0) ?? .shared },
+                    edgeFlags: b.edgeFlags.map { EdgeFlags(rawValue: $0).intersection(.known) },
+                    edgeBikeClasses: b.edgeClasses.map { BikeClass(rawValue: $0)! },
                     edgeNameIDs: nameIDs
                 )
             } catch {
@@ -424,7 +433,21 @@ public struct MappedStreetGraph: StreetNetwork {
         }
     }
 
-    /// Range-checks every index and offset array.
+    /// Rejects a bike class or name kind this reader doesn't know. Enum values are strict (a new
+    /// value needs a format bump), so this runs at every open, `validate` or not: 0.2 ms for the
+    /// city's 723k edges in a release build.
+    static func checkEnums(_ b: Buffers) throws(StreetsFormatError) {
+        let classCount = UInt8(BikeClass.allCases.count), kindCount = UInt8(StreetNameKind.allCases.count)
+        if let bad = b.edgeClasses.firstIndex(where: { $0 >= classCount }) {
+            throw .valueOutOfRange(section: "edgeBikeClasses", index: bad)
+        }
+        if let bad = b.nameKinds.firstIndex(where: { $0 >= kindCount }) {
+            throw .valueOutOfRange(section: "nameKinds", index: bad)
+        }
+    }
+
+    /// Range-checks every index and offset array, and checks the promises `docs/formats.md` makes
+    /// about the arrays' contents.
     public func validate() throws {
         let (V, E, S) = (nodeCount, edgeCount, segmentCount)
         let cells = grid.cellCount
@@ -451,11 +474,33 @@ public struct MappedStreetGraph: StreetNetwork {
             try bounded(b.segmentNodes, below: V, "segmentNodes")
             try bounded(b.segmentNameIDs, below: nameCount, "segmentNameIDs")
             try bounded(b.cellSegments, below: S, "gridCellSegments")
-            for i in b.edgeClasses.indices where Int(b.edgeClasses[i]) >= BikeClass.allCases.count {
-                throw .valueOutOfRange(section: "edgeBikeClasses", index: i)
+            // Every stored edge can be walked or ridden (a direction nobody may use is not stored).
+            let usable = EdgeFlags([.walk, .bikeForward]).rawValue
+            if let bad = b.edgeFlags.firstIndex(where: { $0 & usable == 0 }) {
+                throw .valueOutOfRange(section: "edgeFlags", index: bad)
             }
-            for i in b.nameKinds.indices where Int(b.nameKinds[i]) >= StreetNameKind.allCases.count {
-                throw .valueOutOfRange(section: "nameKinds", index: i)
+            // Each cell lists its segments strictly ascending.
+            for cell in 0..<cells {
+                let first = Int(b.cellOffsets[cell]), end = Int(b.cellOffsets[cell + 1])
+                guard first < end else { continue }
+                for slot in (first + 1)..<end where b.cellSegments[slot] <= b.cellSegments[slot - 1] {
+                    throw .notMonotonic(section: "gridCellSegments", index: slot)
+                }
+            }
+            // Names are UTF-8, and each starts on a character boundary, so every name is too. When
+            // the bytes aren't, some name isn't on its own (the offsets cover every byte): name it.
+            func invalid(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+                transcode(bytes.makeIterator(), from: UTF8.self, to: UTF32.self, stoppingOnError: true, into: { _ in })
+            }
+            if invalid(b.nameBytes) {
+                let bad = (0..<nameCount).first { n in
+                    invalid(UnsafeBufferPointer(rebasing: b.nameBytes[Int(b.nameOffsets[n])..<Int(b.nameOffsets[n + 1])]))
+                }
+                throw .invalidName(index: bad ?? 0)
+            }
+            for n in 0..<nameCount {
+                let start = Int(b.nameOffsets[n])
+                if start < b.nameBytes.count, b.nameBytes[start] & 0xC0 == 0x80 { throw .invalidName(index: n) }
             }
             // Each edge's segment must join the edge's own ends, in the stated direction.
             for node in 0..<V {
@@ -480,7 +525,6 @@ public struct MappedStreetGraph: StreetNetwork {
                     else { throw .valueOutOfRange(section: "reverseEdges", index: slot) }
                 }
             }
-            _ = cells
         }
     }
 
@@ -488,8 +532,9 @@ public struct MappedStreetGraph: StreetNetwork {
         let count = Int(try reader.read(UInt32.self))
         guard count < 1024 else { throw StreetsFormatError.valueOutOfRange(section: "regionCount", index: 0) }
         var headers: [(code: UInt32, name: String)] = []
-        for _ in 0..<count {
+        for index in 0..<count {
             let code = try reader.read(UInt32.self)
+            if let previous = headers.last, code <= previous.code { throw StreetsFormatError.regionsNotSorted(index: index) }
             headers.append((code, try reader.readString()))
         }
         let polygonOffsets = try reader.readArray(of: UInt32.self).toArray()
@@ -511,6 +556,17 @@ public struct MappedStreetGraph: StreetNetwork {
         try check(ringOffsets, count: ringOffsets.count - 1, total: pointOffsets.count - 1, "polygonRingOffsets")
         try check(pointOffsets, count: pointOffsets.count - 1, total: points.count / 2, "ringPointOffsets")
         guard points.count % 2 == 0 else { throw StreetsFormatError.countMismatch(section: "ringPoints", expected: 0, actual: 1) }
+        // Every polygon has its exterior ring.
+        for p in 0..<(ringOffsets.count - 1) where ringOffsets[p + 1] == ringOffsets[p] {
+            throw StreetsFormatError.emptyPolygon(polygon: p)
+        }
+        // Every ring is closed: at least 4 points, the last repeating the first.
+        for r in 0..<(pointOffsets.count - 1) {
+            let first = Int(pointOffsets[r]), last = Int(pointOffsets[r + 1]) - 1
+            guard last - first >= 3, points[2 * first] == points[2 * last], points[2 * first + 1] == points[2 * last + 1] else {
+                throw StreetsFormatError.ringNotClosed(ring: r)
+            }
+        }
 
         func ring(_ r: Int) -> [Coordinate] {
             (Int(pointOffsets[r])..<Int(pointOffsets[r + 1])).map {
@@ -518,10 +574,9 @@ public struct MappedStreetGraph: StreetNetwork {
             }
         }
         return headers.enumerated().map { index, header in
-            let polygons = (Int(polygonOffsets[index])..<Int(polygonOffsets[index + 1])).compactMap { p -> Polygon? in
+            let polygons = (Int(polygonOffsets[index])..<Int(polygonOffsets[index + 1])).map { p in
                 let rings = Int(ringOffsets[p])..<Int(ringOffsets[p + 1])
-                guard let first = rings.first else { return nil }
-                return Polygon(exterior: ring(first), holes: rings.dropFirst().map(ring))
+                return Polygon(exterior: ring(rings.lowerBound), holes: rings.dropFirst().map(ring))
             }
             return StreetRegion(code: header.code, name: header.name, area: MultiPolygon(polygons))
         }

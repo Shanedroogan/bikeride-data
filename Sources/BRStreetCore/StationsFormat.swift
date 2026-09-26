@@ -3,9 +3,10 @@
 public enum StationsFormat {
     /// The first four payload bytes, `STNS`.
     public static let payloadMagic: [UInt8] = Array("STNS".utf8)
-    /// Revision of the draft payload layout, bumped on every change while the artifact's
-    /// formatVersion is still 0. Readers reject any other revision.
-    public static let draftRevision: UInt32 = 1
+    /// The payload's `u32` revision, which a reader requires to be exactly this value. While the
+    /// artifact's formatVersion is still 0 it is bumped on every layout change: revision 2 added
+    /// the extension tail.
+    public static let payloadRevision: UInt32 = 2
     /// Matrix value for a pair with no bike path, or one longer than 655,340 m.
     public static let unreachable: UInt16 = .max
     /// The largest storable distance, in decameters.
@@ -35,18 +36,21 @@ public struct StationFlags: OptionSet, Sendable, Hashable {
     /// The station snapped to a walkable segment.
     public static let walkSnapped = StationFlags(rawValue: 1 << 3)
 
-    static let known: StationFlags = [.charging, .acceptedByArea, .bikeSnapped, .walkSnapped]
+    /// The defined bits. Writers set no others; readers ignore the others (``MappedStations/flags(_:)``
+    /// masks them off), so a later bit can be a hint that older readers safely skip.
+    public static let known: StationFlags = [.charging, .acceptedByArea, .bikeSnapped, .walkSnapped]
 }
 
 /// A malformed or incompatible `stations` payload.
 public enum StationsFormatError: Error, Equatable, Sendable {
     case badPayloadMagic
-    case unsupportedDraftRevision(UInt32)
+    case unsupportedPayloadRevision(UInt32)
     case unsupportedFormatVersion(UInt16)
     case countMismatch(section: String, expected: Int, actual: Int)
     case valueOutOfRange(section: String, index: Int)
     case notMonotonic(section: String, index: Int)
     /// The id-sorted index must list ids strictly ascending by their UTF-8 bytes (so they are unique).
     case idsNotSorted(index: Int)
-    case trailingBytes(Int)
+    /// String bytes that are not UTF-8, or a string boundary inside a character.
+    case invalidString(index: Int)
 }

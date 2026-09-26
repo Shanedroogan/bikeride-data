@@ -53,7 +53,7 @@ public enum StreetsArtifactWriter {
             let segment = Int(edge.segmentCode & ~StreetsFormat.reversedSegmentBit)
             builder.addEdge(
                 from: edge.source, to: edge.target, lengthDecimeters: edge.lengthDecimeters,
-                flags: EdgeFlags(rawValue: edge.flags), bikeClass: BikeClass(rawValue: edge.bikeClass) ?? .shared,
+                flags: EdgeFlags(rawValue: edge.flags), bikeClass: BikeClass(rawValue: edge.bikeClass)!,
                 nameID: streets.segmentNameIDs[segment]
             )
         }
@@ -75,6 +75,7 @@ public enum StreetsArtifactWriter {
         let V = streets.nodeCount, S = streets.segmentCount
         let edges = directedEdges(streets)
         let E = edges.count
+        precondition(edges.allSatisfy { EdgeFlags(rawValue: $0.flags).isSubset(of: .known) }, "undefined edge flag bits are written 0")
 
         var forwardOffsets = [UInt32](repeating: 0, count: V + 1)
         for edge in edges { forwardOffsets[Int(edge.source) + 1] += 1 }
@@ -102,7 +103,7 @@ public enum StreetsArtifactWriter {
 
         var w = BinaryWriter(reservingCapacity: 64 * E + (1 << 20))
         w.append(bytes: StreetsFormat.payloadMagic)
-        w.append(StreetsFormat.draftRevision)
+        w.append(StreetsFormat.payloadRevision)
         w.append(UInt64(V))
         w.append(UInt64(E))
         w.append(UInt64(S))
@@ -135,6 +136,7 @@ public enum StreetsArtifactWriter {
         w.append(array: grid.offsets)
         w.append(array: grid.segments)
         appendRegions(streets.regions, to: &w)
+        w.appendExtensions([])
         return w.data
     }
 
@@ -204,7 +206,10 @@ public enum StreetsArtifactWriter {
         return (geometry, offsets, segments)
     }
 
-    static func appendRegions(_ regions: [StreetRegion], to w: inout BinaryWriter) {
+    /// The regions in code order (codes must be unique), then their polygons.
+    static func appendRegions(_ unordered: [StreetRegion], to w: inout BinaryWriter) {
+        let regions = unordered.sorted { $0.code < $1.code }
+        precondition(zip(regions, regions.dropFirst()).allSatisfy { $0.code != $1.code }, "region codes must be unique")
         w.append(UInt32(regions.count))
         for region in regions {
             w.append(region.code)
@@ -214,9 +219,13 @@ public enum StreetsArtifactWriter {
         for region in regions {
             for polygon in region.area.polygons {
                 for ring in [polygon.exterior] + polygon.holes {
-                    for c in ring {
-                        points.append(StreetsFormat.microdegrees(c.lat))
-                        points.append(StreetsFormat.microdegrees(c.lon))
+                    // Stored rings are closed: an open ``Polygon`` ring gets its first point repeated.
+                    var stored = ring.map { (StreetsFormat.microdegrees($0.lat), StreetsFormat.microdegrees($0.lon)) }
+                    if let first = stored.first, let last = stored.last, first != last { stored.append(first) }
+                    precondition(stored.count >= 4, "a region ring needs at least 3 distinct points")
+                    for (lat, lon) in stored {
+                        points.append(lat)
+                        points.append(lon)
                     }
                     pointOffsets.append(UInt32(points.count / 2))
                 }
