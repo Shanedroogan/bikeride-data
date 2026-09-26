@@ -6,14 +6,15 @@ public enum LinksFormat {
     /// The first four payload bytes, `LNKS`.
     public static let payloadMagic: [UInt8] = Array("LNKS".utf8)
     /// Revision of the draft payload layout, bumped on every change while the artifact's
-    /// formatVersion is still 0. Readers reject any other revision.
-    public static let draftRevision: UInt32 = 1
+    /// formatVersion is still 0. Readers reject any other revision. 2: PATH added as the fifth
+    /// system (``systems``).
+    public static let draftRevision: UInt32 = 2
     /// "No value" in a `u16` seconds field (e.g. a station link that cannot be walked in that
     /// direction).
     public static let noSeconds: UInt16 = .max
     /// The systems whose stops the global stop index spans, in index order. Global stop
     /// `base(system) + local` is stop `local` of that system's `tt-*` artifact.
-    public static let systems: [TransitSystem] = [.subway, .bus, .lirr, .ferry]
+    public static let systems: [TransitSystem] = [.subway, .bus, .lirr, .ferry, .path]
 }
 
 /// Per-stop bits in the `links` artifact (global stop index).

@@ -11,11 +11,15 @@ public struct GTFSCompileOptions: Sendable {
     public var maxDays: Int
     /// Douglas–Peucker tolerance for shapes, in meters.
     public var shapeToleranceMeters: Double
+    /// Parent stations and platform transfers synthesized for PATH (only used for `.path`).
+    public var pathStations: PATHStationOptions
 
-    public init(windowStart: ServiceDate, maxDays: Int = 800, shapeToleranceMeters: Double = 5) {
+    public init(windowStart: ServiceDate, maxDays: Int = 800, shapeToleranceMeters: Double = 5,
+                pathStations: PATHStationOptions = PATHStationOptions()) {
         self.windowStart = windowStart
         self.maxDays = maxDays
         self.shapeToleranceMeters = shapeToleranceMeters
+        self.pathStations = pathStations
     }
 }
 
@@ -74,6 +78,8 @@ public struct GTFSSystemStats: Codable, Sendable {
     public var passThroughEventsDropped = 0
     public var timesInterpolated = 0
     public var timesRepaired = 0
+    /// Trips whose clock restarted at midnight (times after it written as 0:xx), unwrapped.
+    public var tripsUnwrappedPastMidnight = 0
     public var patternsBeforeFIFO = 0
     public var patternsAfterFIFO = 0
     public var patternsArrivalEqualsDeparture = 0
@@ -90,6 +96,8 @@ public struct GTFSSystemStats: Codable, Sendable {
     public var subwayKeys = 0
     public var subwayKeyParseFailures = 0
     public var duplicateTripIDs = 0
+    /// PATH only: what was synthesized per source, keyed by source name.
+    public var pathStations: [String: PATHStationSynthesis]?
 }
 
 /// Compiles the GTFS feeds of one system into a ``BRTimetable/TimetableData``.
@@ -101,7 +109,8 @@ public struct GTFSSystemStats: Codable, Sendable {
 /// dropped; times interpolated and made monotone; route patterns keyed by route, stops and
 /// pickup/drop-off bits, split so that FIFO holds among trips that share a service day; shapes
 /// simplified; transfers and real-time match tables. For the subway, `entrances` become
-/// `.entrance` stops under their GTFS station.
+/// `.entrance` stops under their GTFS station. For PATH, parent stations and platform transfers
+/// are first synthesized (``GTFSFeed/synthesizePATHStations(_:)``).
 public enum GTFSTimetableCompiler {
     public static func compile(
         system: TransitSystem,
@@ -112,13 +121,24 @@ public enum GTFSTimetableCompiler {
         // Preference order within each slot; slots keep their order of first appearance.
         var slotOrder: [String] = []
         for feed in unorderedFeeds where !slotOrder.contains(feed.source.slot) { slotOrder.append(feed.source.slot) }
-        let feeds = unorderedFeeds.enumerated().sorted { a, b in
+        var feeds = unorderedFeeds.enumerated().sorted { a, b in
             let slotA = slotOrder.firstIndex(of: a.element.source.slot)!, slotB = slotOrder.firstIndex(of: b.element.source.slot)!
             if slotA != slotB { return slotA < slotB }
             if a.element.source.priority != b.element.source.priority { return a.element.source.priority < b.element.source.priority }
             if a.element.source.publishedAt != b.element.source.publishedAt { return a.element.source.publishedAt > b.element.source.publishedAt }
             return a.offset < b.offset
         }.map(\.element)
+
+        // PATH ships no parent stations and no transfers.txt; synthesize both before anything
+        // reads stops or transfers.
+        var pathStations: [String: PATHStationSynthesis]?
+        if system == .path {
+            var synthesized: [String: PATHStationSynthesis] = [:]
+            for index in feeds.indices {
+                synthesized[feeds[index].source.name] = try feeds[index].synthesizePATHStations(options.pathStations)
+            }
+            pathStations = synthesized
+        }
 
         // MARK: Window and source selection
         let windowStartDay = Int32(options.windowStart.daysSinceEpoch)
@@ -127,6 +147,7 @@ public enum GTFSTimetableCompiler {
         let timeZone = try Self.timeZone(of: feeds)
         var stats = GTFSSystemStats(system: system.rawValue, timeZone: timeZone,
                                     windowStart: options.windowStart.yyyymmdd, dayCount: dayCount)
+        stats.pathStations = pathStations
 
         var feedCoverage: [DayBitset] = []
         for feed in feeds {
@@ -291,6 +312,24 @@ public enum GTFSTimetableCompiler {
                 discard(\.tripsDroppedMissingEndTimes)
                 continue
             }
+            // Feeds that restart the clock at midnight instead of writing 24:00+ (PATH: 23:59:42
+            // then 0:01:42) are unwrapped: a time more than 12 h before the previous one is taken
+            // to be on the next day, so the trip stays on the service day it started on.
+            var unwrapOffset: UInt32 = 0, lastTime: UInt32? = nil
+            for index in begin..<tripStops.count {
+                for isDeparture in [false, true] {
+                    let raw = isDeparture ? tripDeparture[index] : tripArrival[index]
+                    guard raw != none else { continue }
+                    var value = raw + unwrapOffset
+                    if let lastTime, value + 43_200 < lastTime {
+                        unwrapOffset += 86_400
+                        value += 86_400
+                    }
+                    if isDeparture { tripDeparture[index] = value } else { tripArrival[index] = value }
+                    lastTime = value
+                }
+            }
+            if unwrapOffset > 0 { stats.tripsUnwrappedPastMidnight += 1 }
             // Linear interpolation by position over calls without times.
             var index = begin + 1
             while index < tripStops.count {
@@ -736,6 +775,7 @@ public enum GTFSTimetableCompiler {
         case .subway: return .subway
         case .lirr: return .lirr
         case .ferry: return .ferry
+        case .path: return .path
         case .bus:
             if routeID.hasSuffix("+") { return .sbs }
             let upper = routeID.uppercased()

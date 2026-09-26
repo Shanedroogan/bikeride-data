@@ -425,11 +425,11 @@ struct RandomLinkWorld {
         var options = LinksOptions()
         options.maxFootpathWalkSeconds = UInt32(150 + rng.nextInt(below: 250))
         options.stationLinkMaxWalkMeters = Double(150 + rng.nextInt(below: 300))
-        options.accessSeconds = [.subway: 120, .bus: 30, .lirr: 240, .ferry: 60]
+        options.accessSeconds = [.subway: 120, .bus: 30, .lirr: 240, .ferry: 60, .path: 90]
         options.threads = 1 + rng.nextInt(below: 4)
         self.options = options
 
-        let counts = [3 + rng.nextInt(below: 4), 2 + rng.nextInt(below: 5), rng.nextInt(below: 3), rng.nextInt(below: 2)]
+        let counts = [3 + rng.nextInt(below: 4), 2 + rng.nextInt(below: 5), rng.nextInt(below: 3), rng.nextInt(below: 2), rng.nextInt(below: 3)]
         let total = counts.reduce(0, +)
         var points: [StreetAccessPoint] = []
         var routable = [Bool](repeating: false, count: total)

@@ -12,6 +12,7 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
     case links = 7
     case flows = 8
     case config = 9
+    case ttPath = 10
 
     /// The name used in manifests, file names and `builtAgainst`.
     public var name: String {
@@ -22,6 +23,7 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
         case .ttBus: "tt-bus"
         case .ttLirr: "tt-lirr"
         case .ttFerry: "tt-ferry"
+        case .ttPath: "tt-path"
         case .links: "links"
         case .flows: "flows"
         case .config: "config"
@@ -39,6 +41,7 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
         case .bus: .ttBus
         case .lirr: .ttLirr
         case .ferry: .ttFerry
+        case .path: .ttPath
         }
     }
 
@@ -46,7 +49,7 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
     /// change without a version bump.
     public var currentFormatVersion: UInt16 {
         switch self {
-        case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry:
+        case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
             0 // TODO(S1): freeze at 1 once the spike's numbers are in docs/spikes.md.
         case .links, .flows, .config:
             0 // TODO(M1): freeze at 1.

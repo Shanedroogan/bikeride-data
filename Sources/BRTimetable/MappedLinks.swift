@@ -7,7 +7,7 @@ import Foundation
 /// each stop's street access points, and walk links between stops and Citi Bike stations.
 /// Layout: `docs/formats.md`.
 ///
-/// Stops use one **global stop index** across the four timetables: stop `local` of system `s`
+/// Stops use one **global stop index** across the five timetables: stop `local` of system `s`
 /// is `stopBase(system: s) + local` (``LinksFormat/systems`` order). The header's `builtAgainst`
 /// names the `tt-*`, `streets` and `stations` artifacts whose numbering this relies on.
 ///
@@ -159,6 +159,7 @@ public final class MappedLinks: @unchecked Sendable {
         case .bus: 1
         case .lirr: 2
         case .ferry: 3
+        case .path: 4
         }
     }
 

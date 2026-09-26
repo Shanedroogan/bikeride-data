@@ -65,6 +65,7 @@ A reader rejects a file whose magic, layout, kind, lengths or padding do not che
 | 7 | `links` | 0 (draft) | M1 |
 | 8 | `flows` | 0 (draft) | M1 |
 | 9 | `config` | 0 (draft) | M1 |
+| 10 | `tt-path` | 0 (draft) | S1 |
 
 Codes are permanent and never reused. Format `0` marks an unfrozen draft that may change without a
 bump. After a format freezes, any change a current reader cannot parse bumps its formatVersion.
@@ -144,12 +145,12 @@ edge's segment joins that edge's own source and target in the direction bit 31 s
 index lists every edge exactly once, at its target; bike classes and name kinds are known values.
 The five-borough area is the union of the regions.
 
-### `tt-subway`, `tt-bus`, `tt-lirr`, `tt-ferry` (kinds 3–6, format 0, draft revision 1)
+### `tt-subway`, `tt-bus`, `tt-lirr`, `tt-ferry`, `tt-path` (kinds 3–6 and 10, format 0, draft revision 1)
 
 One timetable per system, compiled from that system's GTFS feeds. Writer: `TimetableData`
 (BRTimetable), filled by `GTFSTimetableCompiler` (BRBuild). Reader: `Timetable` (BRTimetable),
 which maps the file and views every section in place after checking every length and index.
-All four kinds share this layout; `info.system` must match the header kind.
+All five kinds share this layout; `info.system` must match the header kind.
 
 **Payload.** ASCII `BRTT`, a `u32` section count, then that many 24-byte table-of-contents
 entries (`u32` section id, `u32` element size, `u64` byte offset from the payload start, `u64`
@@ -169,12 +170,16 @@ their service day). Coordinates are `i32` microdegrees.
 **Window and sources.** Day `d` of the window is `windowStartDay + d`, `0 ≤ d < dayCount`; the
 build starts it the day before the build date so day view D−1 exists. A *source* is one version
 of one GTFS zip; sources in one *slot* are alternative versions of the same feed (subway:
-supplemented and regular; bus: one slot per zip, six slots; LIRR and ferry: one). For every slot
+supplemented and regular; bus: one slot per zip, six slots; LIRR, ferry and PATH: one). For every slot
 and window day exactly one source, or none, is *selected*: among the versions whose
 `calendar.txt` ranges ∪ added `calendar_dates` cover the day, the lowest priority (supplemented
 0, regular 1), then the newest. Versions are never merged for a day and calendars are never
 extended. The system *covers* a day when every slot has a selected source on it (a lapsed bus
 zip makes the day uncovered, so the planner extrapolates it rather than silently losing routes).
+A feed may name a documented *fallback* version in its slot (PATH: the stale Trillium feed
+behind PANYNJ's National RTAP feed). The fallback is fetched and parsed only when the primary
+fails to download or has no local zip, and then, having the higher priority number, is selected
+only on days the primary (if cached) does not cover.
 
 **Service rules.** One per (source, `service_id`) that runs on at least one selected window day.
 A rule runs on day D when its source is selected on D and, by GTFS: an exception on D decides
@@ -200,26 +205,46 @@ there (and from the stop table).
 Stop times are one trip-major matrix per pattern: trip `patternTripStart[p] + j` at position `i`
 is `departures[patternDepartureStart[p] + j·n + i]`, with n the pattern's stop count. Arrivals use
 the same layout at `patternArrivalStart[p]`; a pattern whose every arrival equals its departure
-has flag bit 0 set, arrival start `none`, and no arrivals stored. Missing intermediate times are
+has flag bit 0 set, arrival start `none`, and no arrivals stored. A feed that restarts the clock
+at midnight inside a trip instead of writing `24:00:00`+ (PATH: `23:59:42` then `0:01:42`) is
+unwrapped first: a time more than 12 h before the trip's previous time is taken to be on the next
+day, so the trip keeps its service day and runs past 24:00. Hours need not be zero-padded
+(`0:48:00`), and a UTF-8 BOM before a header is ignored. Missing intermediate times are
 interpolated by position; times are made non-decreasing along each trip.
 
 **Stops.** Every stop some kept trip calls at, every ancestor (`parent_station`) of one, and for
 the subway the street entrances from the data.ny.gov dataset "MTA Subway Entrances and Exits:
 2024" (`i9wp-a4ja`) as `stopKind` 2 children of their station (id `<station>-E<n>`, numbered per
 station in (lat, lon, type) order; an entrance listed for a complex appears under each of its
-stations). IDs are bare GTFS ids; qualified ids prefix the system code (`S:`, `B:`, `L:`, `F:`).
+stations). IDs are bare GTFS ids; qualified ids prefix the system code (`S:`, `B:`, `L:`, `F:`, `P:`).
 Bus stops are merged by bare `stop_id` across the six zips, with name and coordinates from the
 zip that has the most `stop_times` rows at the stop.
+
+**PATH stations and transfers.** PANYNJ's feed has no parent stations and no `transfers.txt`:
+each station is a `place_XXX` row (no `location_type`, no children) plus two boarding stops (four
+at Journal Square) with the same name and coordinate. The compiler (`synthesizePATHStations`,
+options `PATHStationOptions`) makes every place with platforms a station (`stopKind` 1),
+gives each boarding stop the place with the same name within 150 m (else the nearest place
+within 150 m) as its parent, and fails the build if any boarding stop is left without one.
+It then adds a `transfer_type` 2 row between every two platforms of one station, both ways,
+stored like the subway's `transfers.txt` rows: 60 s, or 120 s at Journal Square and World Trade
+Center (different levels). Both steps are skipped for a feed that already has stations,
+respectively transfers.
 
 **Real-time match tables.** Subway keys are parsed from static trip ids with
 `_(-?\d{6})_([A-Z0-9]+)\.+([NS])(.*)$` (leftmost match; `SubwayTripKey`), sorted by (route
 bytes, direction, origin, path bytes, trip). LIRR matches exact trip ids through `tripIDOrder`;
 bus SIRI refs match bare trip ids the same way and resolve to (agency, trip). Callers filter
-matches to trips active on the real-time service date.
+matches to trips active on the real-time service date. PATH real time (`ridepath.json`) carries
+no trip ids, only per station and direction a line color and seconds to arrival, so nothing is
+stored for it: `Timetable.scheduledCalls(atStop:route:direction:boardingOnly:in:)` lists a
+station's (or platform's) calls on one day view, in departure order, filtered by route index and
+`direction_id` (PATH: 0 toward New York, 1 toward New Jersey), and the overlay matcher
+(BikeRideKit, M2b) pairs predictions with those calls in order.
 
 | Id | Section | Type | Count | Meaning |
 |---|---|---|---|---|
-| 1 | info | `i64` | 6 | system (ASCII code of `S`/`B`/`L`/`F`), windowStartDay, dayCount, timeZone (string), wordsPerSource (= ⌈dayCount / 64⌉), draftRevision (`1`; readers reject any other) |
+| 1 | info | `i64` | 6 | system (ASCII code of `S`/`B`/`L`/`F`/`P`), windowStartDay, dayCount, timeZone (string), wordsPerSource (= ⌈dayCount / 64⌉), draftRevision (`1`; readers reject any other) |
 | 2 | stringOffsets | `u32` | strings + 1 | CSR into stringBytes |
 | 3 | stringBytes | `u8` | | UTF-8, concatenated |
 | 10–13 | sourceName, sourceVersion, sourceETag, sourceSlot | `u32` | sources | Feed name (e.g. `gtfs_b`), `feed_info.feed_version`, HTTP ETag (strings); slot index |
@@ -228,7 +253,7 @@ matches to trips active on the real-time service date.
 | 30 | routeAgency | `u32` | routes | Agency index |
 | 31–33 | routeGTFSID, routeShortName, routeLongName | `u32` | routes | Strings |
 | 34, 35 | routeColor, routeTextColor | `u32` | routes | `0xRRGGBB`, or none |
-| 36 | routeMode | `u8` | routes | 0 subway, 1 local bus, 2 SBS (`route_id` ends `+`), 3 express bus (`route_id` starts X, BM, BxM, QM or SIM, any case), 4 LIRR, 5 ferry |
+| 36 | routeMode | `u8` | routes | 0 subway, 1 local bus, 2 SBS (`route_id` ends `+`), 3 express bus (`route_id` starts X, BM, BxM, QM or SIM, any case), 4 LIRR, 5 ferry, 6 PATH |
 | 37 | routeType | `u16` | routes | GTFS `route_type` |
 | 40–42 | stopGTFSID, stopName, stopCode | `u32` | stops | Strings |
 | 43, 44 | stopLatE6, stopLonE6 | `i32` | stops | |
@@ -262,7 +287,7 @@ matches to trips active on the real-time service date.
 | 95 | tripDirection | `u8` | trips | `direction_id`, or 255 |
 | 100 | stopPatternStart | `u32` | stops + 1 | CSR into stopPattern* |
 | 101, 102 | stopPatternRef, stopPatternPosition | `u32` | pattern stops | Each pattern calling at the stop, and the stop's position in it |
-| 110, 111 | transferFromStop, transferToStop | `u32` | transfers | Stop indices (parent-level rows keep their station ids) |
+| 110, 111 | transferFromStop, transferToStop | `u32` | transfers | Stop indices (parent-level rows keep their station ids; PATH's synthesized rows are platform-level) |
 | 112, 113 | transferFromTrip, transferToTrip | `u32` | transfers | Trip indices, or none |
 | 114 | transferType | `u8` | transfers | GTFS `transfer_type`; 1 with both trips = guaranteed (LIRR) |
 | 115 | transferMinSeconds | `u32` | transfers | `min_transfer_time`, or none. Rows sorted by (fromTrip, toTrip, fromStop, toStop, type, time), none last |
@@ -350,25 +375,26 @@ range with strictly ascending id bytes (so ids are unique); flags hold only know
 segment is present exactly when its snapped flag is set, and fractions lie in [0, 1]; the
 diagonal is 0; the profile values are finite and positive.
 
-### `links` (kind 7, format 0, draft revision 1)
+### `links` (kind 7, format 0, draft revision 2)
 
 Footpaths between transit stops, each stop's street access points, and walk links between stops
 and Citi Bike stations. Writer: `LinksArtifactWriter`, filled by `LinksCompiler` /
 `LinksBuilder` (BRBuild). Reader: `MappedLinks` (BRTimetable). `builtAgainst` names the
 `streets`, `stations` and `tt-*` artifacts it was built from.
 
-**Global stop index.** One index over every stop of the four timetables, in the order subway,
-bus, LIRR, ferry: stop `local` of system s is `base(s) + local`, where `base` is the running sum
+**Global stop index.** One index over every stop of the five timetables, in the order subway,
+bus, LIRR, ferry, PATH (draft revision 2 added PATH): stop `local` of system s is `base(s) + local`, where `base` is the running sum
 of `systemStopCounts`. A system that was not linked has count 0. A stop is *routable* when a
 route pattern calls there; footpaths and station links exist only between routable stops.
 
 **Access points.** Where riders pass between the street and a routable stop: the subway
 station's entrances (data.ny.gov entrances, with their entry/exit permissions); a station with no
 entrance of its own uses its own coordinate (flag *synthetic*); a bus, LIRR or ferry stop uses its
-own position. Each is snapped to the nearest walkable segment within 150 m (250 m for the
-ferry) and stored like the station snaps above. LIRR stops with nothing within 150 m (all of
+own position (a PATH station, having no entrance data, uses its own coordinate). Each is snapped
+to the nearest walkable segment within 150 m (250 m for the ferry) and stored like the station
+snaps above. LIRR stops with nothing within 150 m (all of
 Long Island) have no access point: they are ride-through only. Station access is charged once at
-every street↔platform transition: subway 120 s, LIRR 240 s, bus 30 s, ferry 120 s. Walk access
+every street↔platform transition: subway 120 s, LIRR 240 s, bus 30 s, ferry 120 s, PATH 120 s. Walk access
 from a point to a stop is the walk cost to the access point's snapped position + its snap
 distance at walking speed (3.5 mph) + its access seconds.
 
@@ -381,7 +407,12 @@ point allows exit, respectively entry); and platform → platform transfers. Tra
 `transfers.txt` rows without trips and with `transfer_type` ≠ 3: a parent-level row expands to
 every pair of routable child platforms (a station's row to itself links its own platforms), at
 `min_transfer_time` raised to at least `minTransferSeconds` (MTA lists 0 s for about 60
-cross-platform rows), or the straight-line walking time when the row gives none.
+cross-platform rows), or the straight-line walking time when the row gives none. Configured
+*fixed transfers* (`LinksOptions.fixedTransfers`) add indoor or very short walks between
+stations of different systems the same way, both ways between every routable platform of each
+end: PATH↔subway WTC → WTC Cortlandt (1) 240 s and → World Trade Center (E) 360 s via the Oculus,
+14th St → 14 St (F M) and 23rd St → 23 St (F M) 180 s, 33rd St → 34 St-Herald Sq (B D F M and
+N Q R W) 240 s. The street walk still wins where it is quicker.
 
 p → q is listed when its cost is at most `maxFootpathWalkSeconds` + access(p) + access(q)
 (each end's system access), i.e. at most 8 min of walking (about 750 m) between the two stops'
@@ -406,13 +437,13 @@ L station links.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `LNKS` |
-| draftRevision | `u32` | `1`. Readers reject any other |
+| draftRevision | `u32` | `2`. Readers reject any other |
 | maxFootpathWalkSeconds | `u32` | 480. At most 3,600 |
 | minTransferSeconds | `u32` | 30 |
 | walkSpeed | `f64` | m/s (3.5 mph) |
 | stationLinkMaxWalkMeters | `f64` | 350 |
-| systemStopCounts | `array<u32>`, 4 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry (0 when not linked); T is their sum |
-| systemAccessSeconds | `array<u32>`, 4 | Station access per system, same order |
+| systemStopCounts | `array<u32>`, 5 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path (0 when not linked); T is their sum |
+| systemAccessSeconds | `array<u32>`, 5 | Station access per system, same order |
 | stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it |
 | footpathStart | `array<u32>`, T + 1 | Footpaths of stop p: `[start[p], start[p + 1])` |
 | footpathTarget | `array<u32>`, F | Global stop, never p itself |

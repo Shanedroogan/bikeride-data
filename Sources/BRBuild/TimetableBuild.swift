@@ -26,6 +26,8 @@ public struct TimetableBuild: Sendable {
     public var runner: any ToolRunner
     /// Feeds per system; defaults to ``NYCFeeds``.
     public var feeds: [TransitSystem: [GTFSFeedSpec]]
+    /// PATH parent-station and platform-transfer synthesis.
+    public var pathStations = PATHStationOptions()
 
     public init(sourcesDirectory: URL, outputDirectory: URL, reportURL: URL?, systems: [TransitSystem] = TransitSystem.allCases,
                 offline: Bool, today: ServiceDate, compress: Bool = true, runner: any ToolRunner) {
@@ -64,14 +66,8 @@ public struct TimetableBuild: Sendable {
         var built: [(TransitSystem, Timetable, TimetableSystemReport)] = []
         for system in systems {
             let totalStart = Date()
-            let specs = feeds[system] ?? []
-            if !offline {
-                for spec in specs {
-                    let fetched = try fetcher.fetch(spec)
-                    log("  fetch \(spec.name): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
-                }
-            }
             var warnings: [String] = []
+            let specs = try selectSources(feeds[system] ?? [], fetcher: fetcher, warnings: &warnings, log: log)
             var entrances: (list: [SubwayEntrance], report: TimetableSystemReport.AuxiliarySource)?
             if system == .subway {
                 entrances = loadEntrances(warnings: &warnings, log: log)
@@ -83,7 +79,8 @@ public struct TimetableBuild: Sendable {
 
             let compileStart = Date()
             let (data, stats) = try GTFSTimetableCompiler.compile(
-                system: system, feeds: parsed, entrances: entrances?.list ?? [], options: GTFSCompileOptions(windowStart: windowStart))
+                system: system, feeds: parsed, entrances: entrances?.list ?? [],
+                options: GTFSCompileOptions(windowStart: windowStart, pathStations: pathStations))
             let compileSeconds = Date().timeIntervalSince(compileStart)
 
             let writeStart = Date()
@@ -206,6 +203,52 @@ public struct TimetableBuild: Sendable {
         }
     }
 
+    /// The feeds to parse for one system, refreshing them unless offline. A fallback feed
+    /// (``GTFSFeedSpec/isFallback``) is fetched and used only when a primary of its slot fails to
+    /// download or has no local zip; a failed primary with a cached zip is still used, and per-date
+    /// selection prefers it wherever it covers. Without a fallback, a failed download is an error.
+    func selectSources(_ all: [GTFSFeedSpec], fetcher: GTFSFetcher, warnings: inout [String],
+                       log: (String) -> Void) throws -> [GTFSFeedSpec] {
+        func exists(_ spec: GTFSFeedSpec) -> Bool { FileManager.default.fileExists(atPath: fetcher.archiveURL(for: spec).path) }
+        let fallbackSlots = Set(all.filter(\.isFallback).map(\.slot))
+        var failedSlots = Set<String>()
+        var specs: [GTFSFeedSpec] = []
+        for spec in all where !spec.isFallback {
+            if !offline {
+                do {
+                    let fetched = try fetcher.fetch(spec)
+                    log("  fetch \(spec.name): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
+                } catch {
+                    guard fallbackSlots.contains(spec.slot) else { throw error }
+                    failedSlots.insert(spec.slot)
+                    warnings.append("\(spec.name) not refreshed (\(error))" + (exists(spec) ? "; using the cached zip and the fallback" : "; using the fallback"))
+                    log("  warning: \(warnings.last!)")
+                }
+            }
+            if fallbackSlots.contains(spec.slot), !exists(spec) {
+                failedSlots.insert(spec.slot)
+                continue
+            }
+            specs.append(spec)
+        }
+        for spec in all where spec.isFallback && failedSlots.contains(spec.slot) {
+            if !offline {
+                do {
+                    let fetched = try fetcher.fetch(spec)
+                    log("  fetch \(spec.name) (fallback): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
+                } catch {
+                    warnings.append("fallback \(spec.name) not refreshed (\(error))")
+                    log("  warning: \(warnings.last!)")
+                }
+            }
+            if exists(spec) { specs.append(spec) }
+        }
+        if specs.isEmpty, let first = all.first {
+            throw GTFSError.missingFile(feed: fetcher.archiveURL(for: first).path, file: "(zip)")
+        }
+        return specs
+    }
+
     /// Parses a system's feeds in parallel. Missing zips are an error.
     func parseFeeds(_ specs: [GTFSFeedSpec], fetcher: GTFSFetcher) throws -> [GTFSFeed] {
         for spec in specs where !FileManager.default.fileExists(atPath: fetcher.archiveURL(for: spec).path) {
@@ -305,7 +348,7 @@ public struct TimetableBuildReport: Codable, Sendable {
     public var peakRSSBytes = 0
     /// Keyed by artifact name (`tt-subway`, …).
     public var systems: [String: TimetableSystemReport] = [:]
-    /// Sums over all four systems on their common representative day (only when all four were
+    /// Sums over every system on their common representative day (only when all of them were
     /// built in this run and share one).
     public var representativeDayTotals: TimetableSystemReport.Day?
 

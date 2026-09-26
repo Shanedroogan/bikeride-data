@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// Runs external command-line tools (`unzip`, `osmium`, `xz`, `sha256sum`, …).
 ///
@@ -148,6 +153,9 @@ public struct ProcessToolRunner: ToolRunner {
             stderrFile.remove()
             throw error
         }
+        // The child owns its copy of the pipe's write end now. Close the parent's copy, or
+        // reads never see end-of-file: Linux Foundation does not close it after spawning.
+        try? stdoutPipe.fileHandleForWriting.close()
 
         let finish: () throws -> Void = {
             process.waitUntilExit()
@@ -165,7 +173,14 @@ public struct ProcessToolRunner: ToolRunner {
             }
         }
         let terminate: () -> Void = {
+            // Stop reading first so a tool blocked on a full pipe gets SIGPIPE, then ask it to
+            // stop, and kill it if it hasn't exited within 2 s. Linux Foundation can otherwise
+            // wait forever on a tool that is still writing.
+            try? stdoutPipe.fileHandleForReading.close()
             if process.isRunning { process.terminate() }
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < deadline { usleep(10_000) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             try? finish()
         }
         return Launched(stdout: stdoutPipe.fileHandleForReading, finish: finish, terminate: terminate)

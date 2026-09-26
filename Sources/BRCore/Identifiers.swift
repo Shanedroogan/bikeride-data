@@ -4,6 +4,7 @@ public enum TransitSystem: String, CaseIterable, Codable, Sendable {
     case bus = "B"
     case lirr = "L"
     case ferry = "F"
+    case path = "P"
 }
 
 /// A string-backed identifier. Conformers get `Codable` as a bare string, literal syntax,

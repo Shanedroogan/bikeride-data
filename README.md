@@ -1,7 +1,7 @@
 # bikeride-data
 
 The public data pipeline for **Bike Ride**, an iOS app that plans New York City trips combining
-Citi Bike, the subway, buses, the LIRR, the Staten Island Ferry and walking. All routing runs on
+Citi Bike, the subway, buses, the LIRR, PATH, the Staten Island Ferry and walking. All routing runs on
 the phone; this package compiles public schedules and OpenStreetMap street data into compact,
 memory-mappable binary artifacts that the app downloads.
 

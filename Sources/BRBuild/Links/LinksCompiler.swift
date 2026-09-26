@@ -123,6 +123,10 @@ public struct LinksCompiler: Sendable {
         // 2. Network, footpaths, station links.
         let (network, networkStats) = timed("network") { LinkNetwork.make(timetables: timetables, graph: graph, options: options) }
         log("network: \(network.stopCount) stops, \(network.routable.filter { $0 }.count) routable, \(network.accessPoints.count) access points, \(network.transfers.count) transfer pairs")
+        for unresolved in networkStats.fixedTransfersUnresolved where timetables.count == LinksFormat.systems.count {
+            warnings.append("fixed transfer \(unresolved) not applied: stop not found or not routable")
+            log("warning: \(warnings.last!)")
+        }
         let anchors: [LinkAnchor?] = stations.map { stations in
             (0..<stations.count).map { index in
                 stations.walkSnap(index).flatMap { graph.snappedPoint($0, query: stations.coordinate(index)) }.map(LinkAnchor.init)

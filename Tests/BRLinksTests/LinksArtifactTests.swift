@@ -140,7 +140,7 @@ struct LinksFixture {
         configuration.options.threads = 3
         let report = try LinksCompiler(runner: ProcessToolRunner(), configuration: configuration).run()
 
-        #expect(report.warnings == ["tt-ferry.bin missing; ferry stops are not linked"])
+        #expect(report.warnings == ["tt-ferry.bin missing; ferry stops are not linked", "tt-path.bin missing; path stops are not linked"])
         #expect(Set(report.inputs.keys) == ["streets", "stations", "tt-subway", "tt-bus", "tt-lirr"])
         for (name, input) in report.inputs {
             let sha = try ProcessHasher(runner: ProcessToolRunner()).sha256(ofFileAt: URL(fileURLWithPath: input.path)).hex

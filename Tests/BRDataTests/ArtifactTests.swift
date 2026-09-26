@@ -59,11 +59,12 @@ import Testing
 
     @Test func artifactKindNames() {
         #expect(ArtifactKind.allCases.map(\.name) == [
-            "streets", "stations", "tt-subway", "tt-bus", "tt-lirr", "tt-ferry", "links", "flows", "config",
+            "streets", "stations", "tt-subway", "tt-bus", "tt-lirr", "tt-ferry", "links", "flows", "config", "tt-path",
         ])
         #expect(ArtifactKind.allCases.allSatisfy { ArtifactKind(name: $0.name) == $0 })
-        #expect(ArtifactKind(name: "tt-path") == nil)
-        #expect(TransitSystem.allCases.map(ArtifactKind.timetable(for:)) == [.ttSubway, .ttBus, .ttLirr, .ttFerry])
+        #expect(ArtifactKind(name: "tt-path") == .ttPath && ArtifactKind.ttPath.rawValue == 10)
+        #expect(ArtifactKind(name: "tt-unknown") == nil)
+        #expect(TransitSystem.allCases.map(ArtifactKind.timetable(for:)) == [.ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath])
     }
 }
 

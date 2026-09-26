@@ -165,6 +165,8 @@ public enum RouteMode: UInt8, CaseIterable, Sendable, Codable {
     case expressBus = 3
     case lirr = 4
     case ferry = 5
+    /// PATH (PANYNJ), `route_type` 1.
+    case path = 6
 }
 
 /// GTFS `location_type`.

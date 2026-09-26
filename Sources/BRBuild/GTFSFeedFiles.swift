@@ -102,6 +102,8 @@ public enum GTFSError: Error, Equatable, CustomStringConvertible {
     case invalidValue(feed: String, file: String, record: Int, column: String, value: String)
     case mixedTimeZones([String])
     case noTimeZone(feed: String)
+    /// Boarding stops that could not be given a synthesized parent station (PATH).
+    case unmappedPlatforms(feed: String, stops: [String])
 
     public var description: String {
         switch self {
@@ -111,6 +113,8 @@ public enum GTFSError: Error, Equatable, CustomStringConvertible {
             "\(feed): \(file) record \(record): invalid \(column) '\(value)'"
         case .mixedTimeZones(let zones): "agencies of one system use different time zones: \(zones.joined(separator: ", "))"
         case .noTimeZone(let feed): "\(feed): agency.txt gives no agency_timezone"
+        case .unmappedPlatforms(let feed, let stops):
+            "\(feed): no parent station for \(stops.count) boarding stop(s): \(stops.joined(separator: ", "))"
         }
     }
 }

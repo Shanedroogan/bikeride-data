@@ -4,10 +4,10 @@ import Foundation
 
 let timetablesUsage = """
     USAGE: bikeride-data timetables [--sources <dir>] [--out <dir>] [--report <file>] [--offline]
-                                    [--systems subway,bus,lirr,ferry] [--today YYYYMMDD] [--no-xz]
+                                    [--systems subway,bus,lirr,ferry,path] [--today YYYYMMDD] [--no-xz]
 
     Downloads the GTFS feeds into <sources>/gtfs (conditional GET; skipped with --offline),
-    compiles tt-subway, tt-bus, tt-lirr and tt-ferry into <out> as raw artifacts plus .xz blobs,
+    compiles tt-subway, tt-bus, tt-lirr, tt-ferry and tt-path into <out> as raw artifacts plus .xz blobs,
     and writes a JSON report (default <out>/../reports/timetables.json).
 
     OPTIONS:
@@ -64,6 +64,7 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
                 case "bus", "b": chosen.append(.bus)
                 case "lirr", "l": chosen.append(.lirr)
                 case "ferry", "f": chosen.append(.ferry)
+                case "path", "p": chosen.append(.path)
                 default: return usageError("unknown system '\(name)'")
                 }
             }

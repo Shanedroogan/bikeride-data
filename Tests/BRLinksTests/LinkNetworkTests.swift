@@ -22,7 +22,7 @@ import Testing
 
     @Test func numbersStopsAcrossTheTimetables() {
         let counts = [TransitSystem.subway, .bus, .lirr].map { world.timetables[$0]!.stopCount }
-        #expect(network.systemStopCounts == counts + [0])
+        #expect(network.systemStopCounts == counts + [0, 0])
         #expect(network.stopBase(.bus) == counts[0] && network.stopBase(.lirr) == counts[0] + counts[1])
         #expect(network.stopCount == counts.reduce(0, +))
         for id in ["S1N", "S1S", "S2N", "S3N", "S3S", "S4N", "S4S"] { #expect(network.routable[stop(.subway, id)], "\(id)") }
@@ -73,6 +73,26 @@ import Testing
         let subway = stats.systems["subway"]!
         #expect(subway.transferRowsRaisedToMinimum == 1 && subway.transferRowsSkipped["not possible"] == 1)
         #expect(subway.transferPairs == 8)
+    }
+
+    @Test func addsConfiguredCrossSystemTransfersBothWays() {
+        var custom = LinksOptions()
+        custom.fixedTransfers = [
+            FixedTransfer(from: "S:S1", to: "B:B2", seconds: 45),   // station → both platforms
+            FixedTransfer(from: "S:S4N", to: "B:B2", seconds: 200),
+            FixedTransfer(from: "S:S4N", to: "B:B2", seconds: 150), // the quicker listing wins
+            FixedTransfer(from: "P:place_WTC", to: "S:S1", seconds: 60),
+        ]
+        let (withFixed, fixedStats) = LinkNetwork.make(timetables: world.timetables, graph: world.city.graph, options: custom)
+        let pairs = Dictionary(uniqueKeysWithValues: withFixed.transfers.map { ([$0.from, $0.to], $0.seconds) })
+        let b2 = stop(.bus, "B2"), s1n = stop(.subway, "S1N"), s1s = stop(.subway, "S1S"), s4n = stop(.subway, "S4N")
+        #expect(pairs[[s1n, b2]] == 45 && pairs[[b2, s1n]] == 45 && pairs[[s1s, b2]] == 45 && pairs[[b2, s1s]] == 45)
+        #expect(pairs[[s4n, b2]] == 150 && pairs[[b2, s4n]] == 150)
+        #expect(pairs.count == 8 + 6)
+        #expect(fixedStats.fixedTransferPairs == 8)
+        #expect(fixedStats.fixedTransfersUnresolved == ["P:place_WTC→S:S1"])
+        // The defaults name PATH↔subway stations, which this fixture lacks.
+        #expect(stats.fixedTransfersUnresolved.count == FixedTransfer.pathSubway.count)
     }
 
     /// The reference cost of walking between two access points over the street graph alone, via

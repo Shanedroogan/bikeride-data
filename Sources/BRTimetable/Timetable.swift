@@ -168,7 +168,7 @@ public final class Timetable: @unchecked Sendable {
 
     public init(artifact: MappedArtifact) throws {
         let kind = artifact.kind
-        guard [.ttSubway, .ttBus, .ttLirr, .ttFerry].contains(kind) else { throw TimetableFormatError.notATimetable(kind) }
+        guard TransitSystem.allCases.map(ArtifactKind.timetable(for:)).contains(kind) else { throw TimetableFormatError.notATimetable(kind) }
         guard artifact.header.formatVersion == kind.currentFormatVersion else {
             throw TimetableFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
         }
@@ -775,6 +775,36 @@ public final class Timetable: @unchecked Sendable {
         return raw.arrivals[Int(start) + local * stops + position]
     }
 
+    /// The scheduled calls at `stop` on `view`'s date, in departure order (ties: arrival, then
+    /// trip). A station stands for itself and its platforms. Optional filters keep one route
+    /// (route index), one `direction_id`, and only calls that allow boarding.
+    ///
+    /// This is the real-time match table for feeds without trip ids (PATH's `ridepath.json`
+    /// gives per station and direction only line colors and seconds to arrival): the overlay
+    /// matcher lists the station's calls for (route, direction) and pairs predictions with them
+    /// in order. It costs one pass over the patterns serving the stop and their active trips.
+    public func scheduledCalls(atStop stop: Int, route: Int? = nil, direction: Int? = nil, boardingOnly: Bool = false,
+                               in view: TimetableDayView) -> [ScheduledCall] {
+        var stops = [stop]
+        stops.append(contentsOf: children(ofStop: stop).map(Int.init))
+        var calls: [ScheduledCall] = []
+        for member in stops {
+            for (pattern, position) in patterns(servingStop: member) {
+                if let route, patternRoute(pattern) != route { continue }
+                if boardingOnly, !canBoard(pattern: pattern, position: position) { continue }
+                for trip in view.activeTrips(inPattern: pattern) {
+                    let trip = Int(trip)
+                    if let direction, tripDirection(trip) != direction { continue }
+                    calls.append(ScheduledCall(trip: trip, pattern: pattern, position: position, stop: member,
+                                               arrival: arrival(trip: trip, position: position),
+                                               departure: departure(trip: trip, position: position)))
+                }
+            }
+        }
+        calls.sort { ($0.departure, $0.arrival, $0.trip) < ($1.departure, $1.arrival, $1.trip) }
+        return calls
+    }
+
     /// Trips with this exact GTFS `trip_id` (LIRR real-time match; more than one only when two
     /// source versions share an id, told apart by service date).
     public func trips(gtfsID: String) -> [Int] {
@@ -942,6 +972,19 @@ public struct TimetableTransfer: Sendable, Equatable {
     /// GTFS `transfer_type` (0 recommended, 1 timed/guaranteed, 2 minimum time, 3 not possible).
     public let type: Int
     public let minTransferSeconds: Int?
+}
+
+/// One trip's call at a stop on one service date (``Timetable/scheduledCalls(atStop:route:direction:boardingOnly:in:)``).
+public struct ScheduledCall: Sendable, Equatable {
+    public let trip: Int
+    public let pattern: Int
+    /// The stop's position in the pattern.
+    public let position: Int
+    /// The platform called at (a child when the query named a station).
+    public let stop: Int
+    /// Seconds from the service day's origin.
+    public let arrival: UInt32
+    public let departure: UInt32
 }
 
 /// The patterns calling at one stop, with the stop's position in each.

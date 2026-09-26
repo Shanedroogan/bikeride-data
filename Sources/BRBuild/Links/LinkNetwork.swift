@@ -19,10 +19,14 @@ public struct LinksOptions: Sendable {
     /// (snap legs included, station access excluded) is at most this far at walking speed.
     public var stationLinkMaxWalkMeters = 350.0
     /// Station access charged once at every street↔platform transition.
-    public var accessSeconds: [TransitSystem: UInt32] = [.subway: 120, .lirr: 240, .bus: 30, .ferry: 120]
+    public var accessSeconds: [TransitSystem: UInt32] = [.subway: 120, .lirr: 240, .bus: 30, .ferry: 120, .path: 120]
     /// How far an access point may lie from the walk graph. LIRR stops with nothing within
     /// 150 m are ride-through only.
-    public var maxSnapMeters: [TransitSystem: Double] = [.subway: 150, .bus: 150, .lirr: 150, .ferry: 250]
+    public var maxSnapMeters: [TransitSystem: Double] = [.subway: 150, .bus: 150, .lirr: 150, .ferry: 250, .path: 150]
+    /// Indoor or very short walks between stations of different systems, added as
+    /// platform-to-platform transfers (no station access) between every routable platform of
+    /// each end, both ways. The street walk still wins where it is quicker.
+    public var fixedTransfers: [FixedTransfer] = FixedTransfer.pathSubway
     public var threads = ProcessInfo.processInfo.activeProcessorCount
 
     public init() {}
@@ -100,6 +104,32 @@ public struct StreetAccessPoint: Sendable, Equatable {
         self.snap = snap
         self.anchor = anchor
     }
+}
+
+/// A configured walk between two stations (or stops) of any systems, e.g. PATH ↔ subway
+/// through the Oculus. Both ends are qualified ids (`P:place_WTC`, `S:E01`).
+public struct FixedTransfer: Sendable, Hashable, Codable {
+    public var from: StopID
+    public var to: StopID
+    public var seconds: UInt32
+
+    public init(from: StopID, to: StopID, seconds: UInt32) {
+        self.from = from
+        self.to = to
+        self.seconds = seconds
+    }
+
+    /// The plan's PATH↔subway minimums: WTC → 1 (WTC Cortlandt) about 4 min and → E (World
+    /// Trade Center) about 6 min via the Oculus; 14th and 23rd St → the F/M about 3 min each;
+    /// 33rd St → 34 St-Herald Sq (B D F M and N Q R W) about 4 min.
+    public static let pathSubway: [FixedTransfer] = [
+        FixedTransfer(from: "P:place_WTC", to: "S:138", seconds: 240),
+        FixedTransfer(from: "P:place_WTC", to: "S:E01", seconds: 360),
+        FixedTransfer(from: "P:place_14S", to: "S:D19", seconds: 180),
+        FixedTransfer(from: "P:place_23S", to: "S:D18", seconds: 180),
+        FixedTransfer(from: "P:place_33S", to: "S:D17", seconds: 240),
+        FixedTransfer(from: "P:place_33S", to: "S:R17", seconds: 240),
+    ]
 }
 
 /// A platform-to-platform walk inside a station complex, from `transfers.txt`.
@@ -183,12 +213,16 @@ public struct LinkNetworkStats: Codable, Sendable, Equatable {
 
     public var systems: [String: System] = [:]
     public var snapMeters = Distribution()
+    /// ``LinksOptions/fixedTransfers`` turned into platform pairs, and those whose ends were not
+    /// found (or have no routable platform), as `from→to`.
+    public var fixedTransferPairs = 0
+    public var fixedTransfersUnresolved: [String] = []
 
     public init() {}
 }
 
 extension LinkNetwork {
-    /// Builds the network from the four timetables and the streets graph: global stop numbering,
+    /// Builds the network from the five timetables and the streets graph: global stop numbering,
     /// each routable stop's access points (its station's entrances, else the station, else the stop
     /// itself) snapped to the walk graph at stored precision, and `transfers.txt` rows (parent- or
     /// stop-level, no trips) expanded to routable platform pairs.
@@ -314,6 +348,31 @@ extension LinkNetwork {
             stats.systems[system.linkReportName] = systemStats
         }
 
+        // Configured cross-system walks → platform pairs, both ways.
+        func globalPlatforms(_ id: StopID) -> [Int] {
+            guard let system = id.system, let timetable = timetables[system],
+                  let slot = LinksFormat.systems.firstIndex(of: system),
+                  let stop = timetable.stop(gtfsID: String(id.gtfsID)) else { return [] }
+            let base = counts[..<slot].reduce(0, +)
+            if routable[base + stop] { return [base + stop] }
+            return timetable.children(ofStop: stop).map { base + Int($0) }.filter { routable[$0] }
+        }
+        for fixed in options.fixedTransfers {
+            let from = globalPlatforms(fixed.from), to = globalPlatforms(fixed.to)
+            guard !from.isEmpty, !to.isEmpty else {
+                stats.fixedTransfersUnresolved.append("\(fixed.from)→\(fixed.to)")
+                continue
+            }
+            for a in from {
+                for b in to where a != b {
+                    for key in [UInt64(a) << 32 | UInt64(b), UInt64(b) << 32 | UInt64(a)] {
+                        transfers[key] = min(transfers[key] ?? .max, fixed.seconds)
+                        stats.fixedTransferPairs += 1
+                    }
+                }
+            }
+        }
+
         let transferList = transfers.map { LinkTransfer(from: Int($0.key >> 32), to: Int($0.key & 0xFFFF_FFFF), seconds: $0.value) }
             .sorted { ($0.from, $0.to) < ($1.from, $1.to) }
         for (slot, system) in LinksFormat.systems.enumerated() where timetables[system] != nil {
@@ -327,13 +386,14 @@ extension LinkNetwork {
 }
 
 extension TransitSystem {
-    /// Lowercase name used in reports: `subway`, `bus`, `lirr`, `ferry`.
+    /// Lowercase name used in reports: `subway`, `bus`, `lirr`, `ferry`, `path`.
     var linkReportName: String {
         switch self {
         case .subway: "subway"
         case .bus: "bus"
         case .lirr: "lirr"
         case .ferry: "ferry"
+        case .path: "path"
         }
     }
 }

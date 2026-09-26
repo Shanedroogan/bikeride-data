@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct IdentifierTests {
     @Test func transitSystemCodes() {
-        #expect(TransitSystem.allCases.map(\.rawValue) == ["S", "B", "L", "F"])
+        #expect(TransitSystem.allCases.map(\.rawValue) == ["S", "B", "L", "F", "P"])
     }
 
     @Test func systemScopedIDsRoundTripTheirParts() {

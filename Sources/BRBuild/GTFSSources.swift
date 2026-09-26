@@ -9,13 +9,18 @@ public struct GTFSFeedSpec: Sendable, Equatable {
     public var url: String
     public var slot: String
     public var priority: Int
+    /// A documented fallback: fetched and parsed only when a non-fallback feed of the same slot
+    /// fails to download (or has no local zip). Per-date source selection then uses it only on
+    /// dates the primary does not cover.
+    public var isFallback: Bool
 
-    public init(system: TransitSystem, name: String, url: String, slot: String, priority: Int = 0) {
+    public init(system: TransitSystem, name: String, url: String, slot: String, priority: Int = 0, isFallback: Bool = false) {
         self.system = system
         self.name = name
         self.url = url
         self.slot = slot
         self.priority = priority
+        self.isFallback = isFallback
     }
 }
 
@@ -37,6 +42,12 @@ public enum NYCFeeds {
         GTFSFeedSpec(system: .lirr, name: "gtfslirr", url: mta + "gtfslirr.zip", slot: "lirr"),
         // nyc.gov rejects requests without a browser-like User-Agent (403); www1 redirects here.
         GTFSFeedSpec(system: .ferry, name: "siferry", url: "https://www.nyc.gov/html/dot/downloads/misc/siferry-gtfs.zip", slot: "siferry"),
+        // PANYNJ's current pick, published through the National RTAP GTFS Builder.
+        GTFSFeedSpec(system: .path, name: "path", url: "https://rapid.nationalrtap.org/GTFSFileManagement/UserUploadFiles/14843/PATHGTFS.zip",
+                     slot: "path", priority: 0),
+        // The well-known Trillium feed, stale since 2026-06-01: kept only as a fallback.
+        GTFSFeedSpec(system: .path, name: "path_trillium", url: "http://data.trilliumtransit.com/gtfs/path-nj-us/path-nj-us.zip",
+                     slot: "path", priority: 1, isFallback: true),
     ]
 
     public static func feeds(for system: TransitSystem) -> [GTFSFeedSpec] {
