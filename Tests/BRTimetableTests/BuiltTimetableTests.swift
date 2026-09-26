@@ -7,10 +7,10 @@ import Testing
 
 /// Checks built `tt-*.bin` files for what the compiler guarantees beyond what opening them
 /// validates: FIFO on every day view (covered dates and two weeks of extrapolation) and stops
-/// within 250 m of their shape vertex. Runs only with `BIKERIDE_TT_DIR` set to a directory of
-/// built artifacts, e.g. `BIKERIDE_TT_DIR=build/data swift test --filter BuiltTimetableTests`.
+/// within 250 m of their shape vertex. Runs only with `BR_DATA_DIR` set to a directory of
+/// built artifacts, e.g. `BR_DATA_DIR=build/data swift test --filter BuiltTimetableTests`.
 @Suite struct BuiltTimetableTests {
-    static let directory = ProcessInfo.processInfo.environment["BIKERIDE_TT_DIR"].map { URL(fileURLWithPath: $0) }
+    static let directory = ProcessInfo.processInfo.environment["BR_DATA_DIR"].map { URL(fileURLWithPath: $0) }
 
     @Test(.enabled(if: directory != nil)) func builtTimetablesKeepTheCompilerGuarantees() throws {
         var opened = 0

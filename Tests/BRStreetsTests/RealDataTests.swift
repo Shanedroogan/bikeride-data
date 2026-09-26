@@ -5,14 +5,14 @@ import Foundation
 import Testing
 
 /// Opens a real `streets.bin` and `stations.bin` with full validation and times the checks run
-/// at open. Runs only when `BIKERIDE_REAL_DATA` names a data directory, e.g.
+/// at open. Runs only when `BR_DATA_DIR` names a data directory, e.g.
 ///
-///     BIKERIDE_REAL_DATA=build/data swift test -c release -Xswiftc -enable-testing --filter RealDataTests
+///     BR_DATA_DIR=build/data swift test -c release -Xswiftc -enable-testing --filter RealDataTests
 ///
 /// (release, so the timings are the app's.)
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["BIKERIDE_REAL_DATA"] != nil))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["BR_DATA_DIR"] != nil))
 struct RealDataTests {
-    let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BIKERIDE_REAL_DATA"] ?? ".")
+    let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BR_DATA_DIR"] ?? ".")
 
     /// The fastest of `runs` timings of `body`, and the median, in milliseconds.
     func milliseconds(runs: Int, _ body: () throws -> Void) rethrows -> (best: Double, median: Double) {
