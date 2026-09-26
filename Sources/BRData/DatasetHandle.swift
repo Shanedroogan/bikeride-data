@@ -10,10 +10,10 @@ import Foundation
 ///   `data/v<setId>/` directory and the store swaps in a new handle, so bytes a handle has
 ///   mapped cannot change underneath concurrent readers.
 ///
-/// Today every stored property is also checkably `Sendable`. The conformance is unchecked ahead
-/// of S1, when the typed artifact views built on a handle cache raw base pointers into its
-/// mappings (`UnsafeRawPointer` is not `Sendable`); the reasoning above is what makes sharing
-/// those views across isolation domains correct.
+/// Every stored property is also checkably `Sendable`. The conformance is unchecked because the
+/// typed artifact views over a handle's mappings (`MappedStations`, `Timetable`, `MappedLinks`)
+/// cache raw base pointers into them (`UnsafeRawPointer` is not `Sendable`); the reasoning above
+/// is what makes sharing those views across isolation domains correct.
 public final class DatasetHandle: @unchecked Sendable {
     public let setID: String
     public let artifacts: [ArtifactKind: MappedArtifact]

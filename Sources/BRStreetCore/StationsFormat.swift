@@ -3,10 +3,10 @@
 public enum StationsFormat {
     /// The first four payload bytes, `STNS`.
     public static let payloadMagic: [UInt8] = Array("STNS".utf8)
-    /// The payload's `u32` revision, which a reader requires to be exactly this value. While the
-    /// artifact's formatVersion is still 0 it is bumped on every layout change: revision 2 added
-    /// the extension tail.
-    public static let payloadRevision: UInt32 = 2
+    /// The payload's `u32` revision: `1` in format 1, and a reader requires exactly this value
+    /// (`docs/formats.md`, "Compatibility"). The format-0 drafts counted it up on every layout
+    /// change (2 added the extension tail) until the format froze at 1 on 2026-09-26.
+    public static let payloadRevision: UInt32 = 1
     /// Matrix value for a pair with no bike path, or one longer than 655,340 m.
     public static let unreachable: UInt16 = .max
     /// The largest storable distance, in decameters.

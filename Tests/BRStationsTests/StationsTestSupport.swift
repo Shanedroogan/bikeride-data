@@ -89,6 +89,100 @@ enum SyntheticCity {
     }
 }
 
+/// A hand-built stations set: three synthetic stations with hand-set snaps and a hand-set matrix,
+/// so the bytes change only when the writer or the format does (no snapping or routing runs, and
+/// every stored float is exact). The payload golden and the committed v1 file are made from it.
+/// The snap segment ids (0, 3, 6) are in range for the hand-built streets network in
+/// BRStreetsTests (`HandBuiltStreets`), but the fractions and distances are arbitrary: nothing
+/// here reads that network.
+enum HandBuiltStations {
+    /// The matrix profile, spelled out rather than `BikeProfile.eBike`, so tuning the routing
+    /// defaults (speed, dismount pace, class multipliers) can't reach the golden. It equals
+    /// `.eBike` as of the freeze.
+    static let profile = BikeProfile(
+        speedMetersPerSecond: 10 * 0.44704,
+        multipliers: BikeClassMultipliers(protected: 0.8, painted: 0.9, shared: 1.0, arterial: 1.3),
+        dismountSpeedMetersPerSecond: 3 * 0.44704
+    )
+    /// Stands in for the streets artifact's rawSha256.
+    static let builtAgainst = ["streets": String(repeating: "0", count: 64)]
+
+    static let stations: [CompiledStation] = [
+        CompiledStation(
+            id: "fixture-1", name: "Alpha & Beta", shortName: "1.01", regionID: "1", latE6: -850, lonE6: -600, capacity: 19,
+            flags: [.charging, .bikeSnapped, .walkSnapped],
+            bikeSnap: StoredSnap(segment: 0, fraction: 0.5, distanceDecimeters: 56),
+            walkSnap: StoredSnap(segment: 0, fraction: 0.5, distanceDecimeters: 56)
+        ),
+        CompiledStation(
+            id: "fixture-2", name: "Café Corner", shortName: "2.01", regionID: nil, latE6: 880, lonE6: -300, capacity: 31,
+            flags: [.acceptedByArea, .bikeSnapped, .walkSnapped],
+            bikeSnap: StoredSnap(segment: 3, fraction: 0.75, distanceDecimeters: 30),
+            walkSnap: StoredSnap(segment: 3, fraction: 0.75, distanceDecimeters: 30)
+        ),
+        // Walk-snapped only: its matrix row and column are unreachable.
+        CompiledStation(
+            id: "fixture-0", name: "Gamma Plaza Dock", shortName: "3.01", regionID: "1", latE6: 450, lonE6: 1500, capacity: 12,
+            flags: [.walkSnapped],
+            walkSnap: StoredSnap(segment: 6, fraction: 0.25, distanceDecimeters: 334)
+        ),
+    ]
+
+    /// Decameters, row-major in station order.
+    static let matrix: [UInt16] = [
+        0, 27, .max,
+        31, 0, .max,
+        .max, .max, 0,
+    ]
+
+    static func artifact(dataVersion: String = V1Fixtures.dataVersion) -> Data {
+        StationsArtifactWriter.artifact(stations: stations, matrix: matrix, profile: profile, dataVersion: dataVersion, builtAgainst: builtAgainst)
+    }
+}
+
+/// The committed v1 files in `Tests/Fixtures/v1`: artifacts written from the hand-typed inputs
+/// (none compiled from OSM, GBFS or GTFS) when the formats froze (2026-09-26), which every later
+/// reader must still open. They are
+/// frozen, not regenerated when the writer changes: `BR_WRITE_V1_FIXTURES=1 swift test --filter
+/// V1` rewrites them (and skips the tests that read them), for a deliberate reason only.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+
+    /// Lowercase-hex SHA-256 of the payload alone (the bytes from headerLength on): the header
+    /// embeds builderSwiftVersion, so the file's own hash changes with every toolchain.
+    static func payloadSHA256(_ file: Data) throws -> String {
+        let payload = Data(try ArtifactHeader.decode(from: file).payload)
+        #if canImport(CryptoKit)
+        return CryptoKitHasher().sha256(of: payload).hex
+        #else
+        return try ProcessHasher(runner: ProcessToolRunner()).sha256(of: payload).hex
+        #endif
+    }
+}
+
 /// GBFS documents shaped like Citi Bike's.
 enum GBFSFixture {
     static func discovery(stationInformationURL: String = "https://example.test/gbfs/en/station_information.json") -> String {

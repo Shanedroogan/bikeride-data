@@ -9,7 +9,7 @@ import Testing
     @Test func roundTripsThroughTheMappedReader() throws {
         let f = try FixtureStreets.build()
         #expect(f.graph.header.kind == .streets)
-        #expect(f.graph.header.formatVersion == 0)
+        #expect(f.graph.header.formatVersion == ArtifactKind.streets.currentFormatVersion)
         #expect(f.graph.header.dataVersion == "fixture")
         #expect(f.graph.nodeCount == f.compiled.nodeCount)
         #expect(f.graph.segmentCount == f.compiled.segmentCount)
@@ -226,8 +226,11 @@ import Testing
         #expect(throws: DataFormatError.self) { try mapped(fixed) }
     }
 
-    @Test func rejectsTheOldPayloadRevision() {
-        #expect(throws: StreetsFormatError.unsupportedPayloadRevision(3)) { try mapped(payload.replacing(UInt32(3), at: 4)) }
+    @Test func rejectsEveryOtherPayloadRevision() {
+        // Format 1 is revision 1 only; 4 was the last format-0 draft's.
+        for revision: UInt32 in [0, 2, 4] {
+            #expect(throws: StreetsFormatError.unsupportedPayloadRevision(revision)) { try mapped(payload.replacing(revision, at: 4)) }
+        }
     }
 
     @Test func ignoresUndefinedEdgeFlagBits() throws {

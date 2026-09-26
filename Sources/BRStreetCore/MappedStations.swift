@@ -65,7 +65,7 @@ public final class MappedStations: @unchecked Sendable {
         guard artifact.kind == .stations else {
             throw DataFormatError.kindMismatch(expected: .stations, found: artifact.kind)
         }
-        guard artifact.header.formatVersion == ArtifactKind.stations.currentFormatVersion else {
+        guard ArtifactKind.stations.supportedFormatVersions.contains(artifact.header.formatVersion) else {
             throw StationsFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
         }
         header = artifact.header

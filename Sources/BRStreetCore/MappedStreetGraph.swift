@@ -75,7 +75,7 @@ public struct MappedStreetGraph: StreetNetwork {
         guard artifact.kind == .streets else {
             throw DataFormatError.kindMismatch(expected: .streets, found: artifact.kind)
         }
-        guard artifact.header.formatVersion == ArtifactKind.streets.currentFormatVersion else {
+        guard ArtifactKind.streets.supportedFormatVersions.contains(artifact.header.formatVersion) else {
             throw StreetsFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
         }
         header = artifact.header

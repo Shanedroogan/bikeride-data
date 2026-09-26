@@ -176,7 +176,7 @@ public final class Timetable: @unchecked Sendable {
     public init(artifact: MappedArtifact) throws {
         let kind = artifact.kind
         guard TransitSystem.allCases.map(ArtifactKind.timetable(for:)).contains(kind) else { throw TimetableFormatError.notATimetable(kind) }
-        guard artifact.header.formatVersion == kind.currentFormatVersion else {
+        guard kind.supportedFormatVersions.contains(artifact.header.formatVersion) else {
             throw TimetableFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
         }
         header = artifact.header

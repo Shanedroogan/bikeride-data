@@ -145,8 +145,11 @@ import Testing
         #expect(throws: DataFormatError.self) { try reader(payload: fixed) }
     }
 
-    @Test func rejectsTheOldPayloadRevision() throws {
-        #expect(throws: StationsFormatError.unsupportedPayloadRevision(1)) { try reader(payload: try payload.replacing(UInt32(1), at: 4)) }
+    @Test func rejectsEveryOtherPayloadRevision() throws {
+        // Format 1 is revision 1 only; 2 was the last format-0 draft's.
+        for revision: UInt32 in [0, 2] {
+            #expect(throws: StationsFormatError.unsupportedPayloadRevision(revision)) { try reader(payload: try payload.replacing(revision, at: 4)) }
+        }
     }
 
     @Test func ignoresUndefinedStationFlagBits() throws {

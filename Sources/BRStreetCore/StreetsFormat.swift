@@ -6,11 +6,12 @@ import Foundation
 public enum StreetsFormat {
     /// The first four payload bytes, `STRT`.
     public static let payloadMagic: [UInt8] = Array("STRT".utf8)
-    /// The payload's `u32` revision, which a reader requires to be exactly this value. While the
-    /// artifact's formatVersion is still 0 it is bumped on every layout change: revision 2 added
-    /// the New Jersey service-area regions; revision 3 narrowed them to Jersey City and Hoboken and
-    /// widened region codes to `u32` (Census place GEOIDs); revision 4 added the extension tail.
-    public static let payloadRevision: UInt32 = 4
+    /// The payload's `u32` revision: `1` in format 1, and a reader requires exactly this value
+    /// (`docs/formats.md`, "Compatibility"). The format-0 drafts counted it up on every layout
+    /// change (2 added the New Jersey service-area regions; 3 narrowed them to Jersey City and
+    /// Hoboken and widened region codes to `u32`; 4 added the extension tail) until the format
+    /// froze at 1 on 2026-09-26.
+    public static let payloadRevision: UInt32 = 1
     /// Set in ``MappedStreetGraph/segment(ofEdge:)`` codes when an edge runs from the segment's
     /// end (B) back to its start (A).
     public static let reversedSegmentBit: UInt32 = 1 << 31

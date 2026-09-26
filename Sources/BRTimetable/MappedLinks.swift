@@ -65,7 +65,7 @@ public final class MappedLinks: @unchecked Sendable {
 
     public init(artifact: MappedArtifact) throws {
         guard artifact.kind == .links else { throw DataFormatError.kindMismatch(expected: .links, found: artifact.kind) }
-        guard artifact.header.formatVersion == ArtifactKind.links.currentFormatVersion else {
+        guard ArtifactKind.links.supportedFormatVersions.contains(artifact.header.formatVersion) else {
             throw LinksFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
         }
         header = artifact.header

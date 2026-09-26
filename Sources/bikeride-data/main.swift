@@ -20,12 +20,13 @@ let usage = """
 func versionReport() -> String {
     let width = ArtifactKind.allCases.map(\.name.count).max() ?? 0
     let formats = ArtifactKind.allCases.map { kind in
-        "  \(kind.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(kind.currentFormatVersion)"
+        let version = kind.currentFormatVersion == 0 ? "0 (draft, not yet frozen)" : "\(kind.currentFormatVersion)"
+        return "  \(kind.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(version)"
     }
     return ([
         "bikeride-data \(BuildInfo.toolVersion) (Swift \(BuildInfo.swiftVersion))",
         "artifact header layout \(ArtifactHeader.layoutVersion)",
-        "artifact formats (0 = draft, not yet frozen):",
+        "artifact formats:",
     ] + formats).joined(separator: "\n")
 }
 

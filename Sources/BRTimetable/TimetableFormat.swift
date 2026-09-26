@@ -3,10 +3,11 @@
 public enum TimetableFormat {
     /// ASCII `BRTT`, the first four payload bytes.
     public static let magic: [UInt8] = Array("BRTT".utf8)
-    /// The payload revision, stored in ``InfoField/payloadRevision``. Readers require exactly this
-    /// value for the formatVersion they read. In the format-0 draft it counts breaking draft
-    /// changes (2 added ``TimetableSection/tripFlags``); it becomes 1 when the format freezes at 1.
-    public static let payloadRevision: Int64 = 2
+    /// The payload revision, stored in ``InfoField/payloadRevision``: `1` in format 1, and readers
+    /// require exactly this value for the formatVersion they read. The format-0 drafts counted
+    /// breaking changes (2 added ``TimetableSection/tripFlags``) until the format froze at 1 on
+    /// 2026-09-26.
+    public static let payloadRevision: Int64 = 1
     /// Bytes per table-of-contents entry: `u32 id, u32 elementSize, u64 offset, u64 count`.
     static let tocEntrySize = 24
     /// Size of the payload preamble before the table of contents: magic + `u32` section count.

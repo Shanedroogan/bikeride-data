@@ -45,14 +45,28 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
         }
     }
 
-    /// The payload format this build writes and reads. `0` marks an unfrozen draft that may
-    /// change without a version bump.
+    /// The payload format this build writes. `0` marks an unfrozen draft that may change without
+    /// a version bump; from `1` on, `docs/formats.md` ("Compatibility") governs every change.
     public var currentFormatVersion: UInt16 {
         switch self {
         case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
-            0 // TODO(S1): freeze at 1 once the spike's numbers are in docs/spikes.md.
+            1 // Frozen 2026-09-26 (S1).
         case .links, .flows, .config:
             0 // TODO(M1): freeze at 1.
+        }
+    }
+
+    /// The formatVersions this build's readers accept; they reject any other with their kind's
+    /// `unsupportedFormatVersion` error. Always contains ``currentFormatVersion``. Listed per kind
+    /// rather than derived from it: when a frozen kind moves to a new format, its readers keep
+    /// accepting the old one while pinned sets can still hold it, and that is a deliberate entry
+    /// here. A draft accepts only itself.
+    public var supportedFormatVersions: [UInt16] {
+        switch self {
+        case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
+            [1]
+        case .links, .flows, .config:
+            [0]
         }
     }
 }

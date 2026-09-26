@@ -54,21 +54,23 @@ A reader rejects a file whose magic, layout, kind, lengths or padding do not che
 
 ## Kinds and format versions
 
-| Code | Name | Format | Freezes at v1 in |
+| Code | Name | Format | Status |
 |---|---|---|---|
-| 1 | `streets` | 0 (draft) | S1 |
-| 2 | `stations` | 0 (draft) | S1 |
-| 3 | `tt-subway` | 0 (draft) | S1 |
-| 4 | `tt-bus` | 0 (draft) | S1 |
-| 5 | `tt-lirr` | 0 (draft) | S1 |
-| 6 | `tt-ferry` | 0 (draft) | S1 |
-| 7 | `links` | 0 (draft) | M1 |
-| 8 | `flows` | 0 (draft) | M1 |
-| 9 | `config` | 0 (draft) | M1 |
-| 10 | `tt-path` | 0 (draft) | S1 |
+| 1 | `streets` | 1 | Frozen 2026-09-26 (S1) |
+| 2 | `stations` | 1 | Frozen 2026-09-26 (S1) |
+| 3 | `tt-subway` | 1 | Frozen 2026-09-26 (S1) |
+| 4 | `tt-bus` | 1 | Frozen 2026-09-26 (S1) |
+| 5 | `tt-lirr` | 1 | Frozen 2026-09-26 (S1) |
+| 6 | `tt-ferry` | 1 | Frozen 2026-09-26 (S1) |
+| 7 | `links` | 0 (draft) | Freezes at v1 in M1 |
+| 8 | `flows` | 0 (draft) | Freezes at v1 in M1 |
+| 9 | `config` | 0 (draft) | Freezes at v1 in M1 |
+| 10 | `tt-path` | 1 | Frozen 2026-09-26 (S1) |
 
 Codes are permanent and never reused. Format `0` marks an unfrozen draft that may change without a
 bump. After a format freezes, any change a current reader cannot parse bumps its formatVersion.
+The versions a build writes and reads are `ArtifactKind.currentFormatVersion` and
+`supportedFormatVersions` (`Sources/BRData/ArtifactKind.swift`).
 
 ## Compatibility
 
@@ -79,9 +81,10 @@ builds that can't update in step with the pipeline, and because an in-progress t
   reject: moving, resizing or removing a field, changing a unit or an encoding, giving an existing
   value a new meaning, adding an enum value, or making a new section or bit something readers must
   honor to stay correct. Everything else is added *within* the format, as below.
-- **Readers accept the versions they know.** A reader lists the formatVersions it can read (for now
-  exactly 1) and rejects the rest with `unsupportedFormatVersion`. A later reader keeps accepting
-  format 1 while pinned sets can still hold it.
+- **Readers accept the versions they know.** A reader lists the formatVersions it can read
+  (`ArtifactKind.supportedFormatVersions`: for now exactly 1, and a draft only its own 0) and
+  rejects the rest with `unsupportedFormatVersion`. A later reader keeps accepting format 1 while
+  pinned sets can still hold it.
 - **Fixed-layout payloads (`streets`, `stations`) end in an extension tail.** After the last fixed
   array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes, ids strictly ascending,
   and nothing after the tail (`ExtensionTable` in `Sources/BRData/ExtensionTail.swift`). Readers
@@ -103,6 +106,18 @@ builds that can't update in step with the pipeline, and because an in-progress t
 - **Goldens hash the payload, not the file.** The header embeds `builderSwiftVersion`, so a
   toolchain upgrade changes every file's `rawSha256` and the whole `builtAgainst` chain even when
   payloads are identical. Format goldens compare payload bytes; cache keys include the Swift version.
+  `StreetsV1Tests`, `StationsV1Tests` and `TimetableV1Tests` pin the SHA-256 of the writer's payload
+  for small hand-built inputs: not compiled from OSM, GBFS or GTFS, with every parameter spelled out
+  (no tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
+  digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
+  formatVersion.
+- **Committed v1 files.** `Tests/Fixtures/v1` holds `streets.bin`, `stations.bin` and
+  `tt-sample.bin` (a `tt-ferry` file), written by the format-1 writer from those same hand-typed
+  inputs. None is compiled from a real extract or feed: the streets and stations are made up, and
+  the timetable sample is two Staten Island Ferry terminals and two trips typed by hand (the
+  terminal names and coordinates are the real ones). They are never rebuilt when the writer
+  changes: every later reader must open them, validated, and read the values the tests list.
+  `BR_WRITE_V1_FIXTURES=1` rewrites them, for a deliberate reason only.
 
 ## Integrity and compression
 
@@ -120,9 +135,10 @@ builds that can't update in step with the pipeline, and because an in-progress t
 
 Each payload layout is documented here. A draft (format `0`) may change without a version bump;
 the payload revision (a draft's revision number) tells readers which draft they hold. From format
-1 on, the Compatibility rules above apply.
+1 on (`streets`, `stations` and `tt-*` since 2026-09-26), the Compatibility rules above apply and
+the payload revision is `1`.
 
-### `streets` (kind 1, format 0, payload revision 4)
+### `streets` (kind 1, format 1, payload revision 1)
 
 The walk and bike street graph, its geometry and names, the snap grid and the service-area
 polygons (the five boroughs, Jersey City and Hoboken).
@@ -140,7 +156,7 @@ microdegrees (10⁻⁶°), latitude first.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `STRT` |
-| payloadRevision | `u32` | `4`. Readers reject any other. Draft history: 2 added the New Jersey regions; 3 narrowed them to Jersey City and Hoboken and widened region codes to `u32`; 4 added the extension tail |
+| payloadRevision | `u32` | `1`. Readers reject any other. Format-0 draft history: revision 2 added the New Jersey regions; 3 narrowed them to Jersey City and Hoboken and widened region codes to `u32`; 4 added the extension tail; frozen as format 1, revision 1 |
 | V, E, S, P, N | 5 × `u64` | Each below 2³² − 1 |
 | nodeCoordinates | `array<i32>`, 2V | lat, lon per node. Nodes are numbered along a Hilbert curve |
 | forwardOffsets | `array<u32>`, V + 1 | Edges leaving node u: `forwardOffsets[u] ..< forwardOffsets[u + 1]`. First 0, last E |
@@ -197,7 +213,7 @@ between macOS and Linux) choose among them, and change the snaps stored in `stat
 Rounding leaves one gap: distances within that noise (far below a micrometer) of a half-millimeter
 boundary can still round apart on the two platforms, which is vanishingly rare but not impossible.
 
-### `tt-subway`, `tt-bus`, `tt-lirr`, `tt-ferry`, `tt-path` (kinds 3–6 and 10, format 0, payload revision 2)
+### `tt-subway`, `tt-bus`, `tt-lirr`, `tt-ferry`, `tt-path` (kinds 3–6 and 10, format 1, payload revision 1)
 
 One timetable per system, compiled from that system's GTFS feeds. Writer: `TimetableData`
 (BRTimetable), filled by `GTFSTimetableCompiler` (BRBuild). Reader: `Timetable` (BRTimetable),
@@ -211,8 +227,8 @@ element count), then the sections. Each section is one array of one scalar type,
 repeated, misaligned or out-of-bounds section, or one whose element size is not the documented
 one, and ignores ids it does not know. Every byte after the table that lies in no section (known
 or not) must be zero, and sections must not overlap. Sections are written in id order; readers
-don't rely on it. `info.payloadRevision` is `2` in this draft (revision 2 added `tripFlags`);
-readers reject any other, and it becomes `1` when the format freezes at 1.
+don't rely on it. `info.payloadRevision` is `1` in format 1; readers reject any other. (Format-0
+draft history: revision 2 added `tripFlags`; frozen as format 1, revision 1.)
 
 **Conventions.** `none` = `0xFFFFFFFF` in any `u32` index, time or color. A *string* is a `u32`
 index into the string pool (`stringOffsets`, `stringBytes`); string 0 is empty. A `…Start`
@@ -317,7 +333,7 @@ station's (or platform's) calls on one day view, in departure order, filtered by
 
 | Id | Section | Type | Count | Meaning |
 |---|---|---|---|---|
-| 1 | info | `i64` | ≥ 6 | system (ASCII code of `S`/`B`/`L`/`F`/`P`), windowStartDay, dayCount, timeZone (string), wordsPerSource (= ⌈dayCount / 64⌉), payloadRevision (`2`; readers reject any other). Readers ignore entries past these six |
+| 1 | info | `i64` | ≥ 6 | system (ASCII code of `S`/`B`/`L`/`F`/`P`), windowStartDay, dayCount, timeZone (string), wordsPerSource (= ⌈dayCount / 64⌉), payloadRevision (`1`; readers reject any other). Readers ignore entries past these six |
 | 2 | stringOffsets | `u32` | strings + 1 | CSR into stringBytes |
 | 3 | stringBytes | `u8` | | UTF-8, concatenated |
 | 10–13 | sourceName, sourceVersion, sourceETag, sourceSlot | `u32` | sources | Feed name (e.g. `gtfs_b`), `feed_info.feed_version`, HTTP ETag (strings); slot index |
@@ -387,7 +403,7 @@ transferType and subwayKeyDirection hold only their listed values; dates are rep
 `info` agrees with the header kind and `wordsPerSource`; the time zone is a known IANA id. The
 250 m stop-to-vertex bound is the compiler's, not checked at open.
 
-### `stations` (kind 2, format 0, payload revision 2)
+### `stations` (kind 2, format 1, payload revision 1)
 
 Citi Bike stations and the dense station × station bike-distance matrix. Writer:
 `StationsArtifactWriter`, filled by `StationsCompiler` / `StationsBuilder` (BRBuild). Reader:
@@ -426,7 +442,7 @@ Counts: N stations, S strings.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `STNS` |
-| payloadRevision | `u32` | `2`. Readers reject any other. Draft history: 2 added the extension tail |
+| payloadRevision | `u32` | `1`. Readers reject any other. Format-0 draft history: revision 2 added the extension tail; frozen as format 1, revision 1 |
 | N | `u64` | Below 65,535 |
 | matrixProfile | `array<f64>`, 6 | speed (m/s), dismount speed (m/s), multipliers protected, painted, shared, arterial |
 | stringOffsets | `array<u32>`, S + 1 | String s is `stringBytes[offsets[s] ..< offsets[s + 1]]`; string 0 is empty |

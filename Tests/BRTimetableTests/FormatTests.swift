@@ -179,14 +179,15 @@ import Testing
         let rules = sectionOffset(.ruleStartDay)
         #expect(throws: TimetableFormatError.self) { try open { $0[rules + 3] = 0x80 } }       // absurd date
         #expect(throws: TimetableFormatError.self) { try open { $0.removeLast(64) } }
-        // Any revision but the current one (the draft before tripFlags was 1, the current draft 2).
+        // Any revision but the current one (format 1 is revision 1; the last format-0 draft was 2).
         let info = sectionOffset(.info) + 8 * InfoField.payloadRevision.rawValue
         for revision in [TimetableFormat.payloadRevision - 1, TimetableFormat.payloadRevision + 1] {
             #expect(throws: TimetableFormatError.unsupportedPayloadRevision(revision)) { try open { $0[info] = UInt8(revision) } }
         }
         #expect(throws: (any Error).self) {
             // Right bytes, wrong artifact kind.
-            let other = ArtifactHeader(kind: .streets, formatVersion: 0, dataVersion: "", builderSwiftVersion: "6.0")
+            let other = ArtifactHeader(kind: .streets, formatVersion: ArtifactKind.streets.currentFormatVersion, dataVersion: "",
+                                       builderSwiftVersion: "6.0")
             _ = try Timetable(artifact: MappedArtifact(fileBytes: other.assemble(payload: payload)))
         }
     }
@@ -293,14 +294,20 @@ import Testing
         #expect(throws: TimetableFormatError.missingSection(.tripFlags)) {
             _ = try Timetable(artifact: MappedArtifact(fileBytes: Self.file(header, edited)))
         }
-        // Laid out like the previous revision (draft 1: no tripFlags): rejected for its revision,
-        // which is checked before any other section.
+        // A file without tripFlags that states another revision is rejected for its revision,
+        // which is checked before any other section. (The format-0 draft before tripFlags,
+        // revision 1, is rejected earlier still, for its formatVersion.)
         var old = edited
         let info = try #require(old.firstIndex { $0.id == TimetableSection.info.rawValue })
-        let previous = TimetableFormat.payloadRevision - 1
-        old[info].bytes[old[info].bytes.startIndex + 8 * InfoField.payloadRevision.rawValue] = UInt8(previous)
-        #expect(throws: TimetableFormatError.unsupportedPayloadRevision(previous)) {
+        let other = TimetableFormat.payloadRevision + 1
+        old[info].bytes[old[info].bytes.startIndex + 8 * InfoField.payloadRevision.rawValue] = UInt8(other)
+        #expect(throws: TimetableFormatError.unsupportedPayloadRevision(other)) {
             _ = try Timetable(artifact: MappedArtifact(fileBytes: Self.file(header, old)))
+        }
+        var draft = header
+        draft.formatVersion = 0
+        #expect(throws: TimetableFormatError.unsupportedFormatVersion(0)) {
+            _ = try Timetable(artifact: MappedArtifact(fileBytes: Self.file(draft, edited)))
         }
         // A tripFlags section with the wrong count.
         var short = sections

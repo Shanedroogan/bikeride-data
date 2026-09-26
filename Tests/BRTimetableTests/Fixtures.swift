@@ -438,3 +438,46 @@ extension Timetable {
         patternStops(pattern).map { stopGTFSID(Int($0)) }
     }
 }
+
+/// The committed v1 files in `Tests/Fixtures/v1`: artifacts written from the hand-typed inputs
+/// (none compiled from OSM, GBFS or GTFS) when the formats froze (2026-09-26), which every later
+/// reader must still open. They are
+/// frozen, not regenerated when the writer changes: `BR_WRITE_V1_FIXTURES=1 swift test --filter
+/// V1` rewrites them (and skips the tests that read them), for a deliberate reason only.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+
+    /// Lowercase-hex SHA-256 of the payload alone (the bytes from headerLength on): the header
+    /// embeds builderSwiftVersion, so the file's own hash changes with every toolchain.
+    static func payloadSHA256(_ file: Data) throws -> String {
+        let payload = Data(try ArtifactHeader.decode(from: file).payload)
+        #if canImport(CryptoKit)
+        return CryptoKitHasher().sha256(of: payload).hex
+        #else
+        return try ProcessHasher(runner: ProcessToolRunner()).sha256(of: payload).hex
+        #endif
+    }
+}

@@ -1,4 +1,5 @@
 import BRBuild
+import BRCore
 import BRData
 import BRGeo
 import BRStreetCore
@@ -99,6 +100,104 @@ struct FixtureStreets {
     /// Segments whose name is `name`.
     func segments(named name: String) -> [UInt32] {
         (0..<UInt32(graph.segmentCount)).filter { graph.name(id: graph.nameID(ofSegment: $0)) == name }
+    }
+}
+
+/// The smallest hand-built street network: five nodes and seven segments written straight into
+/// ``CompiledStreets``, with no OSM input and no builder rules, so its bytes change only when the
+/// writer or the format does. The payload golden and the committed v1 file are made from it.
+///
+///     n2 (900, −1200) ─s3 Café─ n3 (900, 0) ═s4 bike path / s5 steps═ n4 (900, 1200) ⟲ s6 loop
+///        │ s1 Beta                 │ s2 B1 (bridge)
+///     n0 (−900, −1200) ─s0 Alpha─ n1 (−900, 0)
+///
+/// Coordinates are microdegrees (lat, lon). The network straddles the equator: the snap grid's
+/// middle latitude is exactly 0, so the writer's `cos` is exactly 1 and the bytes are the same on
+/// every platform. Between them the segments use every edge flag bit, bike class and name kind, a
+/// one-way bike direction, a direction nobody may use (s4 B→A, not stored), two parallel segments
+/// and a loop (A = B).
+enum HandBuiltStreets {
+    static let snapCellMeters = 100.0
+
+    static func compiled() -> CompiledStreets {
+        let walk: UInt16 = 1 << 0, bike: UInt16 = 1 << 1, stairs: UInt16 = 1 << 2, bridge: UInt16 = 1 << 3
+        let park: UInt16 = 1 << 4, connector: UInt16 = 1 << 5, dismount: UInt16 = 1 << 6
+        var c = CompiledStreets()
+        c.nodeCoordinates = [-900, -1200, -900, 0, 900, -1200, 900, 0, 900, 1200]
+        // Sorted by (A, B), as the builder writes them.
+        c.segmentNodes = [0, 1, 0, 2, 1, 3, 2, 3, 3, 4, 3, 4, 4, 4]
+        c.segmentLengthDecimeters = [1334, 2014, 2002, 1341, 1334, 1353, 3336]
+        c.forwardFlags = [walk | bike, walk | bike, walk | bike | bridge, walk | bike | park, bike, walk | stairs, walk | bike | connector | dismount]
+        c.backwardFlags = [walk | bike, walk, walk | bike | bridge, walk | bike | park, 0, walk | stairs, walk | bike | connector | dismount]
+        c.forwardClasses = [1, 2, 3, 0, 0, 2, 2]  // painted, shared, arterial, protected, …
+        c.backwardClasses = [2, 2, 3, 0, 0, 2, 2]
+        c.names = ["Alpha Street", "B1", "Beta Avenue", "Café Street", "Gamma Plaza", "bike path", "steps"]  // by bytes
+        c.nameKinds = [.tagged, .ref, .tagged, .tagged, .tagged, .derived, .derived]
+        c.segmentNameIDs = [0, 2, 1, 3, 5, 6, 4]
+        c.segmentBearings = [64, 64, 252, 4, 0, 0, 69, 59, 64, 64, 71, 57, 64, 0]
+        c.segmentShapeOffsets = [0, 0, 1, 1, 3, 3, 4, 7]
+        c.shapePoints = [0, -1300, 850, -800, 850, -400, 800, 600, 900, 1800, 0, 1800, 0, 1200]
+        func ring(_ points: [(Int32, Int32)]) -> [Coordinate] {
+            points.map { Coordinate(lat: StreetsFormat.degrees($0.0), lon: StreetsFormat.degrees($0.1)) }
+        }
+        let west = Polygon(
+            exterior: ring([(-2000, -2000), (-2000, 0), (2000, 0), (2000, -2000), (-2000, -2000)]),
+            holes: [ring([(-500, -1500), (-100, -1500), (-100, -1000), (-500, -1000), (-500, -1500)])]
+        )
+        let east = Polygon(exterior: ring([(-2000, 0), (-2000, 3000), (2000, 3000), (2000, 0), (-2000, 0)]))
+        c.regions = [
+            StreetRegion(code: 1, name: "Test West", area: MultiPolygon([west])),
+            StreetRegion(code: 2, name: "Test East", area: MultiPolygon([east])),
+        ]
+        return c
+    }
+
+    /// The artifact file, with the header every v1 fixture uses.
+    static func artifact(dataVersion: String = V1Fixtures.dataVersion) -> Data {
+        StreetsArtifactWriter.artifact(compiled(), dataVersion: dataVersion, snapCellMeters: snapCellMeters)
+    }
+}
+
+/// The committed v1 files in `Tests/Fixtures/v1`: artifacts written from the hand-typed inputs
+/// (none compiled from OSM, GBFS or GTFS) when the formats froze (2026-09-26), which every later
+/// reader must still open. They are
+/// frozen, not regenerated when the writer changes: `BR_WRITE_V1_FIXTURES=1 swift test --filter
+/// V1` rewrites them (and skips the tests that read them), for a deliberate reason only.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+
+    /// Lowercase-hex SHA-256 of the payload alone (the bytes from headerLength on): the header
+    /// embeds builderSwiftVersion, so the file's own hash changes with every toolchain.
+    static func payloadSHA256(_ file: Data) throws -> String {
+        let payload = Data(try ArtifactHeader.decode(from: file).payload)
+        #if canImport(CryptoKit)
+        return CryptoKitHasher().sha256(of: payload).hex
+        #else
+        return try ProcessHasher(runner: ProcessToolRunner()).sha256(of: payload).hex
+        #endif
     }
 }
 
