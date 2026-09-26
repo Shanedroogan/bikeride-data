@@ -1,7 +1,8 @@
+import BRCore
 import Foundation
 
 let allUsage = """
-    USAGE: bikeride-data all [--sources DIR] [--out DIR] [--offline] [--no-xz] [--skip LIST]
+    USAGE: bikeride-data all [--sources DIR] [--out DIR] [--offline] [--no-xz] [--skip LIST] [--today YYYYMMDD]
 
     Runs every artifact build in dependency order: streets → timetables → stations → links.
     Each step writes its report to <out>/../reports/<step>.json. Stops at the first failure;
@@ -12,6 +13,8 @@ let allUsage = """
       --offline       Use the sources already downloaded
       --no-xz         Skip compression
       --skip LIST     Comma-separated steps to skip, e.g. streets,timetables (reuses their artifacts)
+      --today DATE    Build day for the timetables (default today in New York; the window starts
+                      the day before). Fixtures pin it so a rebuild reproduces the same set
     """
 
 /// `bikeride-data all …`. Returns the process exit status.
@@ -23,7 +26,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let steps = ["streets", "timetables", "stations", "links"]
     let options: CommandOptions
     do {
-        options = try CommandOptions(arguments, valued: ["--sources", "--out", "--skip"], flags: ["--offline", "--no-xz"])
+        options = try CommandOptions(arguments, valued: ["--sources", "--out", "--skip", "--today"], flags: ["--offline", "--no-xz"])
     } catch {
         FileHandle.standardError.write(Data("bikeride-data all: \(error)\n\n\(allUsage)\n".utf8))
         return 64
@@ -37,6 +40,14 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let out = options.url("--out", default: "build/data").path
     let offline = options.flags.contains("--offline") ? ["--offline"] : []
     let noXZ = options.flags.contains("--no-xz") ? ["--no-xz"] : []
+    var today: [String] = []
+    if let text = options.values["--today"] {
+        guard ServiceDate(yyyymmdd: text) != nil else {
+            FileHandle.standardError.write(Data("bikeride-data all: --today needs YYYYMMDD\n\n\(allUsage)\n".utf8))
+            return 64
+        }
+        today = ["--today", text]
+    }
 
     let started = Date()
     var warnings: [String] = []
@@ -46,7 +57,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         let status: Int32
         switch step {
         case "streets": status = runStreetsCommand(["--sources", sources, "--out", out] + offline + noXZ)
-        case "timetables": status = runTimetablesCommand(["--sources", sources, "--out", out] + offline + noXZ)
+        case "timetables": status = runTimetablesCommand(["--sources", sources, "--out", out] + offline + noXZ + today)
         case "stations": status = runStationsCommand(["--sources", sources, "--out", out] + offline + noXZ)
         default: status = runLinksCommand(["--data", out] + noXZ)
         }
