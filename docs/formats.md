@@ -40,7 +40,7 @@ Layout version **1**. All artifacts share it.
 | 4 | 2 | `u16` headerLayout | `1` |
 | 6 | 2 | `u16` kind | See the kind table |
 | 8 | 2 | `u16` formatVersion | Payload format of this kind |
-| 10 | 2 | `u16` reserved | `0` |
+| 10 | 2 | `u16` reserved | Written `0`; readers ignore it (it is the header's only spare) |
 | 12 | 4 | `u32` headerLength | Total header bytes including padding; a multiple of 8; the payload starts here |
 | 16 | 8 | `u64` payloadLength | Must equal file length − headerLength exactly |
 | 24 | … | `str` dataVersion | Identifies the build inputs, e.g. source ETags or a UTC build stamp |
@@ -69,6 +69,40 @@ A reader rejects a file whose magic, layout, kind, lengths or padding do not che
 
 Codes are permanent and never reused. Format `0` marks an unfrozen draft that may change without a
 bump. After a format freezes, any change a current reader cannot parse bumps its formatVersion.
+
+## Compatibility
+
+These rules hold from each kind's format 1 on. They exist because published sets are read by app
+builds that can't update in step with the pipeline, and because an in-progress trip pins its set.
+
+- **What forces a bump.** Any change that a reader of the current formatVersion would misread or
+  reject: moving, resizing or removing a field, changing a unit or an encoding, giving an existing
+  value a new meaning, adding an enum value, or making a new section or bit something readers must
+  honor to stay correct. Everything else is added *within* the format, as below.
+- **Readers accept the versions they know.** A reader lists the formatVersions it can read (for now
+  exactly 1) and rejects the rest with `unsupportedFormatVersion`. A later reader keeps accepting
+  format 1 while pinned sets can still hold it.
+- **Fixed-layout payloads (`streets`, `stations`) end in an extension tail.** After the last fixed
+  array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes, ids strictly ascending,
+  and nothing after the tail (`ExtensionTable` in `Sources/BRData/ExtensionTail.swift`). Readers
+  skip ids they don't know. Each kind's section lists its ids, and what a reader assumes when one
+  is absent. Writers of format 1 write an empty tail (`count = 0`) until an id is defined.
+- **Sectioned payloads (`tt-*`) grow by sections.** Readers ignore section ids they don't know. A
+  section added within a format is optional, with its default when absent documented next to it.
+  The `info` array may gain entries at its end; readers ignore entries past the ones they know.
+- **Flag bits.** Writers write undefined bits as `0`; readers ignore them. A new bit may be defined
+  within a format only if a reader that ignores it still behaves correctly (a hint, not a rule).
+- **Enum values are strict.** A value a reader doesn't know is an error when the file is opened,
+  never a silent fallback. New values need a bump (or a new optional section that carries them).
+- **The payload revision.** The `u32` slot that held the draft revision stays where it is and is
+  called `payloadRevision`. It is `1` in every format-1 file; a reader requires the value documented
+  for the formatVersion it read.
+- **The header can't grow.** Its fields must end exactly at `headerLength`; a new header field
+  means a new headerLayout, which every reader of every kind rejects. The reserved `u16` is the
+  only spare.
+- **Goldens hash the payload, not the file.** The header embeds `builderSwiftVersion`, so a
+  toolchain upgrade changes every file's `rawSha256` and the whole `builtAgainst` chain even when
+  payloads are identical. Format goldens compare payload bytes; cache keys include the Swift version.
 
 ## Integrity and compression
 

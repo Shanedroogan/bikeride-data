@@ -99,6 +99,43 @@ import Testing
         #expect(second - first == 3600)
     }
 
+    @Test(arguments: [
+        // (day, hour, minute, expected instant)
+        ("20261001", 8, 30, "2026-10-01T12:30:00Z"), // ordinary day, EDT
+        ("20270314", 2, 30, "2027-03-14T07:30:00Z"), // skipped: 03:30 EDT
+        ("20270314", 2, 0, "2027-03-14T07:00:00Z"),  // the gap's first second: 03:00 EDT
+        ("20270314", 1, 59, "2027-03-14T06:59:00Z"), // just before the gap, EST
+        ("20270314", 3, 0, "2027-03-14T07:00:00Z"),  // just after, EDT
+        ("20261101", 1, 30, "2026-11-01T05:30:00Z"), // repeated: the first (EDT) occurrence
+        ("20261101", 0, 59, "2026-11-01T04:59:00Z"),
+        ("20261101", 2, 0, "2026-11-01T07:00:00Z"),  // after the repeat, EST
+        ("20261231", 23, 59, "2027-01-01T04:59:00Z"),
+    ])
+    func wallClockInstantsResolveSkippedAndRepeatedTimes(day: String, hour: Int, minute: Int, expected: String) throws {
+        let date = try #require(ServiceDate(yyyymmdd: day))
+        #expect(ServiceDayTime.instant(wallClock: date, hour: hour, minute: minute, in: tz) == instant(expected))
+    }
+
+    /// GTFS times on daylight-saving days follow noon − 12 h, not the wall clock: GTFS 00:30 is
+    /// origin + 30 min, which is 23:30 EST the evening before on 2027-03-14 (and GTFS 02:30 is
+    /// 01:30 EST) and 01:30 EDT on 2026-11-01 (before the repeat). Assert the rule from origin
+    /// arithmetic.
+    @Test(arguments: ["20261101", "20270314"])
+    func gtfsEarlyBandTimesOnDaylightSavingDaysFollowNoonMinusTwelve(day: String) throws {
+        let date = try #require(ServiceDate(yyyymmdd: day))
+        let origin = ServiceDayTime.origin(of: date, in: tz)
+        for gtfs in [30 * 60, 90 * 60, 150 * 60] { // 00:30, 01:30, 02:30
+            #expect(ServiceDayTime.date(engineSeconds: Int32(gtfs), serviceDay: date, tz: tz) == origin.addingTimeInterval(TimeInterval(gtfs)))
+            #expect(ServiceDayTime.engineSeconds(for: origin.addingTimeInterval(TimeInterval(gtfs)), serviceDay: date, tz: tz) == Int32(gtfs))
+        }
+        if day == "20270314" {
+            #expect(wallClock(origin.addingTimeInterval(30 * 60)).hour == 23) // 23:30 EST on 03-13
+            #expect(wallClock(origin.addingTimeInterval(150 * 60)).hour == 1) // GTFS 02:30 = 01:30 EST (06:30Z, before the change)
+        } else {
+            #expect(wallClock(origin.addingTimeInterval(30 * 60)).hour == 1) // 01:30 EDT
+        }
+    }
+
     @Test func gtfsNoonIsLocalNoonEvenOnDaylightSavingDays() {
         for day in [ServiceDate(year: 2026, month: 11, day: 1), ServiceDate(year: 2027, month: 3, day: 14)] {
             let noon = wallClock(ServiceDayTime.date(engineSeconds: 12 * 3600, serviceDay: day, tz: tz))

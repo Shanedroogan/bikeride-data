@@ -39,4 +39,25 @@ public enum ServiceDayTime {
     public static func date(engineSeconds: Int32, serviceDay: ServiceDate, tz: TimeZone) -> Date {
         origin(of: serviceDay, in: tz).addingTimeInterval(TimeInterval(engineSeconds))
     }
+
+    /// The instant a rider means by a local wall-clock time ("depart at 02:30"). A time the clocks
+    /// skip (2027-03-14 02:30 in New York) moves forward by the gap, to 03:30 EDT. A time that
+    /// happens twice (2026-11-01 01:30) is its first occurrence, in daylight time. Computed from
+    /// the zone's UTC offsets, so it doesn't depend on how a platform's Calendar resolves them.
+    public static func instant(wallClock day: ServiceDate, hour: Int, minute: Int, second: Int = 0, in timeZone: TimeZone) -> Date {
+        precondition((0..<24).contains(hour) && (0..<60).contains(minute) && (0..<60).contains(second), "wall-clock time out of range")
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let naive = utc.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: hour, minute: minute, second: second)) else {
+            preconditionFailure("No date for \(day)")
+        }
+        // The offsets in force a day either side cover any single transition.
+        let before = timeZone.secondsFromGMT(for: naive.addingTimeInterval(-86_400))
+        let after = timeZone.secondsFromGMT(for: naive.addingTimeInterval(86_400))
+        let valid = Set([before, after]).map { naive.addingTimeInterval(-TimeInterval($0)) }
+            .filter { timeZone.secondsFromGMT(for: $0) == Int(naive.timeIntervalSince($0)) }
+        if let first = valid.min() { return first }
+        // In the gap: read it with the offset from before the change, which lands just after it.
+        return naive.addingTimeInterval(-TimeInterval(before))
+    }
 }

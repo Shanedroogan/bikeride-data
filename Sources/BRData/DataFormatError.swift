@@ -11,4 +11,8 @@ public enum DataFormatError: Error, Equatable, Sendable {
     case payloadLengthMismatch(declared: UInt64, actual: Int)
     case duplicateKey(String)
     case kindMismatch(expected: ArtifactKind, found: ArtifactKind)
+    /// An extension tail's ids are not strictly ascending (``BinaryReader/readExtensions()``).
+    case extensionIDsNotAscending(offset: Int)
+    /// Bytes after the last section a payload may hold.
+    case trailingBytes(Int)
 }
