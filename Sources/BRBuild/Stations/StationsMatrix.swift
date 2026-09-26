@@ -35,9 +35,11 @@ public struct CompiledStation: Sendable, Equatable {
 
 /// Which feed stations the artifact keeps.
 public struct StationSelection: Sendable, Equatable {
-    /// Citi Bike's New York City regions. A station with no `region_id` is kept when it lies
-    /// inside the five boroughs.
-    public var regionIDs: Set<String> = ["71", "185", "158"]
+    /// Citi Bike's service-area regions: New York City (71, 185, 158), Jersey City (70) and
+    /// Hoboken (311). A station with no `region_id` is kept when it lies inside the service area
+    /// (the union of the `streets` regions). Anything else, such as the test regions 189 and 190,
+    /// is dropped.
+    public var regionIDs: Set<String> = ["71", "185", "158", "70", "311"]
 
     public init() {}
 }
@@ -45,7 +47,7 @@ public struct StationSelection: Sendable, Equatable {
 public struct StationSelectionStats: Codable, Sendable, Equatable {
     public var feedStations = 0
     public var accepted = 0
-    /// Accepted without a `region_id`, by the five-borough polygon.
+    /// Accepted without a `region_id`, by the service-area polygon.
     public var acceptedByArea = 0
     public var rejectedRegion = 0
     public var rejectedNoRegionOutsideArea = 0

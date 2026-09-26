@@ -20,6 +20,14 @@ enum StreetsFixtures {
         try Data(contentsOf: url(name))
     }
 
+    /// The fixture's service area, as ``StreetsCompiler`` assembles it: the two fixture boroughs,
+    /// the Newark Penn disc and the fixture Hudson County (west of the lattice), by code.
+    static func regions() throws -> [StreetRegion] {
+        let boroughs = try GeoJSONAreas.boroughs(from: data("boroughs-fixture.geojson"), simplifyToleranceMeters: 10)
+        let hudson = try ServiceArea.hudsonCounty(fromGeoJSONSequence: data("hudson-county-fixture.geojsonseq"), simplifyToleranceMeters: 10)
+        return (boroughs + [ServiceArea.newarkPennArea(), hudson]).sorted { $0.code < $1.code }
+    }
+
     /// The fixture's lattice: node `(x, y)` sits at 40.7 + 0.0009·y, −74 + 0.0012·x (about 100 m).
     static func coordinate(_ x: Double, _ y: Double) -> Coordinate {
         Coordinate(lat: 40.7 + y * 0.0009, lon: -74.0 + x * 0.0012)
@@ -52,9 +60,11 @@ struct FixtureStreets {
     let bytes: Data
     let scratch: ScratchDirectory
 
-    static func build(chunkSize: Int = 97, options: StreetBuildOptions = StreetBuildOptions()) throws -> FixtureStreets {
+    static func build(
+        chunkSize: Int = 97, options: StreetBuildOptions = StreetBuildOptions(), extraRegions: [StreetRegion] = []
+    ) throws -> FixtureStreets {
         let parks = try GeoJSONAreas.parks(fromGeoJSONSequence: StreetsFixtures.data("parks-fixture.geojsonseq"))
-        let regions = try GeoJSONAreas.boroughs(from: StreetsFixtures.data("boroughs-fixture.geojson"), simplifyToleranceMeters: 10)
+        let regions = try StreetsFixtures.regions() + extraRegions
         var builder = StreetNetworkBuilder(options: options, parks: ParkIndex(polygons: parks))
         var reader = OPLReader(DataChunkSource(try StreetsFixtures.data("streets-fixture.opl"), chunkSize: chunkSize))
         try reader.forEachWay { builder.add($0) }

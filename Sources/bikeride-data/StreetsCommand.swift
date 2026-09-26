@@ -13,8 +13,8 @@ import Glibc
 let streetsUsage = """
     USAGE: bikeride-data streets [--sources DIR] [--out DIR] [--work DIR] [--report FILE] [--offline] [--no-xz]
 
-    Builds the streets artifact (walk + bike graph, snap grid, borough polygons) from the
-    Geofabrik New York extract and the NYC borough boundaries, downloading them into
+    Builds the streets artifact (walk + bike graph, snap grid, service-area polygons) from the
+    Geofabrik New York and New Jersey extracts and the NYC borough boundaries, downloading them into
     <sources> when missing or changed (conditional GET) unless --offline.
 
       --sources DIR   Source downloads (default build/sources)
@@ -213,6 +213,9 @@ func runStreetsCommand(_ arguments: [String]) -> Int32 {
             runRoute("Union Sq → Bedford Av, Williamsburg (bike)", graph: graph, from: unionSquare,
                      to: Coordinate(lat: 40.7171, lon: -73.9568), profile: "ebike", expectedMiles: 4.2, tolerance: 0.15,
                      requiredName: "Williamsburg Bridge"),
+            // New Jersey is in the graph (Hudson County's network, apart from the city's).
+            runRoute("Hoboken Terminal → Journal Square (bike)", graph: graph, from: Coordinate(lat: 40.7353, lon: -74.0290),
+                     to: Coordinate(lat: 40.7327, lon: -74.0629), profile: "ebike", expectedMiles: 2.4, tolerance: 0.15),
         ]
         for check in checks {
             let miles = check.miles.map { String(format: "%.2f mi", $0) } ?? "no route"

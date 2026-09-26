@@ -25,7 +25,7 @@ struct LinksFixture {
         var (selected, _) = StationsBuilder.select(places.map { id, x, y in
             let c = SyntheticCity.coordinate(x, y)
             return GBFSStation(stationID: id, name: id.uppercased(), lat: c.lat, lon: c.lon, regionID: "71", capacity: 10)
-        }, area: graph.fiveBoroughs)
+        }, area: graph.serviceArea)
         _ = StationsBuilder.snap(&selected, graph: graph, bikeProfile: .eBike)
         stations = selected
         stationAnchors = selected.map { station in

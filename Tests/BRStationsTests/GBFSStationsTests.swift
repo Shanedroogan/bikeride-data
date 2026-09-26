@@ -45,13 +45,17 @@ import Testing
 @Suite struct StationSelectionTests {
     let area = SyntheticCity.region(columns: 4, rows: 4).area
 
-    @Test func keepsNYCRegionsAndStationsInsideTheBoroughsWithDocks() {
+    @Test func keepsServiceAreaRegionsAndStationsInsideTheAreaWithDocks() {
         let inside = SyntheticCity.coordinate(1, 1), outside = SyntheticCity.coordinate(40, 40)
         let feed = [
             GBFSStation(stationID: "r71", name: "A", lat: inside.lat, lon: inside.lon, regionID: "71", capacity: 10),
             GBFSStation(stationID: "r185", name: "B", lat: outside.lat, lon: outside.lon, regionID: "185", capacity: 10),
             GBFSStation(stationID: "r158", name: "C", lat: inside.lat, lon: inside.lon, regionID: "158", capacity: 1),
-            GBFSStation(stationID: "jc", name: "Jersey City", lat: inside.lat, lon: inside.lon, regionID: "70", capacity: 10),
+            GBFSStation(stationID: "jc", name: "Jersey City", lat: outside.lat, lon: outside.lon, regionID: "70", capacity: 10),
+            GBFSStation(stationID: "hob", name: "Hoboken", lat: outside.lat, lon: outside.lon, regionID: "311", capacity: 10),
+            GBFSStation(stationID: "test189", name: "Test", lat: inside.lat, lon: inside.lon, regionID: "189", capacity: 10),
+            GBFSStation(stationID: "test190", name: "Test 2", lat: inside.lat, lon: inside.lon, regionID: "190", capacity: 10),
+            GBFSStation(stationID: "hobZero", name: "Hoboken, no docks", lat: inside.lat, lon: inside.lon, regionID: "311", capacity: 0),
             GBFSStation(stationID: "inside", name: "No region, inside", lat: inside.lat, lon: inside.lon, capacity: 5, isCharging: true),
             GBFSStation(stationID: "hoboken", name: "No region, outside", lat: outside.lat, lon: outside.lon, capacity: 5),
             GBFSStation(stationID: "empty", name: "No docks", lat: inside.lat, lon: inside.lon, regionID: "71", capacity: 0),
@@ -60,10 +64,11 @@ import Testing
             GBFSStation(stationID: "blank", name: "Empty region", lat: inside.lat, lon: inside.lon, regionID: "", capacity: 4),
         ]
         let (kept, stats) = StationsBuilder.select(feed, area: area)
-        #expect(Set(kept.map(\.id)) == ["r71", "r185", "r158", "inside", "blank"])
-        #expect(stats.feedStations == 10 && stats.accepted == 5 && stats.acceptedByArea == 2)
-        #expect(stats.rejectedRegion == 1 && stats.rejectedRegionIDs == ["70": 1])
-        #expect(stats.rejectedNoRegionOutsideArea == 1 && stats.rejectedCapacity == 2 && stats.duplicateIDs == 1)
+        // A published region decides on its own; the polygon only judges stations without one.
+        #expect(Set(kept.map(\.id)) == ["r71", "r185", "r158", "jc", "hob", "inside", "blank"])
+        #expect(stats.feedStations == 14 && stats.accepted == 7 && stats.acceptedByArea == 2)
+        #expect(stats.rejectedRegion == 2 && stats.rejectedRegionIDs == ["189": 1, "190": 1])
+        #expect(stats.rejectedNoRegionOutsideArea == 1 && stats.rejectedCapacity == 3 && stats.duplicateIDs == 1)
         let first = kept.first { $0.id == "r71" }!
         #expect(first.name == "A" && first.capacity == 10 && first.regionID == "71" && first.flags.isEmpty)
         let byArea = kept.first { $0.id == "inside" }!

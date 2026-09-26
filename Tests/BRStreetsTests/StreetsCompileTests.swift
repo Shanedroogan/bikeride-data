@@ -275,13 +275,44 @@ import Testing
         #expect(connectorExit < 1.5 || connectorExit > 358.5)
     }
 
-    @Test func storesBoroughPolygons() {
-        #expect(f.graph.regions.map(\.code) == [1, 5])
-        #expect(f.graph.regions.map(\.name) == ["Manhattan", "Staten Island"])
+    @Test func storesServiceAreaPolygons() {
+        #expect(f.graph.regions.map(\.code) == [1, 5, 34013, 34017])
+        #expect(f.graph.regions.map(\.name) == ["Manhattan", "Staten Island", "Newark Penn area", "Hudson County"])
         #expect(f.graph.manhattan.contains(Coordinate(lat: 40.7, lon: -73.998)))
-        #expect(!f.graph.manhattan.contains(Coordinate(lat: 40.7047, lon: -73.9935)))
-        #expect(f.graph.region(containing: Coordinate(lat: 40.7047, lon: -73.9935))?.name == "Staten Island")
+        #expect(!f.graph.manhattan.contains(Coordinate(lat: 40.7047, lon: -73.9915)))
+        #expect(f.graph.region(containing: Coordinate(lat: 40.7047, lon: -73.9915))?.name == "Staten Island")
         #expect(f.graph.region(containing: Coordinate(lat: 40.8, lon: -73.9)) == nil)
         #expect(f.graph.fiveBoroughs.polygons.count == 2)
+        #expect(!f.graph.fiveBoroughs.contains(Coordinate(lat: 40.71, lon: -74.035)))
+
+        // New Jersey: Hudson County with its hole (New York's islands), and Newark Penn's disc.
+        #expect(f.graph.serviceArea.polygons.count == 4)
+        #expect(f.graph.region(containing: Coordinate(lat: 40.71, lon: -74.035))?.code == StreetRegion.hudsonCountyCode)
+        #expect(f.graph.region(containing: Coordinate(lat: 40.704, lon: -74.03)) == nil)
+        #expect(f.graph.serviceArea.contains(Coordinate(lat: 40.7, lon: -73.998)))
+        #expect(f.graph.serviceArea.contains(ServiceArea.newarkPennCenter))
+        #expect(f.graph.serviceArea.contains(Coordinate(lat: 40.7394, lon: -74.1557))) // Harrison, 0.9 km away
+        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.7345, lon: -74.1644 + 0.02))) // 1.7 km east
+        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.72, lon: -74.1644))) // 1.6 km south
+    }
+
+    @Test func keepsTheLargestComponentOfEveryRegion() throws {
+        // The Island Loop is far below 5% of the main network, but it is the largest network in
+        // a region of its own (as New Jersey's is), so it stays, walkable.
+        let square = MultiPolygon([Polygon(exterior: [
+            Coordinate(lat: 40.7025, lon: -73.9960), Coordinate(lat: 40.7065, lon: -73.9960),
+            Coordinate(lat: 40.7065, lon: -73.9910), Coordinate(lat: 40.7025, lon: -73.9910),
+            Coordinate(lat: 40.7025, lon: -73.9960),
+        ])])
+        let island = try FixtureStreets.build(extraRegions: [StreetRegion(code: 900, name: "Island", area: square)])
+        let loop = try #require(island.node(5, 5))
+        #expect(island.graph.outgoingEdges(of: loop).contains { island.graph.flags(ofEdge: $0).contains(.walk) })
+        #expect(island.stats.keptComponentMeters.count == 2)
+        #expect(island.compiled.nodeCount == f.compiled.nodeCount + 1)
+
+        var options = StreetBuildOptions()
+        options.keepLargestComponentPerRegion = false
+        let shareOnly = try FixtureStreets.build(options: options, extraRegions: [StreetRegion(code: 900, name: "Island", area: square)])
+        #expect(shareOnly.node(5, 5) == nil)
     }
 }

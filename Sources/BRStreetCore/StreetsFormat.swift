@@ -7,8 +7,9 @@ public enum StreetsFormat {
     /// The first four payload bytes, `STRT`.
     public static let payloadMagic: [UInt8] = Array("STRT".utf8)
     /// Revision of the draft payload layout, bumped on every change while the artifact's
-    /// formatVersion is still 0. Readers reject any other revision.
-    public static let draftRevision: UInt32 = 1
+    /// formatVersion is still 0. Readers reject any other revision. Revision 2 added the New
+    /// Jersey service-area regions (Hudson County, the Newark Penn area).
+    public static let draftRevision: UInt32 = 2
     /// Set in ``MappedStreetGraph/segment(ofEdge:)`` codes when an edge runs from the segment's
     /// end (B) back to its start (A).
     public static let reversedSegmentBit: UInt32 = 1 << 31
@@ -103,9 +104,12 @@ public struct SnapGridGeometry: Sendable, Equatable {
     }
 }
 
-/// A named area stored in the artifact: each NYC borough, keyed by its DCP borough code.
+/// A named area stored in the artifact: each NYC borough, keyed by its DCP borough code, and the
+/// New Jersey parts of the service area, keyed by their county's FIPS code.
 public struct StreetRegion: Sendable, Equatable {
-    /// NYC DCP borough code: 1 Manhattan, 2 Bronx, 3 Brooklyn, 4 Queens, 5 Staten Island.
+    /// NYC DCP borough code: 1 Manhattan, 2 Bronx, 3 Brooklyn, 4 Queens, 5 Staten Island; or a
+    /// New Jersey county FIPS code: 34017 Hudson County, 34013 the Newark Penn area (the part of
+    /// Essex County in the service area).
     public let code: UInt16
     public let name: String
     public let area: MultiPolygon
@@ -117,6 +121,11 @@ public struct StreetRegion: Sendable, Equatable {
     }
 
     public static let manhattanCode: UInt16 = 1
+    public static let nycBoroughCodes: ClosedRange<UInt16> = 1...5
+    public static let hudsonCountyCode: UInt16 = 34017
+    public static let newarkPennAreaCode: UInt16 = 34013
+
+    public var isNYCBorough: Bool { Self.nycBoroughCodes.contains(code) }
 }
 
 /// A malformed or incompatible `streets` payload.

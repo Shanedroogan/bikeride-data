@@ -72,9 +72,9 @@ public enum StreetGeometry {
     }
 }
 
-/// A raster of "near the city" cells: every cell within `bufferMeters` of the regions'
-/// polygons. Used to drop ways the bounding-box extract let in (New Jersey, Westchester, Nassau)
-/// while keeping streets that leave and re-enter the city.
+/// A raster of "near the service area" cells: every cell within `bufferMeters` of the regions'
+/// polygons. Used to drop ways the extracts let in (the rest of New Jersey, Westchester, Nassau)
+/// while keeping streets that leave and re-enter the service area.
 public struct CityMask: Sendable {
     public let bufferMeters: Double
     private let originLat: Double, originLon: Double
@@ -97,32 +97,10 @@ public struct CityMask: Sendable {
         rows = Int(((bounds.maxLat - bounds.minLat) / cellLat).rounded(.up)) + 2 * margin + 1
         columns = Int(((bounds.maxLon - bounds.minLon) / cellLon).rounded(.up)) + 2 * margin + 1
 
-        // Scanline fill of each polygon (even–odd over exterior and holes) at cell centers.
         var inside = [Bool](repeating: false, count: rows * columns)
+        let grid = RasterGrid(originLat: originLat, originLon: originLon, cellLat: cellLat, cellLon: cellLon, columns: columns, rows: rows)
         for polygon in polygons {
-            let polygonRings = [polygon.exterior] + polygon.holes
-            for row in 0..<rows {
-                let lat = originLat + (Double(row) + 0.5) * cellLat
-                var crossings: [Double] = []
-                for ring in polygonRings where ring.count >= 3 {
-                    var j = ring.count - 1
-                    for i in ring.indices {
-                        let a = ring[i], b = ring[j]
-                        if (a.lat > lat) != (b.lat > lat) {
-                            crossings.append(a.lon + (lat - a.lat) * (b.lon - a.lon) / (b.lat - a.lat))
-                        }
-                        j = i
-                    }
-                }
-                crossings.sort()
-                var k = 0
-                while k + 1 < crossings.count {
-                    let first = max(0, Int(((crossings[k] - originLon) / cellLon - 0.5).rounded(.up)))
-                    let last = min(columns - 1, Int(((crossings[k + 1] - originLon) / cellLon - 0.5).rounded(.down)))
-                    if first <= last { for column in first...last { inside[row * columns + column] = true } }
-                    k += 2
-                }
-            }
+            grid.fill(polygon) { inside[$0] = true }
         }
 
         // Dilate by a disc of the buffer radius.
@@ -159,6 +137,89 @@ public struct CityMask: Sendable {
         let column = Int(((coordinate.lon - originLon) / cellLon).rounded(.down))
         guard row >= 0, row < rows, column >= 0, column < columns else { return false }
         return cells[row * columns + column]
+    }
+}
+
+/// A latitude/longitude raster: cell (column, row) covers `originLon + column·cellLon ..<` one cell
+/// on, and likewise for latitude. Shared by ``CityMask`` and ``RegionRaster``.
+struct RasterGrid: Sendable {
+    let originLat: Double, originLon: Double
+    let cellLat: Double, cellLon: Double
+    let columns: Int, rows: Int
+
+    /// Calls `body` with the index (`row × columns + column`) of every cell whose center lies in
+    /// `polygon` (even–odd over the exterior and holes): a scanline fill.
+    func fill(_ polygon: Polygon, _ body: (Int) -> Void) {
+        let polygonRings = [polygon.exterior] + polygon.holes
+        for row in 0..<rows {
+            let lat = originLat + (Double(row) + 0.5) * cellLat
+            var crossings: [Double] = []
+            for ring in polygonRings where ring.count >= 3 {
+                var j = ring.count - 1
+                for i in ring.indices {
+                    let a = ring[i], b = ring[j]
+                    if (a.lat > lat) != (b.lat > lat) {
+                        crossings.append(a.lon + (lat - a.lat) * (b.lon - a.lon) / (b.lat - a.lat))
+                    }
+                    j = i
+                }
+            }
+            crossings.sort()
+            var k = 0
+            while k + 1 < crossings.count {
+                let first = max(0, Int(((crossings[k] - originLon) / cellLon - 0.5).rounded(.up)))
+                let last = min(columns - 1, Int(((crossings[k + 1] - originLon) / cellLon - 0.5).rounded(.down)))
+                if first <= last { for column in first...last { body(row * columns + column) } }
+                k += 2
+            }
+        }
+    }
+
+    func index(of coordinate: Coordinate) -> Int? {
+        let row = Int(((coordinate.lat - originLat) / cellLat).rounded(.down))
+        let column = Int(((coordinate.lon - originLon) / cellLon).rounded(.down))
+        guard row >= 0, row < rows, column >= 0, column < columns else { return nil }
+        return row * columns + column
+    }
+}
+
+/// Which region each point lies in, on a raster of the regions' polygons (no buffer): the
+/// component filter uses it to keep every region's own largest network (see
+/// ``StreetBuildOptions/keepLargestComponentPerRegion``). Where regions overlap, the first wins.
+public struct RegionRaster: Sendable {
+    public let regionCount: Int
+    private let grid: RasterGrid
+    private let labels: [Int16]
+
+    public init(regions: [MultiPolygon], cellMeters: Double = 100) {
+        regionCount = regions.count
+        let rings = regions.flatMap(\.polygons).flatMap { [$0.exterior] + $0.holes }
+        guard let bounds = BoundingBox(rings.flatMap { $0 }) else {
+            grid = RasterGrid(originLat: 0, originLon: 0, cellLat: 1, cellLon: 1, columns: 0, rows: 0)
+            labels = []
+            return
+        }
+        let metersPerDegree = Earth.meanRadiusMeters * .pi / 180
+        let cellLat = cellMeters / metersPerDegree
+        let cellLon = cellMeters / (metersPerDegree * cos((bounds.minLat + bounds.maxLat) / 2 * .pi / 180))
+        let raster = RasterGrid(
+            originLat: bounds.minLat - cellLat, originLon: bounds.minLon - cellLon, cellLat: cellLat, cellLon: cellLon,
+            columns: Int(((bounds.maxLon - bounds.minLon) / cellLon).rounded(.up)) + 3,
+            rows: Int(((bounds.maxLat - bounds.minLat) / cellLat).rounded(.up)) + 3
+        )
+        var labels = [Int16](repeating: -1, count: raster.columns * raster.rows)
+        for (index, region) in regions.enumerated().reversed() {
+            for polygon in region.polygons { raster.fill(polygon) { labels[$0] = Int16(index) } }
+        }
+        grid = raster
+        self.labels = labels
+    }
+
+    /// The index of the region containing the point, or `nil` outside every region.
+    public func region(latE7: Int32, lonE7: Int32) -> Int? {
+        guard let cell = grid.index(of: Coordinate(lat: Double(latE7) * 1e-7, lon: Double(lonE7) * 1e-7)) else { return nil }
+        let label = labels[cell]
+        return label >= 0 ? Int(label) : nil
     }
 }
 
@@ -238,15 +299,21 @@ public enum GeoJSONAreas {
             guard let codeValue = properties["borocode"] ?? properties["BoroCode"] else { throw ParseError.missingProperty("borocode") }
             guard let code = UInt16("\(codeValue)") else { throw ParseError.missingProperty("borocode") }
             let name = (properties["boroname"] ?? properties["BoroName"]).map { "\($0)" } ?? "Borough \(code)"
-            let polygons = try Self.polygons(fromGeometry: feature["geometry"] as? [String: Any] ?? [:]).compactMap { polygon -> Polygon? in
-                let exterior = StreetGeometry.simplify(polygon.exterior, toleranceMeters: simplifyToleranceMeters)
-                guard exterior.count >= 4 else { return nil }
-                let holes = polygon.holes.map { StreetGeometry.simplify($0, toleranceMeters: simplifyToleranceMeters) }.filter { $0.count >= 4 }
-                return Polygon(exterior: exterior, holes: holes)
+            let polygons = try Self.polygons(fromGeometry: feature["geometry"] as? [String: Any] ?? [:]).compactMap {
+                simplified($0, toleranceMeters: simplifyToleranceMeters)
             }
             regions.append(StreetRegion(code: code, name: name, area: MultiPolygon(polygons)))
         }
         return regions.sorted { $0.code < $1.code }
+    }
+
+    /// `polygon` with each ring simplified by Douglas–Peucker; `nil` when the exterior collapses.
+    /// Holes that collapse are dropped.
+    public static func simplified(_ polygon: Polygon, toleranceMeters: Double) -> Polygon? {
+        let exterior = StreetGeometry.simplify(polygon.exterior, toleranceMeters: toleranceMeters)
+        guard exterior.count >= 4 else { return nil }
+        let holes = polygon.holes.map { StreetGeometry.simplify($0, toleranceMeters: toleranceMeters) }.filter { $0.count >= 4 }
+        return Polygon(exterior: exterior, holes: holes)
     }
 
     /// Park polygons from `osmium export -f geojsonseq` output (records separated by newlines,

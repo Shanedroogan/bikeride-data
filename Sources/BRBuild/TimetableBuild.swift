@@ -307,7 +307,7 @@ final class ParallelResults<Value: Sendable>: @unchecked Sendable {
 public enum XZ {
     public static func compress(_ source: URL, to destination: URL, runner: any ToolRunner) throws {
         let partial = destination.appendingPathExtension("partial")
-        FileManager.default.createFile(atPath: partial.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: partial.path, contents: nil)
         let output = try FileHandle(forWritingTo: partial)
         do {
             let tool = try runner.stream(executable: "xz", args: ["-6", "-T1", "--check=crc32", "-c", "--", source.path])

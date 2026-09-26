@@ -7,7 +7,7 @@ let stationsUsage = """
                                   [--threads N] [--offline] [--no-xz]
 
     Builds the stations artifact: Citi Bike stations from GBFS station_information (region 71,
-    185 or 158, or no region and inside the five boroughs; capacity > 0), snapped to the streets
+    185, 158, 70 or 311, or no region and inside the service area; capacity > 0), snapped to the streets
     graph, and the dense station × station bike-distance matrix.
 
       --sources DIR   Source downloads; GBFS goes to DIR/gbfs (default build/sources)

@@ -132,7 +132,7 @@ private struct FixtureCurlRunner: ToolRunner {
         try fixture.city.bytes.write(to: data.appendingPathComponent(MappedStreetGraph.fileName))
         let entries = fixture.stations.map { station in
             GBFSFixture.station(station.id, lat: station.coordinate.lat, lon: station.coordinate.lon, extra: "\"region_id\":\"71\",")
-        } + [GBFSFixture.station("jc", lat: 40.7, lon: -74.0, extra: "\"region_id\":\"70\",")]
+        } + [GBFSFixture.station("test", lat: 40.7, lon: -74.0, extra: "\"region_id\":\"189\",")]
         let runner = FixtureCurlRunner(documents: [
             GBFSStations.discoveryURL: GBFSFixture.discovery(),
             "https://example.test/gbfs/en/station_information.json": GBFSFixture.stationInformation(entries),
@@ -156,7 +156,7 @@ private struct FixtureCurlRunner: ToolRunner {
         // Same matrix as building directly (the compiler reorders stations along the curve).
         let (ordered, _) = StationsBuilder.select(
             fixture.stations.map { GBFSStation(stationID: $0.id, name: "Station \($0.id)", lat: $0.coordinate.lat, lon: $0.coordinate.lon, regionID: "71", capacity: 20) },
-            area: fixture.city.graph.fiveBoroughs)
+            area: fixture.city.graph.serviceArea)
         #expect((0..<8).map(stations.stationID) == ordered.map(\.id))
         if configuration.compress {
             #expect(report.artifact.xzStreams == 1 && report.artifact.xzBlocks == 1)

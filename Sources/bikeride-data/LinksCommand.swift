@@ -69,7 +69,7 @@ let linksShowUsage = """
     USAGE: bikeride-data links-show --stop SYSTEM:STOP_ID [--data DIR] [--limit N]
 
     Prints one stop's access points, footpaths and station links from links.bin, with names from
-    the tt-* and stations artifacts. SYSTEM is S, B, L or F, e.g. S:127N or B:400001.
+    the tt-* and stations artifacts. SYSTEM is S, B, L, F or P, e.g. S:127N, B:400001 or P:781743.
     """
 
 /// `bikeride-data links-show …`: inspect one stop's links.

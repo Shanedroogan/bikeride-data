@@ -87,9 +87,10 @@ bump. After a format freezes, any change a current reader cannot parse bumps its
 Each payload layout is documented here. A draft (format `0`) may change without a version bump;
 the draft revision inside the payload tells readers which draft they hold.
 
-### `streets` (kind 1, format 0, draft revision 1)
+### `streets` (kind 1, format 0, draft revision 2)
 
-The walk and bike street graph, its geometry and names, the snap grid and the borough polygons.
+The walk and bike street graph, its geometry and names, the snap grid and the service-area
+polygons (the five boroughs, Hudson County and the Newark Penn area).
 Writer: `StreetsArtifactWriter` (BRBuild). Reader: `MappedStreetGraph` (BRStreetCore), which
 views every array in place. How the data is derived: `docs/osm-derivation.md`.
 
@@ -104,7 +105,7 @@ microdegrees (10⁻⁶°), latitude first.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `STRT` |
-| draftRevision | `u32` | `1`. Readers reject any other |
+| draftRevision | `u32` | `2` (revision 2 added the New Jersey regions). Readers reject any other |
 | V, E, S, P, N | 5 × `u64` | Each below 2³² − 1 |
 | nodeCoordinates | `array<i32>`, 2V | lat, lon per node. Nodes are numbered along a Hilbert curve |
 | forwardOffsets | `array<u32>`, V + 1 | Edges leaving node u: `forwardOffsets[u] ..< forwardOffsets[u + 1]`. First 0, last E |
@@ -129,8 +130,8 @@ microdegrees (10⁻⁶°), latitude first.
 | grid shape | 2 × `u32` | columns, rows; columns × rows < 2³² − 1 |
 | gridCellOffsets | `array<u32>`, columns × rows + 1 | Cell (x, y) is index `y × columns + x`; x counts east, y north |
 | gridCellSegments | `array<u32>` | Segments listed per cell, ascending: every segment whose stored geometry passes through the cell |
-| regionCount | `u32` | Boroughs, by NYC DCP code |
-| regions | regionCount × (`u16` code, `str` name) | 1 Manhattan, 2 Bronx, 3 Brooklyn, 4 Queens, 5 Staten Island; ascending code |
+| regionCount | `u32` | Service-area regions |
+| regions | regionCount × (`u16` code, `str` name) | NYC DCP borough codes 1 Manhattan, 2 Bronx, 3 Brooklyn, 4 Queens, 5 Staten Island; New Jersey county FIPS codes 34013 Newark Penn area (the part of Essex County served), 34017 Hudson County; ascending code |
 | regionPolygonOffsets | `array<u32>`, regionCount + 1 | Polygons of each region |
 | polygonRingOffsets | `array<u32>`, polygons + 1 | Rings of each polygon: the exterior first, then holes |
 | ringPointOffsets | `array<u32>`, rings + 1 | Points of each ring |
@@ -143,7 +144,9 @@ Invariants, checked by `MappedStreetGraph(… validate: true)` (the default; a f
 offsets start at 0, never decrease and end at their array's count; every index is in range; every
 edge's segment joins that edge's own source and target in the direction bit 31 states; the reverse
 index lists every edge exactly once, at its target; bike classes and name kinds are known values.
-The five-borough area is the union of the regions.
+The five-borough area is the union of regions 1–5; the service area is the union of all regions
+(Hudson County and the Newark Penn disc overlap at Harrison, which is harmless: containment is
+"in any polygon").
 
 ### `tt-subway`, `tt-bus`, `tt-lirr`, `tt-ferry`, `tt-path` (kinds 3–6 and 10, format 0, draft revision 1)
 
@@ -318,11 +321,12 @@ Citi Bike stations and the dense station × station bike-distance matrix. Writer
 `streets` artifact whose segment numbering the stored snaps use.
 
 **Stations.** From GBFS 2.3 `station_information` (found through Citi Bike's discovery feed,
-English feeds). A station is kept when its `region_id` is 71, 185 or 158, or it has no
-`region_id` and lies inside the five boroughs (the union of the `streets` regions), and its
-`capacity` is positive. A repeated `station_id` keeps its first entry. Stations are ordered along
-a Hilbert curve through the fixed box 40.4680–40.9270 N, 74.2710–73.6880 W (the streets
-extract's), ties broken by the UTF-8 bytes of the id, so neighbors get neighboring indices; a
+English feeds). A station is kept when its `region_id` is 71, 185 or 158 (New York City), 70
+(Jersey City) or 311 (Hoboken), or it has no `region_id` and lies inside the service area (the
+union of the `streets` regions), and its `capacity` is positive; any other region, such as the
+test regions 189 and 190, is dropped. A repeated `station_id` keeps its first entry. Stations are
+ordered along a Hilbert curve through the fixed box 40.4680–40.9270 N, 74.2710–73.6880 W (the
+New York extract's clip, which also covers Jersey City and Hoboken), ties broken by the UTF-8 bytes of the id, so neighbors get neighboring indices; a
 separate id-sorted index serves lookups by id.
 
 **Snaps.** Each station is snapped twice, within 250 m: to the nearest segment the matrix
@@ -338,7 +342,9 @@ The path is the one `Dijkstra` seeded with `SnappedPoint.searchSeeds` finds, rea
 `ShortestPathTree.arrival(at:)` (ties to the A→B edge), or the straight run along a shared
 segment when that costs no more. Lengths round to the nearest decameter; `0xFFFF` marks no path
 (including every pair with a station that did not snap) or a length above 655,340 m; the
-diagonal is 0. Ride time is length ÷ the rider's speed, computed on the device.
+diagonal is 0. Every pair between a New Jersey and a Manhattan, Brooklyn, Queens or Bronx
+station is `0xFFFF`: no bike path crosses the Hudson (New Jersey's streets join only Staten
+Island's, over the Bayonne Bridge path), so riders change bikes only through PATH. Ride time is length ÷ the rider's speed, computed on the device.
 
 Counts: N stations, S strings.
 
@@ -357,7 +363,7 @@ Counts: N stations, S strings.
 | stationRegions | `array<u32>`, N | `region_id`, or 0 when absent |
 | stationLatE6, stationLonE6 | `array<i32>`, N each | Microdegrees |
 | stationCapacities | `array<u16>`, N | Nominal docks, > 0 |
-| stationFlags | `array<u8>`, N | Bit 0 charging, 1 kept by the five-borough test (no region), 2 bike-snapped, 3 walk-snapped |
+| stationFlags | `array<u8>`, N | Bit 0 charging, 1 kept by the service-area test (no region), 2 bike-snapped, 3 walk-snapped |
 | bikeSnapSegments | `array<u32>`, N | Segment, or `0xFFFFFFFF` when not bike-snapped |
 | bikeSnapFractions | `array<f32>`, N | In [0, 1]; 0 when not snapped |
 | bikeSnapDecimeters | `array<u16>`, N | Snap distance |
@@ -366,7 +372,7 @@ Counts: N stations, S strings.
 | matrixLow | `array<u8>`, N² | Low byte, same order |
 
 Nothing follows the last array. Two byte planes rather than `u16`s: the slowly varying high
-bytes compress far better apart from the noisy low ones (NYC: 11.4 MB raw, 3.2 MB xz, against
+bytes compress far better apart from the noisy low ones (NYC alone: 11.4 MB raw, 3.2 MB xz, against
 7.3 MB xz for plain `u16`s in id order). A lookup reads one byte from each plane.
 
 Invariants, checked by `MappedStations` at open: lengths match N; string offsets start at 0,
@@ -393,7 +399,8 @@ entrance of its own uses its own coordinate (flag *synthetic*); a bus, LIRR or f
 own position (a PATH station, having no entrance data, uses its own coordinate). Each is snapped
 to the nearest walkable segment within 150 m (250 m for the ferry) and stored like the station
 snaps above. LIRR stops with nothing within 150 m (all of
-Long Island) have no access point: they are ride-through only. Station access is charged once at
+Long Island) have no access point: they are ride-through only. New Jersey's PATH stations snap to
+the Hudson County and Newark streets like any other stop. Station access is charged once at
 every street↔platform transition: subway 120 s, LIRR 240 s, bus 30 s, ferry 120 s, PATH 120 s. Walk access
 from a point to a stop is the walk cost to the access point's snapped position + its snap
 distance at walking speed (3.5 mph) + its access seconds.

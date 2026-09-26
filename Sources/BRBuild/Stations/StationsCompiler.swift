@@ -5,7 +5,7 @@ import BRStreetCore
 import Foundation
 
 /// Builds the `stations` artifact: fetch Citi Bike's GBFS discovery and `station_information`
-/// (conditional GET), keep NYC stations with docks, snap them to the `streets` graph, compute the
+/// (conditional GET), keep service-area stations with docks, snap them to the `streets` graph, compute the
 /// dense bike matrix in parallel, write the raw artifact and its `.xz` blob, and report.
 public struct StationsCompiler: Sendable {
     public struct Configuration: Sendable {
@@ -98,7 +98,7 @@ public struct StationsCompiler: Sendable {
         // 2. Streets, selection, snapping.
         let graph = try timed("streets") { try MappedStreetGraph(contentsOf: config.streetsFile, validate: true) }
         let streetsSha = try timed("hash") { try ArtifactOutput.sha256(ofFileAt: config.streetsFile, runner: runner) }
-        var (stations, selection) = timed("select") { StationsBuilder.select(feed.stations, area: graph.fiveBoroughs, rules: config.selection) }
+        var (stations, selection) = timed("select") { StationsBuilder.select(feed.stations, area: graph.serviceArea, rules: config.selection) }
         log("stations: \(feed.stations.count) in feed, \(stations.count) kept")
         let snapping = timed("snap") {
             StationsBuilder.snap(&stations, graph: graph, bikeProfile: config.profile, maxSnapMeters: config.maxSnapMeters)

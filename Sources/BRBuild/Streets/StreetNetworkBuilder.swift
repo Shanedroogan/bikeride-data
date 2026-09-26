@@ -19,11 +19,20 @@ public struct StreetBuildOptions: Sendable {
     /// 431 m.
     public var islandConnectorMaxMeters = 2000.0
     /// Drop small disconnected pieces: keep only connected components (walk ∪ bike) holding at
-    /// least ``minimumComponentShare`` of the largest one's length, then restrict walking to
-    /// walking components and riding to strongly connected riding components that pass the same
-    /// test. Staten Island is its own component (the ferry is transit, not street).
+    /// least ``minimumComponentShare`` of the largest one's length (or, with
+    /// ``keepLargestComponentPerRegion``, the largest inside some region), then restrict walking
+    /// to walking components and riding to strongly connected riding components that pass the
+    /// same test. Staten Island is its own component (the ferry is transit, not street), and so
+    /// is New Jersey unless a bridge path joins it to the city (PATH and ferries are transit).
     public var keepLargestComponents = true
     public var minimumComponentShare = 0.05
+    /// Also keep, for every region passed to ``StreetNetworkBuilder/finish(regions:)``, the
+    /// component with the most length inside it, however small against the largest overall: each
+    /// part of the service area keeps its own street network even when no street joins it to the
+    /// rest (New Jersey reaches New York only by PATH and ferry). In New York this is the
+    /// city-wide component for the four joined boroughs and Staten Island's own, which the share
+    /// test keeps anyway.
+    public var keepLargestComponentPerRegion = true
 
     public init() {}
 }
@@ -216,11 +225,14 @@ public struct StreetNetworkBuilder {
     // MARK: - Build
 
     public mutating func finish(regions: [StreetRegion]) -> CompiledStreets {
-        addConnectors()
+        let raster = options.keepLargestComponentPerRegion && !regions.isEmpty ? RegionRaster(regions: regions.map(\.area)) : nil
+        addConnectors(regions: raster)
         var network = splitIntoPieces()
         network.mergeChains()
         stats.segmentsAfterMerge = network.pieceCount
-        if options.keepLargestComponents { network.restrictToLargestComponents(minimumShare: options.minimumComponentShare, stats: &stats) }
+        if options.keepLargestComponents {
+            network.restrictToLargestComponents(minimumShare: options.minimumComponentShare, regions: raster, stats: &stats)
+        }
         return network.compile(options: options, regions: regions, stats: &stats)
     }
 
@@ -235,7 +247,7 @@ public struct StreetNetworkBuilder {
     ///    walkable only on its sidewalk), to the nearest node of a component large enough to
     ///    keep: one connector per such island (at most
     ///    ``StreetBuildOptions/islandConnectorMaxMeters``).
-    private mutating func addConnectors() {
+    private mutating func addConnectors(regions raster: RegionRaster?) {
         guard poolIDs.count > 0 else { return }
         // One index over every node of kept and sidewalk ways.
         var all = nodeIDs + poolIDs
@@ -371,21 +383,24 @@ public struct StreetNetworkBuilder {
             }
         }
         var componentMeters: [Int: Double] = [:]
+        var regionMeters: [Int: [Int: Double]] = [:]
         for way in 0..<wayCount where rules[Int(wayRule[way])].walk {
             let first = Int(wayStart[way])
             var meters = 0.0
             for k in (first + 1)..<Int(wayStart[way + 1]) {
                 meters += StreetGeometry.distanceMeters(latE7: latE7[k - 1], lonE7: lonE7[k - 1], latE7: latE7[k], lonE7: lonE7[k])
             }
-            componentMeters[components.find(Int(keptIndex[first])), default: 0] += meters
+            let root = components.find(Int(keptIndex[first]))
+            componentMeters[root, default: 0] += meters
+            if let region = raster?.region(latE7: latE7[first], lonE7: lonE7[first]) { regionMeters[region, default: [:]][root, default: 0] += meters }
         }
-        guard let largest = componentMeters.values.max() else { return }
-        let threshold = largest * options.minimumComponentShare
+        guard !componentMeters.isEmpty else { return }
+        let largeRoots = LargeComponents.keys(componentMeters, perRegion: regionMeters, minimumShare: options.minimumComponentShare)
         var large = [Bool](repeating: false, count: unique.count)
         var islands: [Int: [Int32]] = [:] // component root → its nodes on the sidewalk network
         for u in unique.indices where touches[u] & 3 != 0 {
             let root = components.find(u)
-            large[u] = componentMeters[root, default: 0] >= threshold
+            large[u] = largeRoots.contains(root)
             if !large[u] && touches[u] & 4 != 0 { islands[root, default: []].append(Int32(u)) }
         }
         // In order of each island's first node, so builds are deterministic.
@@ -481,6 +496,22 @@ public struct StreetNetworkBuilder {
         // Free the per-way input.
         nodeIDs = []; latE7 = []; lonE7 = []; wayStart = [0]; wayRule = []; wayName = []
         return network
+    }
+}
+
+/// The component-keeping rule shared by the island connectors and the component filter.
+enum LargeComponents {
+    /// Keys whose length is at least `minimumShare` of the largest one's, plus each region's key
+    /// with the most length inside that region (ties to the smaller key).
+    static func keys<Key: Hashable & Comparable>(
+        _ meters: [Key: Double], perRegion: [Int: [Key: Double]], minimumShare: Double
+    ) -> Set<Key> {
+        guard let biggest = meters.values.max() else { return [] }
+        var kept = Set(meters.filter { $0.value >= biggest * minimumShare }.keys)
+        for inside in perRegion.values {
+            if let best = inside.max(by: { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }) { kept.insert(best.key) }
+        }
+        return kept
     }
 }
 
@@ -661,12 +692,27 @@ struct PieceNetwork {
 
     /// Keeps the large connected components, then removes walk access outside the large walking
     /// components and bike access outside the large strongly connected riding components. A
-    /// component is large when it holds at least `minimumShare` of the biggest one's length.
-    mutating func restrictToLargestComponents(minimumShare: Double, stats: inout StreetBuildStats) {
+    /// component is large when it holds at least `minimumShare` of the biggest one's length, or
+    /// (given `regions`) has the most length inside some region: see ``LargeComponents``.
+    mutating func restrictToLargestComponents(minimumShare: Double, regions raster: RegionRaster?, stats: inout StreetBuildStats) {
         let totalMeters = lengths.reduce(0, +)
-        func largeRoots<Key: Hashable & Comparable>(_ meters: [Key: Double]) -> Set<Key> {
-            guard let biggest = meters.values.max() else { return [] }
-            return Set(meters.filter { $0.value >= biggest * minimumShare }.keys)
+        // Each piece is counted in the region of its first node (−1: outside every region).
+        let pieceRegion: [Int16] = (0..<pieceCount).map { piece in
+            let u = Int(first(piece))
+            return Int16(raster?.region(latE7: latE7[u], lonE7: lonE7[u]) ?? -1)
+        }
+        /// Sums piece lengths per key, overall and per region, for the pieces `key` assigns one.
+        func measure<Key: Hashable & Comparable>(_ key: (Int) -> Key?) -> (meters: [Key: Double], perRegion: [Int: [Key: Double]]) {
+            var meters: [Key: Double] = [:], perRegion: [Int: [Key: Double]] = [:]
+            for piece in 0..<pieceCount {
+                guard let k = key(piece) else { continue }
+                meters[k, default: 0] += lengths[piece]
+                if pieceRegion[piece] >= 0 { perRegion[Int(pieceRegion[piece]), default: [:]][k, default: 0] += lengths[piece] }
+            }
+            return (meters, perRegion)
+        }
+        func largeRoots<Key: Hashable & Comparable>(_ measured: (meters: [Key: Double], perRegion: [Int: [Key: Double]])) -> Set<Key> {
+            LargeComponents.keys(measured.meters, perRegion: measured.perRegion, minimumShare: minimumShare)
         }
 
         // 1. Components over all usable pieces.
@@ -674,12 +720,10 @@ struct PieceNetwork {
         for piece in 0..<pieceCount where attributes[piece].isUsable {
             components.union(Int(first(piece)), Int(last(piece)))
         }
-        var componentMeters: [Int: Double] = [:]
-        for piece in 0..<pieceCount where attributes[piece].isUsable {
-            componentMeters[components.find(Int(first(piece))), default: 0] += lengths[piece]
-        }
+        let measured = measure { attributes[$0].isUsable ? components.find(Int(first($0))) : nil }
+        let componentMeters = measured.meters
         stats.components = componentMeters.count
-        let keptRoots = largeRoots(componentMeters)
+        let keptRoots = largeRoots(measured)
         let kept = keptRoots.map { componentMeters[$0] ?? 0 }.sorted(by: >)
         stats.keptComponentMeters = kept
         stats.largestComponentLengthShare = totalMeters > 0 ? (kept.first ?? 0) / totalMeters : 1
@@ -704,13 +748,9 @@ struct PieceNetwork {
         for piece in 0..<pieceCount where keep[piece] && attributes[piece].walk {
             walking.union(Int(first(piece)), Int(last(piece)))
         }
-        var walkMeters: [Int: Double] = [:]
-        var allWalkMeters = 0.0
-        for piece in 0..<pieceCount where keep[piece] && attributes[piece].walk {
-            walkMeters[walking.find(Int(first(piece))), default: 0] += lengths[piece]
-            allWalkMeters += lengths[piece]
-        }
-        let walkRoots = largeRoots(walkMeters)
+        let walkMeasured = measure { keep[$0] && attributes[$0].walk ? walking.find(Int(first($0))) : nil }
+        let allWalkMeters = walkMeasured.meters.values.reduce(0, +)
+        let walkRoots = largeRoots(walkMeasured)
         for piece in 0..<pieceCount where keep[piece] && attributes[piece].walk
             && !walkRoots.contains(walking.find(Int(first(piece)))) {
             attributes[piece].walk = false
@@ -727,14 +767,11 @@ struct PieceNetwork {
             if attributes[piece].bikeBackward { arcs.append((b, a)); allBikeMeters += lengths[piece] }
         }
         let scc = StronglyConnected.components(nodeCount: nodeIDs.count, arcs: arcs)
-        var sccMeters: [Int32: Double] = [:]
-        for piece in 0..<pieceCount where keep[piece] {
+        let bikeRoots = largeRoots(measure { piece -> Int32? in
             let a = Int(first(piece)), b = Int(last(piece))
-            if attributes[piece].bikeForward || attributes[piece].bikeBackward, scc[a] == scc[b], scc[a] >= 0 {
-                sccMeters[scc[a], default: 0] += lengths[piece]
-            }
-        }
-        let bikeRoots = largeRoots(sccMeters)
+            guard keep[piece], attributes[piece].bikeForward || attributes[piece].bikeBackward, scc[a] == scc[b], scc[a] >= 0 else { return nil }
+            return scc[a]
+        })
         for piece in 0..<pieceCount where keep[piece] {
             let a = Int(first(piece)), b = Int(last(piece))
             let inside = scc[a] == scc[b] && bikeRoots.contains(scc[a])

@@ -1,8 +1,9 @@
 # How the street data is derived from OpenStreetMap
 
 This is the **ODbL derivation recipe** for the `streets` artifact (and the `stations` matrix built
-on it). It publishes how Bike Ride's street data is produced from OpenStreetMap, as the Open
-Database License asks. OpenStreetMap data is © OpenStreetMap contributors and available under the
+on it), which covers New York City's five boroughs, Hudson County and the Newark Penn area. It
+publishes how Bike Ride's street data is produced from OpenStreetMap, as the Open Database
+License asks. OpenStreetMap data is © OpenStreetMap contributors and available under the
 [ODbL 1.0](https://opendatacommons.org/licenses/odbl/).
 
 Everything below is what `bikeride-data streets` does. The code of record is
@@ -14,6 +15,7 @@ file changes in the same commit as the rules. The binary layout is in `docs/form
 | Source | URL | Used for |
 |---|---|---|
 | Geofabrik New York extract | <https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf> | Streets, paths, parks |
+| Geofabrik New Jersey extract | <https://download.geofabrik.de/north-america/us/new-jersey-latest.osm.pbf> | Streets, paths, parks in Hudson County and around Newark Penn; Hudson County's boundary (relation tagged `nist:fips_code=34017`, OSM r957239) |
 | NYC Open Data *Borough Boundaries (Water Areas Included)*, NYC Department of City Planning | <https://data.cityofnewyork.us/resource/wh2p-dxnf.geojson> | Borough polygons, the city mask |
 
 Downloads are conditional (`If-None-Match` with the saved ETag, `If-Modified-Since` from the file
@@ -23,6 +25,17 @@ The water-included boundaries are used rather than the shoreline-clipped ones (`
 that points on piers, at the water's edge and on bridges land in a borough; borough lines run
 mid-river. Each ring is simplified with Douglas–Peucker at **10 m**, then stored at microdegree
 precision.
+
+**The service area** is the five boroughs plus two New Jersey regions, stored alongside them:
+
+| Code | Region | Polygon |
+|---|---|---|
+| 1–5 | Manhattan, Bronx, Brooklyn, Queens, Staten Island | The DCP boundaries above |
+| 34017 | Hudson County | OSM's county boundary relation (`admin_level=6`, `nist:fips_code=34017`), which, like the borough lines, runs to the state line mid-river. Its holes, Liberty Island and the 1857 part of Ellis Island, are New York's. Simplified at 10 m |
+| 34013 | Newark Penn area | A 64-gon of radius **1.5 km** around Newark Penn Station (40.7345 N, 74.1644 W): the station's streets, the Passaic bridges and Harrison (already in Hudson County) |
+
+New Jersey codes are county FIPS codes (34013 is Essex County, of which only this disc is
+served).
 
 ## Commands
 
@@ -35,36 +48,57 @@ curl --silent --show-error --fail --location --remote-time --retry 3 --connect-t
   --dump-header <file>.headers --output <file>.partial --write-out '%{http_code}' \
   --time-cond <file> --etag-compare <file>.etag <url>
 
-# 1. Clip the state extract to the five boroughs' extent plus about 1 km (west,south,east,north).
+# 1. Hudson County's boundary relation (with its member ways and nodes), as GeoJSON lines; the
+#    compiler keeps the feature with admin_level=6 and nist:fips_code=34017.
+osmium tags-filter new-jersey-latest.osm.pbf r/nist:fips_code=34017 \
+  --overwrite --no-progress -o hudson-county-boundary.osm.pbf
+osmium export hudson-county-boundary.osm.pbf -f geojsonseq --geometry-types=polygon --no-progress
+
+# 2. Clip the New York extract to the five boroughs' extent plus about 1 km (west,south,east,north).
 #    complete_ways keeps every node of a way that crosses the box.
 osmium extract --bbox=-74.271,40.468,-73.688,40.927 --strategy=complete_ways \
   --overwrite --no-progress -o nyc-bbox.osm.pbf new-york-latest.osm.pbf
 
-# 2. Park areas, for the park flag and "park path" labels.
-osmium tags-filter nyc-bbox.osm.pbf a/leisure=park,garden,nature_reserve a/landuse=recreation_ground \
-  --overwrite --no-progress -o nyc-parks.osm.pbf
+# 3. Clip the New Jersey extract to nj-clip.geojson: the convex hull of Hudson County and the
+#    Newark Penn disc, grown by 1.5 km (each hull vertex replaced by a 32-gon of that radius, then
+#    the hull of those; positions at 10⁻⁶°). The city mask below, not this clip, decides what is
+#    kept, so the clip only has to be generous.
+osmium extract --polygon=nj-clip.geojson --strategy=complete_ways \
+  --overwrite --no-progress -o nj-clip.osm.pbf new-jersey-latest.osm.pbf
 
-# 3. Every way with a highway tag. The profile rules below decide what each one becomes, so the
+# 4. Merge the two clips. Objects near the state line are in both; merge writes an identical
+#    object once, and time-filter (a snapshot "now") keeps only the newest version when the two
+#    extracts were cut at different times.
+osmium merge nyc-bbox.osm.pbf nj-clip.osm.pbf --overwrite --no-progress -o merged.osm.pbf
+osmium time-filter merged.osm.pbf --overwrite --no-progress -o service-area.osm.pbf
+
+# 5. Park areas, for the park flag and "park path" labels.
+osmium tags-filter service-area.osm.pbf a/leisure=park,garden,nature_reserve a/landuse=recreation_ground \
+  --overwrite --no-progress -o service-area-parks.osm.pbf
+
+# 6. Every way with a highway tag. The profile rules below decide what each one becomes, so the
 #    filter stays coarse: the rules need to see sidewalks and crossings too (see Connectors).
-osmium tags-filter nyc-bbox.osm.pbf w/highway --overwrite --no-progress -o nyc-highways.osm.pbf
+osmium tags-filter service-area.osm.pbf w/highway --overwrite --no-progress -o service-area-highways.osm.pbf
 
-# 4. Inline node locations into the ways.
-osmium add-locations-to-ways nyc-highways.osm.pbf --overwrite --no-progress -o nyc-highways-located.osm.pbf
+# 7. Inline node locations into the ways.
+osmium add-locations-to-ways service-area-highways.osm.pbf --overwrite --no-progress \
+  -o service-area-highways-located.osm.pbf
 
-# 5. Park polygons as GeoJSON lines, streamed into the compiler.
-osmium export nyc-parks.osm.pbf -f geojsonseq --geometry-types=polygon --no-progress
+# 8. Park polygons as GeoJSON lines, streamed into the compiler.
+osmium export service-area-parks.osm.pbf -f geojsonseq --geometry-types=polygon --no-progress
 
-# 6. The ways as OPL text, streamed into the compiler's byte-level line parser.
-osmium cat nyc-highways-located.osm.pbf -t way -f opl,add_metadata=false,locations_on_ways=true
+# 9. The ways as OPL text, streamed into the compiler's byte-level line parser.
+osmium cat service-area-highways-located.osm.pbf -t way -f opl,add_metadata=false,locations_on_ways=true
 
-# 7. Compress to exactly one xz stream with one block, and check it.
+# 10. Compress to exactly one xz stream with one block, and check it.
 xz -6 -T1 --check=crc32 --keep --force streets.bin
 xz --robot --list streets.bin.xz
 ```
 
-**City mask.** The box also covers parts of New Jersey, Westchester and Nassau. A way is kept
-only if at least one of its nodes lies within **1 km** of a borough polygon (a 100 m raster of the
-polygons, dilated by 1 km), so streets that leave and re-enter the city stay whole.
+**City mask.** The clips also cover the rest of northern New Jersey's edge, Westchester and
+Nassau. A way is kept only if at least one of its nodes lies within **1 km** of a service-area
+region (a 100 m raster of the seven polygons, dilated by 1 km), so streets that leave and re-enter
+the service area stay whole.
 
 ## Profile rules
 
@@ -168,13 +202,21 @@ one-way road, the one-way's direction; else `cycleway` and `cycleway:both` serve
    exactly two piece ends meet there and they agree on name, flags, walk and bike access and bike
    class in each direction. Closed loops are anchored at one node. Interior nodes become shape
    points.
-3. **Components.** Connected components over all usable segments are measured by length; those
-   holding at least **5 %** of the largest one's length are kept. This keeps **Staten Island**,
+3. **Components.** Connected components over all usable segments are measured by length. A
+   component is kept when it holds at least **5 %** of the largest one's length, **or** it has
+   the most length inside one of the service-area regions (each segment counts in the region of
+   its start node, on a 100 m raster of the regions). The share test keeps **Staten Island**,
    which no street joins to the rest of the city (the Verrazzano-Narrows Bridge is a motorway and
-   the ferry is transit), and drops islets such as disconnected private paths. Then walk access
-   is kept only inside walking components that pass the same test, and bike access only inside
-   strongly connected components of the directed riding graph that pass it, so every rideable
-   edge can be ridden to and from. Segments left with neither mode are removed.
+   the ferry is transit), and drops islets such as disconnected private paths. The per-region
+   test guarantees **New Jersey** its own network whatever its size against the city's: no
+   street crosses the Hudson (the tunnels are motorways; PATH and the ferries are transit), so
+   Hudson County's streets never join Manhattan's. (In the 2026-09 build they join Staten
+   Island's over the Bayonne Bridge path, and that component, 5,156 km, passes the share test
+   too.) In New York the per-region test picks the components the share test keeps anyway. Then
+   walk access is kept only inside walking components that pass the same tests, and bike access
+   only inside strongly connected components of the directed riding graph that pass them, so every
+   rideable edge can be ridden to and from. Segments left with neither mode are removed.
+   Island connectors (step 2 of Connectors) aim at components that pass the same tests.
 4. **Per segment:** length from the full-resolution OSM geometry (haversine at 10⁻⁷°), stored in
    decimeters; entry and exit bearings measured over the first and last 10 m, quantized to
    1/256 turn; interior shape points simplified with Douglas–Peucker at **1 m** and stored as

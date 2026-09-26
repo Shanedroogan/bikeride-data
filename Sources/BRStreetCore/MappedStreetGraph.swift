@@ -384,8 +384,14 @@ public struct MappedStreetGraph: StreetNetwork {
         regions.first { $0.code == StreetRegion.manhattanCode }?.area ?? MultiPolygon([])
     }
 
-    /// All five boroughs as one area.
+    /// The five boroughs as one area.
     public var fiveBoroughs: MultiPolygon {
+        MultiPolygon(regions.filter(\.isNYCBorough).flatMap(\.area.polygons))
+    }
+
+    /// The whole service area: the five boroughs, Hudson County and the Newark Penn area (the
+    /// union of every stored region; regions may overlap).
+    public var serviceArea: MultiPolygon {
         MultiPolygon(regions.flatMap(\.area.polygons))
     }
 

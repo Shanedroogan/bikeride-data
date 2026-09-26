@@ -4,11 +4,13 @@ import BRGeo
 import BRStreetCore
 import Foundation
 
-/// Builds the `streets` artifact from the Geofabrik New York extract and the NYC borough
-/// boundaries: download (conditional), osmium clip/filter/locate, OPL → graph, write, xz.
-/// The exact commands are published in `docs/osm-derivation.md`.
+/// Builds the `streets` artifact from the Geofabrik New York and New Jersey extracts and the NYC
+/// borough boundaries: download (conditional), Hudson County's boundary, osmium clip/merge/
+/// filter/locate, OPL → graph, write, xz. The exact commands are published in
+/// `docs/osm-derivation.md`.
 public struct StreetsCompiler: Sendable {
     public static let osmURL = "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf"
+    public static let njOSMURL = "https://download.geofabrik.de/north-america/us/new-jersey-latest.osm.pbf"
     /// NYC Open Data "Borough Boundaries (water areas included)", DCP.
     public static let boroughsURL = "https://data.cityofnewyork.us/resource/wh2p-dxnf.geojson"
 
@@ -20,8 +22,11 @@ public struct StreetsCompiler: Sendable {
         public var offline = false
         /// West, south, east, north: the five boroughs' extent plus about 1 km.
         public var bbox = (west: -74.2710, south: 40.4680, east: -73.6880, north: 40.9270)
-        /// Ways with no node within this distance of a borough are dropped.
+        /// Ways with no node within this distance of a service-area region are dropped.
         public var bufferMeters = 1000.0
+        /// The New Jersey extract is clipped to the regions' convex hull grown by this much (more
+        /// than ``bufferMeters``, so the city mask, not the clip, decides what is kept).
+        public var njClipBufferMeters = 1500.0
         /// Douglas–Peucker tolerance for the stored borough polygons.
         public var boroughToleranceMeters = 10.0
         public var options = StreetBuildOptions()
@@ -35,6 +40,7 @@ public struct StreetsCompiler: Sendable {
         }
 
         public var osmFile: URL { sourcesDirectory.appendingPathComponent("osm/new-york-latest.osm.pbf") }
+        public var njOSMFile: URL { sourcesDirectory.appendingPathComponent("osm/new-jersey-latest.osm.pbf") }
         public var boroughsFile: URL { sourcesDirectory.appendingPathComponent("nyc/borough-boundaries-water-included.geojson") }
     }
 
@@ -92,36 +98,65 @@ public struct StreetsCompiler: Sendable {
 
         // 1. Sources.
         let fetcher = SourceFetcher(runner: runner, offline: config.offline)
-        let (osm, boroughs) = try timed("download") {
+        let (osm, njOSM, boroughs) = try timed("download") {
             log("fetching \(Self.osmURL)")
             let osm = try fetcher.fetch(Self.osmURL, to: config.osmFile)
             log("  \(osm.status), \(osm.bytes) bytes")
+            log("fetching \(Self.njOSMURL)")
+            let njOSM = try fetcher.fetch(Self.njOSMURL, to: config.njOSMFile)
+            log("  \(njOSM.status), \(njOSM.bytes) bytes")
             log("fetching \(Self.boroughsURL)")
             let boroughs = try fetcher.fetch(Self.boroughsURL, to: config.boroughsFile)
             log("  \(boroughs.status), \(boroughs.bytes) bytes")
-            return (osm, boroughs)
+            return (osm, njOSM, boroughs)
         }
 
-        // 2. Borough polygons and the city mask.
-        let regions = try timed("boroughs") {
+        // 2. Service-area regions (borough polygons, Hudson County, the Newark Penn area) and
+        //    the city mask.
+        let work = config.workDirectory
+        let hudsonPBF = work.appendingPathComponent("hudson-county-boundary.osm.pbf")
+        let boroughRegions = try timed("boroughs") {
             try GeoJSONAreas.boroughs(from: Data(contentsOf: config.boroughsFile), simplifyToleranceMeters: config.boroughToleranceMeters)
         }
+        let hudson = try timed("hudson") { () throws -> StreetRegion in
+            try osmium(["tags-filter", config.njOSMFile.path, "r/nist:fips_code=\(ServiceArea.hudsonCountyFIPS)",
+                        "--overwrite", "--no-progress", "-o", hudsonPBF.path])
+            let args = ["export", hudsonPBF.path, "-f", "geojsonseq", "--geometry-types=polygon", "--no-progress"]
+            commands.append((["osmium"] + args).joined(separator: " "))
+            return try ServiceArea.hudsonCounty(
+                fromGeoJSONSequence: runner.run(executable: "osmium", args: args),
+                simplifyToleranceMeters: config.boroughToleranceMeters
+            )
+        }
+        let njRegions = [ServiceArea.newarkPennArea(), hudson]
+        let regions = (boroughRegions + njRegions).sorted { $0.code < $1.code }
         let mask = timed("mask") { CityMask(regions: regions.map(\.area), bufferMeters: config.bufferMeters) }
 
-        // 3. Clip to the city's bounding box, then pull out parks and highways.
-        let work = config.workDirectory
+        // 3. Clip New York to the city's bounding box and New Jersey to its regions' grown hull,
+        //    merge them (one version per object), then pull out parks and highways.
         let clipped = work.appendingPathComponent("nyc-bbox.osm.pbf")
-        let parksPBF = work.appendingPathComponent("nyc-parks.osm.pbf")
-        let highways = work.appendingPathComponent("nyc-highways.osm.pbf")
-        let located = work.appendingPathComponent("nyc-highways-located.osm.pbf")
+        let njPolygon = work.appendingPathComponent("nj-clip.geojson")
+        let njClipped = work.appendingPathComponent("nj-clip.osm.pbf")
+        let merged = work.appendingPathComponent("merged.osm.pbf")
+        let combined = work.appendingPathComponent("service-area.osm.pbf")
+        let parksPBF = work.appendingPathComponent("service-area-parks.osm.pbf")
+        let highways = work.appendingPathComponent("service-area-highways.osm.pbf")
+        let located = work.appendingPathComponent("service-area-highways-located.osm.pbf")
         let b = config.bbox
         try timed("osmium") {
-            log("osmium: clip, filter, add locations")
+            log("osmium: clip, merge, filter, add locations")
             try osmium(["extract", "--bbox=\(b.west),\(b.south),\(b.east),\(b.north)", "--strategy=complete_ways",
                         "--overwrite", "--no-progress", "-o", clipped.path, config.osmFile.path])
-            try osmium(["tags-filter", clipped.path, "a/leisure=park,garden,nature_reserve", "a/landuse=recreation_ground",
+            try ServiceArea.geoJSONPolygonFeature(ServiceArea.bufferedHull(of: njRegions, bufferMeters: config.njClipBufferMeters))
+                .write(to: njPolygon, options: .atomic)
+            try osmium(["extract", "--polygon=\(njPolygon.path)", "--strategy=complete_ways",
+                        "--overwrite", "--no-progress", "-o", njClipped.path, config.njOSMFile.path])
+            try osmium(["merge", clipped.path, njClipped.path, "--overwrite", "--no-progress", "-o", merged.path])
+            // The two extracts may hold different versions of a border object; keep the newest.
+            try osmium(["time-filter", merged.path, "--overwrite", "--no-progress", "-o", combined.path])
+            try osmium(["tags-filter", combined.path, "a/leisure=park,garden,nature_reserve", "a/landuse=recreation_ground",
                         "--overwrite", "--no-progress", "-o", parksPBF.path])
-            try osmium(["tags-filter", clipped.path, "w/highway", "--overwrite", "--no-progress", "-o", highways.path])
+            try osmium(["tags-filter", combined.path, "w/highway", "--overwrite", "--no-progress", "-o", highways.path])
             try osmium(["add-locations-to-ways", highways.path, "--overwrite", "--no-progress", "-o", located.path])
         }
         let parkPolygons = try timed("parks") { () throws -> [Polygon] in
@@ -153,7 +188,7 @@ public struct StreetsCompiler: Sendable {
         log("graph: \(stats.vertices) nodes, \(stats.directedEdges) edges, \(stats.segments) segments")
 
         // 5. Write, compress, verify.
-        let dataVersion = "osm=\(osm.versionTag);boroughs=\(boroughs.versionTag)"
+        let dataVersion = "osm=\(osm.versionTag);njosm=\(njOSM.versionTag);boroughs=\(boroughs.versionTag)"
         let bytes = timed("write") { StreetsArtifactWriter.artifact(compiled, dataVersion: dataVersion, snapCellMeters: config.options.snapCellMeters) }
         let artifactURL = config.outputDirectory.appendingPathComponent(MappedStreetGraph.fileName)
         try timed("write") { try bytes.write(to: artifactURL, options: .atomic) }
@@ -187,7 +222,7 @@ public struct StreetsCompiler: Sendable {
 
         return Report(
             generatedAt: SourceRecord.isoFormatter.string(from: Date()),
-            sources: [osm, boroughs],
+            sources: [osm, njOSM, boroughs],
             commands: commands,
             stats: stats,
             parkPolygons: parkPolygons.count,
