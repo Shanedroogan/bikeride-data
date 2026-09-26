@@ -1,0 +1,77 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "borocode": "1",
+    "boroname": "Manhattan"
+   },
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        -74.0015,
+        40.6985
+       ],
+       [
+        -73.9955,
+        40.6985
+       ],
+       [
+        -73.9955,
+        40.7035
+       ],
+       [
+        -74.0015,
+        40.7035
+       ],
+       [
+        -74.0015,
+        40.6985
+       ]
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "borocode": "5",
+    "boroname": "Staten Island"
+   },
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        -73.9945,
+        40.704
+       ],
+       [
+        -73.9925,
+        40.704
+       ],
+       [
+        -73.9925,
+        40.7055
+       ],
+       [
+        -73.9945,
+        40.7055
+       ],
+       [
+        -73.9945,
+        40.704
+       ]
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}
