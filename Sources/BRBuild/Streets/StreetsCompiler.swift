@@ -5,8 +5,8 @@ import BRStreetCore
 import Foundation
 
 /// Builds the `streets` artifact from the Geofabrik New York and New Jersey extracts and the NYC
-/// borough boundaries: download (conditional), Hudson County's boundary, osmium clip/merge/
-/// filter/locate, OPL → graph, write, xz. The exact commands are published in
+/// borough boundaries: download (conditional), Jersey City's and Hoboken's boundaries, osmium
+/// clip/merge/filter/locate, OPL → graph, write, xz. The exact commands are published in
 /// `docs/osm-derivation.md`.
 public struct StreetsCompiler: Sendable {
     public static let osmURL = "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf"
@@ -111,24 +111,22 @@ public struct StreetsCompiler: Sendable {
             return (osm, njOSM, boroughs)
         }
 
-        // 2. Service-area regions (borough polygons, Hudson County, the Newark Penn area) and
-        //    the city mask.
+        // 2. Service-area regions (borough polygons, Jersey City, Hoboken) and the city mask.
         let work = config.workDirectory
-        let hudsonPBF = work.appendingPathComponent("hudson-county-boundary.osm.pbf")
+        let boundaryPBF = work.appendingPathComponent("nj-municipal-boundaries.osm.pbf")
         let boroughRegions = try timed("boroughs") {
             try GeoJSONAreas.boroughs(from: Data(contentsOf: config.boroughsFile), simplifyToleranceMeters: config.boroughToleranceMeters)
         }
-        let hudson = try timed("hudson") { () throws -> StreetRegion in
-            try osmium(["tags-filter", config.njOSMFile.path, "r/nist:fips_code=\(ServiceArea.hudsonCountyFIPS)",
-                        "--overwrite", "--no-progress", "-o", hudsonPBF.path])
-            let args = ["export", hudsonPBF.path, "-f", "geojsonseq", "--geometry-types=polygon", "--no-progress"]
+        let njRegions = try timed("municipalities") { () throws -> [StreetRegion] in
+            try osmium(["tags-filter", config.njOSMFile.path, ServiceArea.municipalitiesFilter,
+                        "--overwrite", "--no-progress", "-o", boundaryPBF.path])
+            let args = ["export", boundaryPBF.path, "-f", "geojsonseq", "--geometry-types=polygon", "--no-progress"]
             commands.append((["osmium"] + args).joined(separator: " "))
-            return try ServiceArea.hudsonCounty(
+            return try ServiceArea.municipalities(
                 fromGeoJSONSequence: runner.run(executable: "osmium", args: args),
                 simplifyToleranceMeters: config.boroughToleranceMeters
             )
         }
-        let njRegions = [ServiceArea.newarkPennArea(), hudson]
         let regions = (boroughRegions + njRegions).sorted { $0.code < $1.code }
         let mask = timed("mask") { CityMask(regions: regions.map(\.area), bufferMeters: config.bufferMeters) }
 

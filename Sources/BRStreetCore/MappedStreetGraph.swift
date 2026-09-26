@@ -389,8 +389,8 @@ public struct MappedStreetGraph: StreetNetwork {
         MultiPolygon(regions.filter(\.isNYCBorough).flatMap(\.area.polygons))
     }
 
-    /// The whole service area: the five boroughs, Hudson County and the Newark Penn area (the
-    /// union of every stored region; regions may overlap).
+    /// The whole service area: the five boroughs, Jersey City and Hoboken (the union of every
+    /// stored region).
     public var serviceArea: MultiPolygon {
         MultiPolygon(regions.flatMap(\.area.polygons))
     }
@@ -487,9 +487,9 @@ public struct MappedStreetGraph: StreetNetwork {
     private static func readRegions(_ reader: inout BinaryReader) throws -> [StreetRegion] {
         let count = Int(try reader.read(UInt32.self))
         guard count < 1024 else { throw StreetsFormatError.valueOutOfRange(section: "regionCount", index: 0) }
-        var headers: [(code: UInt16, name: String)] = []
+        var headers: [(code: UInt32, name: String)] = []
         for _ in 0..<count {
-            let code = try reader.read(UInt16.self)
+            let code = try reader.read(UInt32.self)
             headers.append((code, try reader.readString()))
         }
         let polygonOffsets = try reader.readArray(of: UInt32.self).toArray()

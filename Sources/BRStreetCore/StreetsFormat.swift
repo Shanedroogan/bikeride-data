@@ -8,8 +8,9 @@ public enum StreetsFormat {
     public static let payloadMagic: [UInt8] = Array("STRT".utf8)
     /// Revision of the draft payload layout, bumped on every change while the artifact's
     /// formatVersion is still 0. Readers reject any other revision. Revision 2 added the New
-    /// Jersey service-area regions (Hudson County, the Newark Penn area).
-    public static let draftRevision: UInt32 = 2
+    /// Jersey service-area regions; revision 3 narrowed them to Jersey City and Hoboken and widened
+    /// region codes to `u32` (Census place GEOIDs).
+    public static let draftRevision: UInt32 = 3
     /// Set in ``MappedStreetGraph/segment(ofEdge:)`` codes when an edge runs from the segment's
     /// end (B) back to its start (A).
     public static let reversedSegmentBit: UInt32 = 1 << 31
@@ -105,25 +106,25 @@ public struct SnapGridGeometry: Sendable, Equatable {
 }
 
 /// A named area stored in the artifact: each NYC borough, keyed by its DCP borough code, and the
-/// New Jersey parts of the service area, keyed by their county's FIPS code.
+/// New Jersey municipalities in the service area, keyed by their Census place GEOID.
 public struct StreetRegion: Sendable, Equatable {
     /// NYC DCP borough code: 1 Manhattan, 2 Bronx, 3 Brooklyn, 4 Queens, 5 Staten Island; or a
-    /// New Jersey county FIPS code: 34017 Hudson County, 34013 the Newark Penn area (the part of
-    /// Essex County in the service area).
-    public let code: UInt16
+    /// New Jersey Census place GEOID (state FIPS 34 + place code): 3432250 Hoboken, 3436000
+    /// Jersey City.
+    public let code: UInt32
     public let name: String
     public let area: MultiPolygon
 
-    public init(code: UInt16, name: String, area: MultiPolygon) {
+    public init(code: UInt32, name: String, area: MultiPolygon) {
         self.code = code
         self.name = name
         self.area = area
     }
 
-    public static let manhattanCode: UInt16 = 1
-    public static let nycBoroughCodes: ClosedRange<UInt16> = 1...5
-    public static let hudsonCountyCode: UInt16 = 34017
-    public static let newarkPennAreaCode: UInt16 = 34013
+    public static let manhattanCode: UInt32 = 1
+    public static let nycBoroughCodes: ClosedRange<UInt32> = 1...5
+    public static let hobokenCode: UInt32 = 3432250
+    public static let jerseyCityCode: UInt32 = 3436000
 
     public var isNYCBorough: Bool { Self.nycBoroughCodes.contains(code) }
 }

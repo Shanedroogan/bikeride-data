@@ -21,11 +21,13 @@ enum StreetsFixtures {
     }
 
     /// The fixture's service area, as ``StreetsCompiler`` assembles it: the two fixture boroughs,
-    /// the Newark Penn disc and the fixture Hudson County (west of the lattice), by code.
+    /// and the fixture Jersey City and Hoboken (west of the lattice), by code.
     static func regions() throws -> [StreetRegion] {
         let boroughs = try GeoJSONAreas.boroughs(from: data("boroughs-fixture.geojson"), simplifyToleranceMeters: 10)
-        let hudson = try ServiceArea.hudsonCounty(fromGeoJSONSequence: data("hudson-county-fixture.geojsonseq"), simplifyToleranceMeters: 10)
-        return (boroughs + [ServiceArea.newarkPennArea(), hudson]).sorted { $0.code < $1.code }
+        let municipalities = try ServiceArea.municipalities(
+            fromGeoJSONSequence: data("nj-municipalities-fixture.geojsonseq"), simplifyToleranceMeters: 10
+        )
+        return (boroughs + municipalities).sorted { $0.code < $1.code }
     }
 
     /// The fixture's lattice: node `(x, y)` sits at 40.7 + 0.0009·y, −74 + 0.0012·x (about 100 m).

@@ -28,7 +28,7 @@ public struct StationFlags: OptionSet, Sendable, Hashable {
     /// The feed marked the station as charging e-bikes (`is_charging` / `is_charging_station`).
     public static let charging = StationFlags(rawValue: 1 << 0)
     /// The feed gave no `region_id`; the station was kept because it lies inside the service area
-    /// (five boroughs, Hudson County, Newark Penn area).
+    /// (five boroughs, Jersey City, Hoboken).
     public static let acceptedByArea = StationFlags(rawValue: 1 << 1)
     /// The station snapped to a rideable segment; its matrix row and column are meaningful.
     public static let bikeSnapped = StationFlags(rawValue: 1 << 2)

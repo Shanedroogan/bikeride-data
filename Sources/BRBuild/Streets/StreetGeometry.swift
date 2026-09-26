@@ -297,7 +297,7 @@ public enum GeoJSONAreas {
         for feature in features {
             let properties = feature["properties"] as? [String: Any] ?? [:]
             guard let codeValue = properties["borocode"] ?? properties["BoroCode"] else { throw ParseError.missingProperty("borocode") }
-            guard let code = UInt16("\(codeValue)") else { throw ParseError.missingProperty("borocode") }
+            guard let code = UInt32("\(codeValue)") else { throw ParseError.missingProperty("borocode") }
             let name = (properties["boroname"] ?? properties["BoroName"]).map { "\($0)" } ?? "Borough \(code)"
             let polygons = try Self.polygons(fromGeometry: feature["geometry"] as? [String: Any] ?? [:]).compactMap {
                 simplified($0, toleranceMeters: simplifyToleranceMeters)

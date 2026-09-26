@@ -276,8 +276,8 @@ import Testing
     }
 
     @Test func storesServiceAreaPolygons() {
-        #expect(f.graph.regions.map(\.code) == [1, 5, 34013, 34017])
-        #expect(f.graph.regions.map(\.name) == ["Manhattan", "Staten Island", "Newark Penn area", "Hudson County"])
+        #expect(f.graph.regions.map(\.code) == [1, 5, 3432250, 3436000])
+        #expect(f.graph.regions.map(\.name) == ["Manhattan", "Staten Island", "Hoboken", "Jersey City"])
         #expect(f.graph.manhattan.contains(Coordinate(lat: 40.7, lon: -73.998)))
         #expect(!f.graph.manhattan.contains(Coordinate(lat: 40.7047, lon: -73.9915)))
         #expect(f.graph.region(containing: Coordinate(lat: 40.7047, lon: -73.9915))?.name == "Staten Island")
@@ -285,15 +285,14 @@ import Testing
         #expect(f.graph.fiveBoroughs.polygons.count == 2)
         #expect(!f.graph.fiveBoroughs.contains(Coordinate(lat: 40.71, lon: -74.035)))
 
-        // New Jersey: Hudson County with its hole (New York's islands), and Newark Penn's disc.
+        // New Jersey: Jersey City with its hole (New York's islands), and Hoboken; not Bayonne.
         #expect(f.graph.serviceArea.polygons.count == 4)
-        #expect(f.graph.region(containing: Coordinate(lat: 40.71, lon: -74.035))?.code == StreetRegion.hudsonCountyCode)
+        #expect(f.graph.region(containing: Coordinate(lat: 40.71, lon: -74.035))?.code == StreetRegion.jerseyCityCode)
+        #expect(f.graph.region(containing: Coordinate(lat: 40.72, lon: -74.03))?.code == StreetRegion.hobokenCode)
         #expect(f.graph.region(containing: Coordinate(lat: 40.704, lon: -74.03)) == nil)
         #expect(f.graph.serviceArea.contains(Coordinate(lat: 40.7, lon: -73.998)))
-        #expect(f.graph.serviceArea.contains(ServiceArea.newarkPennCenter))
-        #expect(f.graph.serviceArea.contains(Coordinate(lat: 40.7394, lon: -74.1557))) // Harrison, 0.9 km away
-        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.7345, lon: -74.1644 + 0.02))) // 1.7 km east
-        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.72, lon: -74.1644))) // 1.6 km south
+        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.69, lon: -74.03))) // the fixture's Bayonne
+        #expect(!f.graph.serviceArea.contains(Coordinate(lat: 40.7345, lon: -74.1644))) // Newark Penn
     }
 
     @Test func keepsTheLargestComponentOfEveryRegion() throws {

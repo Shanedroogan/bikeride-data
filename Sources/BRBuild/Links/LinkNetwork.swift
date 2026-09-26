@@ -23,6 +23,11 @@ public struct LinksOptions: Sendable {
     /// How far an access point may lie from the walk graph. LIRR stops with nothing within
     /// 150 m are ride-through only.
     public var maxSnapMeters: [TransitSystem: Double] = [.subway: 150, .bus: 150, .lirr: 150, .ferry: 250, .path: 150]
+    /// Systems whose access points outside the service area (the streets graph's regions) get no
+    /// street access, whatever lies nearby: PATH's Newark and Harrison stations are ride-through
+    /// only (trains still run through them to Journal Square). Other systems' stops just past the
+    /// city line (e.g. buses in Nassau or Yonkers) keep their access when a street is in reach.
+    public var streetAccessOnlyInsideServiceArea: Set<TransitSystem> = [.path]
     /// Indoor or very short walks between stations of different systems, added as
     /// platform-to-platform transfers (no station access) between every routable platform of
     /// each end, both ways. The street walk still wins where it is quicker.
@@ -192,14 +197,23 @@ public struct LinkNetworkStats: Codable, Sendable, Equatable {
         public var routableStops = 0
         /// Distinct access points by kind (`entrance`, `station`, `stop`).
         public var accessPoints: [String: Int] = [:]
+        /// Access points inside the service area (or of a system not limited to it) with no walkable
+        /// street in reach.
         public var unsnappedAccessPoints = 0
+        /// Access points left unsnapped by rule: outside the service area, of a system in
+        /// ``LinksOptions/streetAccessOnlyInsideServiceArea``.
+        public var accessPointsOutsideServiceArea = 0
         /// Routable stops no access point lets riders into (or out of) from the street.
         public var routableWithoutStreetEntry = 0
         public var routableWithoutStreetExit = 0
         /// GTFS ids of stations with no entrance of their own (their coordinate stands in).
         public var stationsWithoutEntrances: [String] = []
-        /// `id name` of routable stops with no street access at all (ride-through only); at most 100.
+        /// `id name` of routable stops with no street access at all (ride-through only); at most
+        /// 100. Stops ride-through by the service-area rule are listed apart, below.
         public var rideThroughOnly: [String] = []
+        /// `id name` of routable stops that are ride-through only because every access point lies
+        /// outside the service area (``LinksOptions/streetAccessOnlyInsideServiceArea``).
+        public var rideThroughOutsideServiceArea: [String] = []
         public var transferRows = 0
         public var transferPairs = 0
         /// Rows not turned into walks: trip-to-trip, not possible, same stop, no platforms.
@@ -237,6 +251,8 @@ extension LinkNetwork {
         var transfers: [UInt64: UInt32] = [:] // from << 32 | to → seconds
         var stats = LinkNetworkStats()
         var snapMeters: [Double] = []
+        let serviceArea = graph.serviceArea
+        var outsideServiceArea = Set<Int>() // access points left unsnapped by the service-area rule
 
         var base = 0
         for (slot, system) in LinksFormat.systems.enumerated() {
@@ -251,6 +267,7 @@ extension LinkNetwork {
 
             var pointIndex: [Int: Int] = [:] // global source stop → access point
             let accessSeconds = options.access(system)
+            let onlyInsideServiceArea = options.streetAccessOnlyInsideServiceArea.contains(system)
             func point(_ kind: StreetAccessPoint.Kind, source: Int, access: StopAccess) -> Int {
                 if let existing = pointIndex[base + source] { return existing }
                 let c = timetable.stopCoordinate(source)
@@ -258,7 +275,8 @@ extension LinkNetwork {
                                             lon: StreetsFormat.degrees(StreetsFormat.microdegrees(c.lon)))
                 var ap = StreetAccessPoint(kind: kind, system: system, sourceStop: base + source, coordinate: coordinate,
                                            entry: access.contains(.entry), exit: access.contains(.exit), accessSeconds: accessSeconds)
-                if let snapped = graph.snap(coordinate, mode: .walk, maxDistanceMeters: options.snapLimit(system)) {
+                let outside = onlyInsideServiceArea && !serviceArea.contains(coordinate)
+                if !outside, let snapped = graph.snap(coordinate, mode: .walk, maxDistanceMeters: options.snapLimit(system)) {
                     let stored = StoredSnap(snapped)
                     // Rebuild from the stored values so every cost matches what the app will compute.
                     if let point = graph.snappedPoint(stored, query: coordinate) {
@@ -267,7 +285,12 @@ extension LinkNetwork {
                         snapMeters.append(stored.distanceMeters)
                     }
                 }
-                if ap.anchor == nil { systemStats.unsnappedAccessPoints += 1 }
+                if outside {
+                    systemStats.accessPointsOutsideServiceArea += 1
+                    outsideServiceArea.insert(accessPoints.count)
+                } else if ap.anchor == nil {
+                    systemStats.unsnappedAccessPoints += 1
+                }
                 systemStats.accessPoints[kind.rawValue, default: 0] += 1
                 accessPoints.append(ap)
                 pointIndex[base + source] = accessPoints.count - 1
@@ -341,8 +364,13 @@ extension LinkNetwork {
                 }
                 if !entry { systemStats.routableWithoutStreetEntry += 1 }
                 if !exit { systemStats.routableWithoutStreetExit += 1 }
-                if !entry && !exit && systemStats.rideThroughOnly.count < 100 {
-                    systemStats.rideThroughOnly.append("\(timetable.stopGTFSID(stop)) \(timetable.stopName(stop))")
+                if !entry && !exit {
+                    let label = "\(timetable.stopGTFSID(stop)) \(timetable.stopName(stop))"
+                    if !stopAccess[base + stop].isEmpty && stopAccess[base + stop].allSatisfy(outsideServiceArea.contains) {
+                        systemStats.rideThroughOutsideServiceArea.append(label)
+                    } else if systemStats.rideThroughOnly.count < 100 {
+                        systemStats.rideThroughOnly.append(label)
+                    }
                 }
             }
             stats.systems[system.linkReportName] = systemStats

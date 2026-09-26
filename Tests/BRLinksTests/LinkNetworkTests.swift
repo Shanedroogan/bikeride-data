@@ -59,6 +59,25 @@ import Testing
         #expect(stats.systems["subway"]?.routableWithoutStreetEntry == 1) // S2N: its only entrance is exit-only
         #expect(stats.systems["bus"]?.unsnappedAccessPoints == 1 && stats.systems["bus"]?.rideThroughOnly == ["B4 Bus Four"])
         #expect(stats.systems["lirr"]?.rideThroughOnly == ["L2 Rail Two"])
+        // By default only PATH is limited to the service area.
+        #expect(options.streetAccessOnlyInsideServiceArea == [.path])
+        #expect(stats.systems["bus"]?.accessPointsOutsideServiceArea == 0 && stats.systems["bus"]?.rideThroughOutsideServiceArea == [])
+    }
+
+    @Test func systemsLimitedToTheServiceAreaAreRideThroughOutsideIt() {
+        // As PATH's Newark and Harrison stations are: B4 and L2 lie outside the fixture's region.
+        var limited = LinksOptions()
+        limited.streetAccessOnlyInsideServiceArea = [.bus, .lirr]
+        let (network, stats) = LinkNetwork.make(timetables: world.timetables, graph: world.city.graph, options: limited)
+        #expect(!world.city.graph.serviceArea.contains(world.timetables[.bus]!.stopCoordinate(world.timetables[.bus]!.stop(gtfsID: "B4")!)))
+        let bus = stats.systems["bus"]!, lirr = stats.systems["lirr"]!
+        #expect(bus.rideThroughOutsideServiceArea == ["B4 Bus Four"] && bus.rideThroughOnly.isEmpty)
+        #expect(bus.accessPointsOutsideServiceArea == 1 && bus.unsnappedAccessPoints == 0)
+        #expect(bus.routableWithoutStreetEntry == 1 && bus.routableWithoutStreetExit == 1)
+        #expect(lirr.rideThroughOutsideServiceArea == ["L2 Rail Two"] && lirr.rideThroughOnly.isEmpty)
+        // Stops inside the area are linked exactly as before.
+        #expect(network.accessPoints.map(\.anchor) == self.network.accessPoints.map(\.anchor))
+        #expect(network.transfers == self.network.transfers)
     }
 
     @Test func expandsParentLevelTransfersToPlatformPairs() {

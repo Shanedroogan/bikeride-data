@@ -213,7 +213,7 @@ func runStreetsCommand(_ arguments: [String]) -> Int32 {
             runRoute("Union Sq → Bedford Av, Williamsburg (bike)", graph: graph, from: unionSquare,
                      to: Coordinate(lat: 40.7171, lon: -73.9568), profile: "ebike", expectedMiles: 4.2, tolerance: 0.15,
                      requiredName: "Williamsburg Bridge"),
-            // New Jersey is in the graph (Hudson County's network, apart from the city's).
+            // New Jersey is in the graph (Jersey City and Hoboken's network, apart from the city's).
             runRoute("Hoboken Terminal → Journal Square (bike)", graph: graph, from: Coordinate(lat: 40.7353, lon: -74.0290),
                      to: Coordinate(lat: 40.7327, lon: -74.0629), profile: "ebike", expectedMiles: 2.4, tolerance: 0.15),
         ]

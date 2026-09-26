@@ -5,41 +5,43 @@ import Foundation
 import Testing
 
 @Suite struct ServiceAreaTests {
-    @Test func picksHudsonCountyByItsFIPSCode() throws {
-        let hudson = try ServiceArea.hudsonCounty(
-            fromGeoJSONSequence: StreetsFixtures.data("hudson-county-fixture.geojsonseq"), simplifyToleranceMeters: 10
-        )
-        #expect(hudson.code == StreetRegion.hudsonCountyCode && hudson.code == 34017)
-        #expect(hudson.name == "Hudson County")
-        #expect(!hudson.isNYCBorough)
-        #expect(hudson.area.polygons.count == 1 && hudson.area.polygons[0].holes.count == 1)
-        #expect(hudson.area.contains(Coordinate(lat: 40.71, lon: -74.035)))
-        #expect(!hudson.area.contains(Coordinate(lat: 40.704, lon: -74.03))) // the hole
+    @Test func picksJerseyCityAndHobokenByTheirBoundaryTags() throws {
+        let fixture = try StreetsFixtures.data("nj-municipalities-fixture.geojsonseq")
+        let regions = try ServiceArea.municipalities(fromGeoJSONSequence: fixture, simplifyToleranceMeters: 10)
+        #expect(regions.map(\.code) == [3432250, 3436000])
+        #expect(regions.map(\.code) == [StreetRegion.hobokenCode, StreetRegion.jerseyCityCode])
+        #expect(regions.map(\.name) == ["Hoboken", "Jersey City"])
+        #expect(regions.allSatisfy { !$0.isNYCBorough })
+        let hoboken = regions[0], jerseyCity = regions[1]
+        #expect(jerseyCity.area.polygons.count == 1 && jerseyCity.area.polygons[0].holes.count == 1)
+        #expect(jerseyCity.area.contains(Coordinate(lat: 40.71, lon: -74.035)))
+        #expect(!jerseyCity.area.contains(Coordinate(lat: 40.704, lon: -74.03))) // the hole
+        #expect(hoboken.area.contains(Coordinate(lat: 40.72, lon: -74.03)))
+        // Neither the admin_level=6 county (same wikidata tag) nor Bayonne is taken.
+        for region in regions { #expect(!region.area.contains(Coordinate(lat: 40.69, lon: -74.03))) }
 
-        // Only the county's own polygon qualifies: the untagged decoy does not.
-        let decoyOnly = try StreetsFixtures.data("hudson-county-fixture.geojsonseq").split(separator: UInt8(ascii: "\n"))[0]
-        #expect(throws: ServiceArea.ServiceAreaError.hudsonCountyBoundaryNotFound) {
-            try ServiceArea.hudsonCounty(fromGeoJSONSequence: Data(decoyOnly), simplifyToleranceMeters: 10)
-        }
+        #expect(ServiceArea.municipalitiesFilter == "r/wikidata=Q138578,Q26339")
+        #expect(ServiceArea.jerseyCity.osmRelation == 170953 && ServiceArea.hoboken.osmRelation == 170708)
     }
 
-    @Test func newarkPennAreaIsADiscAroundTheStation() {
-        let area = ServiceArea.newarkPennArea()
-        #expect(area.code == StreetRegion.newarkPennAreaCode)
-        let ring = area.area.polygons[0].exterior
-        #expect(ring.first == ring.last && ring.count == 65)
-        for point in ring {
-            #expect(abs(point.distance(to: ServiceArea.newarkPennCenter) - 1500) < 5)
+    @Test func aMissingMunicipalityIsAnError() throws {
+        let lines = try StreetsFixtures.data("nj-municipalities-fixture.geojsonseq").split(separator: UInt8(ascii: "\n"))
+        let withoutJerseyCity = Data(lines.filter { !String(decoding: $0, as: UTF8.self).contains(#""name": "Jersey City""#) }
+            .joined(separator: [UInt8(ascii: "\n")]))
+        #expect(throws: ServiceArea.ServiceAreaError.municipalBoundaryNotFound("Jersey City")) {
+            try ServiceArea.municipalities(fromGeoJSONSequence: withoutJerseyCity, simplifyToleranceMeters: 10)
         }
-        #expect(area.area.contains(Coordinate(lat: 40.7394, lon: -74.1557))) // Harrison PATH
     }
 
     @Test func theClipHullContainsEveryRegionPlusItsBuffer() {
         let regions = [
-            ServiceArea.newarkPennArea(),
-            StreetRegion(code: 34017, name: "Box", area: MultiPolygon([Polygon(exterior: [
-                Coordinate(lat: 40.64, lon: -74.10), Coordinate(lat: 40.82, lon: -74.00), Coordinate(lat: 40.80, lon: -73.98),
-                Coordinate(lat: 40.64, lon: -74.10),
+            StreetRegion(code: StreetRegion.jerseyCityCode, name: "Box", area: MultiPolygon([Polygon(exterior: [
+                Coordinate(lat: 40.66, lon: -74.12), Coordinate(lat: 40.66, lon: -74.02), Coordinate(lat: 40.77, lon: -74.04),
+                Coordinate(lat: 40.66, lon: -74.12),
+            ])])),
+            StreetRegion(code: StreetRegion.hobokenCode, name: "Box", area: MultiPolygon([Polygon(exterior: [
+                Coordinate(lat: 40.73, lon: -74.04), Coordinate(lat: 40.73, lon: -74.02), Coordinate(lat: 40.76, lon: -74.02),
+                Coordinate(lat: 40.73, lon: -74.04),
             ])])),
         ]
         let ring = ServiceArea.bufferedHull(of: regions, bufferMeters: 1500)
@@ -47,12 +49,12 @@ import Testing
         let hull = Polygon(exterior: ring)
         // Every region point, and points 1.4 km outward from the extremes, are inside.
         for region in regions { for point in region.area.polygons[0].exterior { #expect(hull.contains(point)) } }
-        let projection = LocalProjection(origin: Coordinate(lat: 40.82, lon: -74.00))
-        #expect(hull.contains(projection.unproject(PlanarPoint(x: 0, y: 1400))))
-        #expect(!hull.contains(projection.unproject(PlanarPoint(x: 0, y: 1600))))
-        let west = LocalProjection(origin: ServiceArea.newarkPennCenter)
-        #expect(hull.contains(west.unproject(PlanarPoint(x: -2900, y: 0))))
-        #expect(!hull.contains(west.unproject(PlanarPoint(x: -3100, y: 0))))
+        let north = LocalProjection(origin: Coordinate(lat: 40.77, lon: -74.04))
+        #expect(hull.contains(north.unproject(PlanarPoint(x: 0, y: 1400))))
+        #expect(!hull.contains(north.unproject(PlanarPoint(x: 0, y: 1600))))
+        let west = LocalProjection(origin: Coordinate(lat: 40.66, lon: -74.12))
+        #expect(hull.contains(west.unproject(PlanarPoint(x: -1400, y: 0))))
+        #expect(!hull.contains(west.unproject(PlanarPoint(x: -1600, y: 0))))
 
         let feature = ServiceArea.geoJSONPolygonFeature(ring)
         let json = try? JSONSerialization.jsonObject(with: feature) as? [String: Any]
