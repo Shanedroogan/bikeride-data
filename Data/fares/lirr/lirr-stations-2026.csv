@@ -1,0 +1,127 @@
+stop_id,gtfs_name,zone,city_fare,source_note
+L:241,Atlantic Terminal,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Brooklyn; CityTicket table covers zones 1 and 3
+L:50,East New York,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Brooklyn; CityTicket table covers zones 1 and 3
+L:55,Forest Hills,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:349,Grand Central,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Manhattan; CityTicket table covers zones 1 and 3
+L:90,Hunterspoint Avenue,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:107,Kew Gardens,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:118,Long Island City,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:199,Mets-Willets Point,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:148,Nostrand Avenue,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Brooklyn; CityTicket table covers zones 1 and 3
+L:237,Penn Station,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Manhattan; CityTicket table covers zones 1 and 3
+L:214,Woodside,1,cityTicket,zone 1 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:2,Auburndale,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:25,Bayside,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:11,Broadway,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:42,Douglaston,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:56,Flushing Main Street,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); MTA lists as 'Flushing'; Queens; CityTicket table covers zones 1 and 3
+L:89,Hollis,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:102,Jamaica,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:122,Laurelton,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:120,Little Neck,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:119,Locust Manor,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:130,Murray Hill,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:175,Queens Village,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:180,Rosedale,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:184,St. Albans,3,cityTicket,zone 3 (doc186866 table; doc194866 map band agrees); Queens; CityTicket table covers zones 1 and 3
+L:23,Bellerose,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:32,Cedarhurst,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:36,Country Life Press,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:52,East Williston,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:359,Elmont-UBS Arena,4,none,zone 4 (doc186866 table; doc194866 map band agrees); MTA lists as 'Elmont-UBS'; at the Queens/Nassau line; MTA excludes CityTicket here (trips run via Nassau)
+L:65,Far Rockaway,4,farRockaway,zone 4 (doc186866 table; doc194866 map band agrees); Queens but trips run via Nassau; Far Rockaway Ticket is valid to Zone 1 stations only
+L:63,Floral Park,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:68,Garden City,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:66,Gibson,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:72,Great Neck,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:84,Hempstead,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:85,Hempstead Gardens,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:94,Hewlett,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:101,Inwood,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:124,Lakeview,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:114,Lawrence,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:125,Lynbrook,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:142,Malverne,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:131,Manhasset,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:127,Merillon Avenue,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:132,Mineola,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:149,Nassau Boulevard,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:152,New Hyde Park,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:162,Plandome,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:171,Port Washington,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:195,Stewart Manor,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:211,Valley Stream,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:216,West Hempstead,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:219,Westwood,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:217,Woodmere,4,none,zone 4 (doc186866 table; doc194866 map band agrees); outside NYC
+L:1,Albertson,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:225,Baldwin,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:16,Bellmore,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:20,Bethpage,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:39,Carle Place,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:31,Centre Avenue,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:51,East Rockaway,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:59,Farmingdale,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:64,Freeport,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:67,Glen Cove,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:71,Glen Head,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:76,Glen Street,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:77,Greenvale,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:92,Hicksville,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:99,Island Park,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:123,Locust Valley,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:113,Long Beach,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:136,Massapequa,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:135,Massapequa Park,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:226,Merrick,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:155,Oceanside,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:154,Oyster Bay,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:183,Rockville Centre,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:182,Roslyn,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:185,Sea Cliff,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:187,Seaford,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:205,Syosset,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:215,Wantagh,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:213,Westbury,7,none,zone 7 (doc186866 table; doc194866 map band agrees); outside NYC
+L:8,Amityville,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:27,Babylon,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:40,Cold Spring Harbor,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:38,Copiague,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:44,Deer Park,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:78,Greenlawn,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:91,Huntington,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:117,Lindenhurst,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:153,Northport,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:165,Pinelawn,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:220,Wyandanch,9,none,zone 9 (doc186866 table; doc194866 map band agrees); outside NYC
+L:26,Bay Shore,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:29,Brentwood,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:33,Central Islip,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:74,Great River,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:100,Islip,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:111,Kings Park,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:129,Medford,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:157,Oakdale,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:163,Patchogue,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:164,Port Jefferson,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:179,Ronkonkoma,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:204,Sayville,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:202,Smithtown,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:193,St. James,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:14,Stony Brook,10,none,zone 10 (doc186866 table; doc194866 map band agrees); outside NYC
+L:21,Bellport,12,none,zone 12 (doc186866 table; doc194866 map band agrees); outside NYC
+L:140,Mastic-Shirley,12,none,zone 12 (doc186866 table; doc194866 map band agrees); outside NYC
+L:198,Speonk,12,none,zone 12 (doc186866 table; doc194866 map band agrees); outside NYC
+L:223,Yaphank-BNL,12,none,zone 12 (doc186866 table; doc194866 map band agrees); MTA lists as 'Yaphank'; UNCONFIRMED: zone of the replaced Yaphank station (chart predates the Jul 2026 relocation); outside NYC
+L:4,Amagansett,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:13,Bridgehampton,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:48,East Hampton,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:73,Greenport,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:83,Hampton Bays,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:126,Mattituck,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:141,Montauk,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:176,Riverhead,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:191,Southampton,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:190,Southold,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:233,Westhampton,14,none,zone 14 (doc186866 table; doc194866 map band agrees); outside NYC
+L:24,Belmont Park,4,none,zone 4 (doc186866 table; doc194866 map band agrees); no service in GTFS GO202_26; CityTicket not valid (MTA fares page)
