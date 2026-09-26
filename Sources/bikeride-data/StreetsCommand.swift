@@ -69,14 +69,7 @@ private func resolvedURL(_ path: String) -> URL {
 
 /// Peak resident set size of this process and of its largest finished child, in bytes.
 private func peakResidentBytes() -> (process: Int, children: Int) {
-    var own = rusage(), children = rusage()
-    getrusage(RUSAGE_SELF, &own)
-    getrusage(RUSAGE_CHILDREN, &children)
-    #if canImport(Darwin)
-    return (Int(own.ru_maxrss), Int(children.ru_maxrss)) // bytes on Darwin
-    #else
-    return (Int(own.ru_maxrss) * 1024, Int(children.ru_maxrss) * 1024) // KiB on Linux
-    #endif
+    (ResourceUsage.peakResidentBytes(), ResourceUsage.peakChildResidentBytes())
 }
 
 private func parseCoordinate(_ text: String) throws -> Coordinate {

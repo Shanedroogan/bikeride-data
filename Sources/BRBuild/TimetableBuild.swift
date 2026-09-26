@@ -235,15 +235,7 @@ public struct TimetableBuild: Sendable {
     }
 
     /// Peak resident set size of this process so far, in bytes.
-    public static func peakRSSBytes() -> Int {
-        var usage = rusage()
-        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
-        #if os(Linux)
-        return Int(usage.ru_maxrss) * 1024
-        #else
-        return Int(usage.ru_maxrss)
-        #endif
-    }
+    public static func peakRSSBytes() -> Int { ResourceUsage.peakResidentBytes() }
 }
 
 /// Collects one result per index from concurrent workers.
