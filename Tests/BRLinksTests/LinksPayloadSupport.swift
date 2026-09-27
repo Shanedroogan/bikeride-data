@@ -89,3 +89,32 @@ func linksPayloadSHA256(_ file: Data) throws -> String {
     return try ProcessHasher(runner: ProcessToolRunner()).sha256(of: payload).hex
     #endif
 }
+
+/// The committed v1 files in `Tests/Fixtures/v1` (see the stations tests' `V1Fixtures`). `links`
+/// has none yet: the P2c freeze writes `links.bin` from ``HandBuiltLinks`` with
+/// `BR_WRITE_V1_FIXTURES=1`, and every later reader must open it.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+}

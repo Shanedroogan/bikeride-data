@@ -110,7 +110,8 @@ builds that can't update in step with the pipeline, and because an in-progress t
   for small hand-built inputs: not compiled from OSM, GBFS or GTFS, with every parameter spelled out
   (no tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
   digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
-  formatVersion.
+  formatVersion. `LinksV1Tests` pins the draft `links` payload (hops included) the same way; the
+  links freeze re-pins it once, for the revision bytes.
 - **Committed v1 files.** `Tests/Fixtures/v1` holds `streets.bin`, `stations.bin` and
   `tt-sample.bin` (a `tt-ferry` file), written by the format-1 writer from those same hand-typed
   inputs. None is compiled from a real extract or feed: the streets and stations are made up, and
