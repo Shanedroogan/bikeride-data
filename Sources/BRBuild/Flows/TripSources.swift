@@ -41,6 +41,28 @@ public struct TripMonth: Hashable, Comparable, Sendable, Codable, CustomStringCo
 
     public static func < (lhs: TripMonth, rhs: TripMonth) -> Bool { (lhs.year, lhs.month) < (rhs.year, rhs.month) }
 
+    /// A `--months` value: `YYYYMM-YYYYMM` (inclusive) or `YYYYMM,YYYYMM,…`, 1 to 12 consecutive
+    /// months; `nil` for anything else.
+    public static func parseList(_ text: String) -> [TripMonth]? {
+        var months: [TripMonth]
+        if text.contains("-") {
+            let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+            guard parts.count == 2, let first = TripMonth(yyyymm: parts[0]), let last = TripMonth(yyyymm: parts[1]), first <= last,
+                  first.adding(11) >= last else { return nil }
+            months = [first]
+            while let current = months.last, current < last { months.append(current.adding(1)) }
+        } else {
+            var parsed: [TripMonth] = []
+            for part in text.split(separator: ",", omittingEmptySubsequences: false) {
+                guard let month = TripMonth(yyyymm: part.trimmingCharacters(in: .whitespaces)) else { return nil }
+                parsed.append(month)
+            }
+            months = parsed
+        }
+        guard !months.isEmpty, months.count <= 12, zip(months, months.dropFirst()).allSatisfy({ $0.adding(1) == $1 }) else { return nil }
+        return months
+    }
+
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         let text = try container.decode(String.self)

@@ -33,25 +33,6 @@ private let packageDataDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("Data")
 
-/// `--months`: `YYYYMM-YYYYMM` (inclusive), or a comma-separated list of consecutive months.
-func parseMonths(_ text: String) throws -> [TripMonth] {
-    let usage = CommandOptions.UsageError(description: "--months needs YYYYMM-YYYYMM or YYYYMM,YYYYMM,… (consecutive)")
-    var months: [TripMonth]
-    if text.contains("-") {
-        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 2, let first = TripMonth(yyyymm: parts[0]), let last = TripMonth(yyyymm: parts[1]), first <= last else { throw usage }
-        months = [first]
-        while let current = months.last, current < last { months.append(current.adding(1)) }
-    } else {
-        months = try text.split(separator: ",", omittingEmptySubsequences: false).map { part in
-            guard let month = TripMonth(yyyymm: part.trimmingCharacters(in: .whitespaces)) else { throw usage }
-            return month
-        }
-    }
-    guard !months.isEmpty, months.count <= 12, zip(months, months.dropFirst()).allSatisfy({ $0.adding(1) == $1 }) else { throw usage }
-    return months
-}
-
 /// `bikeride-data flows …`. Returns the process exit status.
 func runFlowsCommand(_ arguments: [String]) -> Int32 {
     if arguments.contains("--help") || arguments.contains("-h") {
@@ -78,7 +59,12 @@ func runFlowsCommand(_ arguments: [String]) -> Int32 {
         config.offline = options.flags.contains("--offline")
         config.compress = !options.flags.contains("--no-xz")
         if let threads = try options.int("--threads") { config.threads = threads }
-        if let months = options.values["--months"] { config.months = try parseMonths(months) }
+        if let text = options.values["--months"] {
+            guard let months = TripMonth.parseList(text) else {
+                throw CommandOptions.UsageError(description: "--months needs YYYYMM-YYYYMM or YYYYMM,YYYYMM,… (1 to 12 consecutive months)")
+            }
+            config.months = months
+        }
         configuration = config
         reportURL = options.values["--report"].map(CommandOptions.absoluteURL)
             ?? out.deletingLastPathComponent().appendingPathComponent("reports/flows.json")
