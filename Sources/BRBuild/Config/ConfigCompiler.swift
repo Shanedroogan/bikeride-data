@@ -14,7 +14,10 @@ import Foundation
 /// Deterministic: equal sources give identical bytes (the `dataVersion` is the JSON's SHA-256;
 /// `builtAgainst` is empty), so rebuilding on every pipeline run is harmless. A reference check
 /// error writes no artifact (the report says why); a missing input skips its checks unless
-/// ``Configuration/requireReferences`` is set.
+/// ``Configuration/requireReferences`` is set. ``run(log:)`` first removes the `config.bin` and
+/// `config.bin.xz` a previous run left in the output directory, so a failed run (or one with
+/// ``Configuration/compress`` off) never leaves an older config beside the data it would
+/// otherwise be taken for.
 public struct ConfigCompiler: Sendable {
     public struct Configuration: Sendable {
         /// The `Data/` directory holding `config/` and `fares/`.
@@ -41,6 +44,7 @@ public struct ConfigCompiler: Sendable {
         }
 
         public var artifactFile: URL { outputDirectory.appendingPathComponent(MappedConfig.fileName) }
+        public var compressedFile: URL { artifactFile.appendingPathExtension("xz") }
     }
 
     public struct Report: Codable, Sendable {
@@ -130,6 +134,12 @@ public struct ConfigCompiler: Sendable {
             return try body()
         }
         let started = Date()
+
+        // 0. Nothing from an earlier run survives this one, whatever happens next.
+        for file in [config.artifactFile, config.compressedFile] where FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
+            log("removed the previous \(file.lastPathComponent)")
+        }
 
         // 1. Sources → document.
         let (document, json) = try timed("compile") { try compile() }

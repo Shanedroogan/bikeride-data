@@ -21,8 +21,12 @@ let configUsage = """
       --no-xz               Skip compression
       --require-references  A missing reference input is an error (the pipeline sets this)
 
-    Exit status: 0 built; 1 a source or build error; 3 a reference check failed (no config.bin
-    is written; the report lists the errors).
+    Every run first removes the config.bin and config.bin.xz already in the output directory,
+    so a failed run leaves none behind.
+
+    Exit status: 0 built; 1 a source or build error; 3 a reference check failed or, with
+    --require-references, a reference input is missing (no config.bin is written; the report
+    lists the errors).
     """
 
 /// `bikeride-data config …`. Returns the process exit status.
@@ -56,7 +60,7 @@ func runConfigCommand(_ arguments: [String]) -> Int32 {
             + "\(report.errors.count) errors, \(report.warnings.count) warnings")
         print("config: report \(reportURL.path)")
         guard let artifact = report.artifact else {
-            let message = "bikeride-data config: reference checks failed; config.bin not written:\n  "
+            let message = "bikeride-data config: reference errors; config.bin not written:\n  "
                 + report.errors.joined(separator: "\n  ") + "\n"
             FileHandle.standardError.write(Data(message.utf8))
             return 3

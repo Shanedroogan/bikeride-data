@@ -50,6 +50,40 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: scratch.file("out").appendingPathComponent(MappedConfig.fileName).path))
     }
 
+    @Test func aFailedRunLeavesNoEarlierArtifact() throws {
+        // Downstream steps (links) read config.bin from the same directory: an older one left
+        // beside a failed run would be built against as if it were current.
+        let scratch = try ScratchDirectory()
+        let out = scratch.file("out")
+        let bin = out.appendingPathComponent(MappedConfig.fileName), xz = bin.appendingPathExtension("xz")
+        func plant() throws {
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+            try Data("old".utf8).write(to: bin)
+            try Data("old".utf8).write(to: xz)
+        }
+        func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+
+        // A reference error (exit 3).
+        try plant()
+        let failed = try compiler(data: scratch.file("empty"), out: out, require: true).run()
+        #expect(failed.artifact == nil && !exists(bin) && !exists(xz))
+
+        // A source error (exit 1): the run throws, and nothing old is left either.
+        try plant()
+        let data = try RepositoryData.copy(into: scratch)
+        try Data("{".utf8).write(to: data.appendingPathComponent("config/app.json"))
+        var configuration = compiler(data: nil, out: out).configuration
+        configuration.sourcesDirectory = data
+        #expect(throws: ConfigSourceError.self) { try ConfigCompiler(runner: ProcessToolRunner(), configuration: configuration).run() }
+        #expect(!exists(bin) && !exists(xz))
+
+        // A successful run without compression doesn't keep an older .xz beside the new file.
+        try plant()
+        let built = try compiler(data: nil, out: out).run()
+        #expect(built.artifact != nil && exists(bin) && !exists(xz))
+        #expect(try MappedConfig(contentsOf: bin).document == ConfigSources(root: RepositoryData.root).load())
+    }
+
     @Test func aReferenceErrorWritesNoArtifact() throws {
         // A subway feed without the configured MTA stations.
         let world = try ReferenceFixtures.world()
