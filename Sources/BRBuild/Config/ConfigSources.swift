@@ -10,7 +10,11 @@ public enum ConfigSourceError: Error, Equatable, CustomStringConvertible {
     case undecodable(file: String, message: String)
     /// A key the source shape doesn't have: a typo, or a key that belongs elsewhere.
     case unknownKey(file: String, path: String)
-    /// A value that changes when decoded and re-encoded (e.g. `3.0` where an integer belongs).
+    /// A key written twice in one object (a JSON decoder would keep one of the values without
+    /// a word). `line` is where the second one starts.
+    case duplicateKey(file: String, path: String, line: Int)
+    /// A value that changes when decoded and re-encoded: an integer written as a decimal or with
+    /// an exponent (`325.0`, `3.25e2`), which the decoder reads as the integer.
     case changedValue(file: String, path: String)
     case invalidCSV(file: String, message: String)
     /// Values that parse but are wrong for their file (e.g. a date not in holidays.csv).
@@ -23,7 +27,8 @@ public enum ConfigSourceError: Error, Equatable, CustomStringConvertible {
         case .missingFile(let path): "\(path) is missing"
         case .undecodable(let file, let message): "\(file): \(message)"
         case .unknownKey(let file, let path): "\(file): unknown key \(path)"
-        case .changedValue(let file, let path): "\(file): \(path) is not in its canonical form (an integer written as a decimal?)"
+        case .duplicateKey(let file, let path, let line): "\(file):\(line): key \(path) is written twice in one object"
+        case .changedValue(let file, let path): "\(file): \(path) is not in its canonical form (an integer written as a decimal or with an exponent?)"
         case .invalidCSV(let file, let message): "\(file): \(message)"
         case .invalidValue(let file, let message): "\(file): \(message)"
         case .invalidDocument(let issues): "config document is invalid:\n  " + issues.joined(separator: "\n  ")
@@ -35,10 +40,11 @@ public enum ConfigSourceError: Error, Equatable, CustomStringConvertible {
 /// canonical ``ConfigDocument``. Layout and provenance: `Data/config/SOURCES.md`,
 /// `Data/fares/SOURCES.md`.
 ///
-/// JSON files are decoded into their source shape, re-encoded and compared with what was read,
-/// so an unknown or misspelled key fails (the app's reader, by contrast, ignores unknown keys).
-/// `null` counts as absent. CSV files need exactly the documented header. Set-like lists may be
-/// in any order in the sources: the document sorts them.
+/// JSON files are read by ``StrictJSON`` (RFC 8259, no key twice in one object), decoded into
+/// their source shape, re-encoded and compared with what was read, so an unknown or misspelled
+/// key fails (the app's reader, by contrast, ignores unknown keys), and so does an integer
+/// written as `325.0` or `3.25e2`. `null` counts as absent. CSV files need exactly the documented
+/// header. Set-like lists may be in any order in the sources: the document sorts them.
 public struct ConfigSources: Sendable {
     public let root: URL
 
@@ -224,18 +230,29 @@ public struct ConfigSources: Sendable {
         try Self.strictDecode(type, from: read(file), file: file)
     }
 
-    /// Decodes `data` as `T`, then requires that re-encoding the value gives back what was read
-    /// (`null` counting as absent), so an unknown or misspelled key is an error naming its path.
+    /// Reads `data` strictly (``StrictJSON``: a repeated key is an error), decodes it as `T`,
+    /// then requires that re-encoding the value gives back what was read (`null` counting as
+    /// absent), so an unknown or misspelled key, or an integer written as a decimal, is an error
+    /// naming its path. Both sides of the comparison are read by ``StrictJSON``, which keeps
+    /// number forms apart.
     public static func strictDecode<T: Codable>(_ type: T.Type, from data: Data, file: String) throws -> T {
-        let value: T
         let source: JSONValue
         do {
+            source = try StrictJSON.parse(data)
+        } catch let failure as StrictJSON.Failure {
+            switch failure {
+            case .duplicateKey(let path, let line): throw ConfigSourceError.duplicateKey(file: file, path: path, line: line)
+            case .syntax(let line, let column, let message):
+                throw ConfigSourceError.undecodable(file: file, message: "not valid JSON at line \(line), column \(column): \(message)")
+            }
+        }
+        let value: T
+        do {
             value = try JSONDecoder().decode(T.self, from: data)
-            source = try JSONDecoder().decode(JSONValue.self, from: data)
         } catch let error as DecodingError {
             throw ConfigSourceError.undecodable(file: file, message: MappedConfig.describe(error))
         }
-        let reencoded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
+        let reencoded = try StrictJSON.parse(JSONEncoder().encode(value))
         if let difference = source.firstDifference(from: reencoded, path: "$") {
             switch difference {
             case .unknownKey(let path): throw ConfigSourceError.unknownKey(file: file, path: path)
@@ -402,82 +419,4 @@ struct BikeShareSource: Codable {
     var excludedRegions: [String]
     var vehicleTypes: ConfigVehicleTypes
     var maxStatusAgeSeconds: Int
-}
-
-// MARK: - A generic JSON value, for the strict comparison
-
-/// Any JSON value, decoded platform-independently (no `JSONSerialization` bridging).
-enum JSONValue: Decodable, Equatable {
-    case null
-    case bool(Bool)
-    case integer(Int64)
-    case number(Double)
-    case string(String)
-    case array([JSONValue])
-    case object([String: JSONValue])
-
-    init(from decoder: any Decoder) throws {
-        if var array = try? decoder.unkeyedContainer() {
-            var values: [JSONValue] = []
-            while !array.isAtEnd { values.append(try array.decode(JSONValue.self)) }
-            self = .array(values)
-            return
-        }
-        if let object = try? decoder.container(keyedBy: AnyKey.self) {
-            var values: [String: JSONValue] = [:]
-            for key in object.allKeys { values[key.stringValue] = try object.decode(JSONValue.self, forKey: key) }
-            self = .object(values)
-            return
-        }
-        let single = try decoder.singleValueContainer()
-        if single.decodeNil() {
-            self = .null
-        } else if let value = try? single.decode(Bool.self) {
-            self = .bool(value)
-        } else if let value = try? single.decode(Int64.self) {
-            self = .integer(value)
-        } else if let value = try? single.decode(Double.self) {
-            self = .number(value)
-        } else {
-            self = .string(try single.decode(String.self))
-        }
-    }
-
-    enum Difference: Equatable {
-        case unknownKey(String)
-        case changed(String)
-    }
-
-    /// The first place, in key order, where `self` (what was read) differs from `other` (the
-    /// decoded value re-encoded). A `null` in `self` matches an absent key.
-    func firstDifference(from other: JSONValue, path: String) -> Difference? {
-        switch (self, other) {
-        case (.object(let a), .object(let b)):
-            for key in a.keys.sorted() {
-                let value = a[key]!
-                guard let counterpart = b[key] else {
-                    if value == .null { continue }
-                    return .unknownKey("\(path).\(key)")
-                }
-                if let difference = value.firstDifference(from: counterpart, path: "\(path).\(key)") { return difference }
-            }
-            for key in b.keys.sorted() where a[key] == nil { return .changed("\(path).\(key)") }
-            return nil
-        case (.array(let a), .array(let b)):
-            guard a.count == b.count else { return .changed(path) }
-            for (index, (x, y)) in zip(a, b).enumerated() {
-                if let difference = x.firstDifference(from: y, path: "\(path)[\(index)]") { return difference }
-            }
-            return nil
-        default:
-            return self == other ? nil : .changed(path)
-        }
-    }
-
-    private struct AnyKey: CodingKey {
-        var stringValue: String
-        var intValue: Int? { nil }
-        init(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { nil }
-    }
 }

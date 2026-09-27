@@ -252,6 +252,42 @@ import Testing
         #expect(message.contains("halfFare"))
     }
 
+    @Test func aDuplicateKeyFailsTheBuild() throws {
+        // The reviewed-edit mistake: the new fare added, the old one not deleted. A JSON decoder
+        // keeps one of the two silently.
+        let top = try loadError("fares/mta.json") {
+            $0.replacingOccurrences(of: #""baseFareCents": 300,"#, with: #""baseFareCents": 300, "baseFareCents": 325,"#)
+        }
+        #expect(top == .duplicateKey(file: "fares/mta.json", path: "$.baseFareCents", line: 2))
+        #expect(top?.description == "fares/mta.json:2: key $.baseFareCents is written twice in one object")
+
+        // Inside an array element, with equal values (still ambiguous: which one was meant?).
+        let element = try loadError("fares/mta.json") {
+            $0.replacingOccurrences(of: #"{ "stations": ["S:629", "S:B08"], "note""#,
+                                    with: #"{ "stations": ["S:629", "S:B08"], "stations": ["S:629", "S:B08"], "note""#)
+        }
+        #expect(element == .duplicateKey(file: "fares/mta.json", path: "$.outOfSystemTransfers[0].stations", line: 12))
+
+        // An optional key, on its own line.
+        let optional = try loadError("fares/citibike.json") {
+            $0.replacingOccurrences(of: #""planPriceCents": 23900,"#, with: "\"planPriceCents\": 23900,\n      \"planPriceCents\": 24900,")
+        }
+        #expect(optional == .duplicateKey(file: "fares/citibike.json", path: "$.plans.member.planPriceCents", line: 17))
+    }
+
+    @Test func anIntegerWrittenAsADecimalFailsTheBuild() throws {
+        // JSONDecoder reads each of these into an Int as 325; the strict reader keeps the form.
+        for written in ["325.0", "3.25e2", "3.25E+2", "32500e-2"] {
+            let error = try loadError("fares/path.json") { $0.replacingOccurrences(of: "325", with: written) }
+            #expect(error == .changedValue(file: "fares/path.json", path: "$.fareCents"), "\(written)")
+        }
+        let nested = try loadError("config/transit.json") {
+            $0.replacingOccurrences(of: #""minTransferSeconds": 30,"#, with: #""minTransferSeconds": 30.0,"#)
+        }
+        #expect(nested == .changedValue(file: "config/transit.json", path: "$.links.minTransferSeconds"))
+        // (A fraction that isn't an integer, 3.25, is a type error: wrongTypesAndUnknownEnumValuesFailTheBuild.)
+    }
+
     @Test func nullReadsAsAbsent() throws {
         let error = try loadError("fares/citibike.json") {
             $0.replacingOccurrences(of: #""planPriceCents": 2500,"#, with: #""planPriceCents": null,"#)
