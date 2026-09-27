@@ -128,7 +128,8 @@ public enum ConfigValidation {
         issues.positive(links.maxSnapMeters.named("maxSnapMeters"), "transit.links")
         issues.check((1...maxFootpathWalkSeconds).contains(links.maxFootpathWalkSeconds),
                      "transit.links.maxFootpathWalkSeconds: must be 1…\(maxFootpathWalkSeconds)")
-        issues.nonNegative(["minTransferSeconds": links.minTransferSeconds], "transit.links")
+        issues.check((0...maxLinkSeconds).contains(links.minTransferSeconds),
+                     "transit.links.minTransferSeconds: must be 0…\(maxLinkSeconds)")
         issues.positive(["stationLinkMaxWalkMeters": links.stationLinkMaxWalkMeters,
                          "walkSpeedHundredthsMph": links.walkSpeedHundredthsMph], "transit.links")
         issues.unique(links.streetAccessOnlyInsideServiceArea.map(\.rawValue), "transit.links.streetAccessOnlyInsideServiceArea",

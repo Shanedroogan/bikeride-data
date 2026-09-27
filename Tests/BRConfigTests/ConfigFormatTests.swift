@@ -204,6 +204,10 @@ import Testing
         #expect(issues { $0.fares.lirr.peakRule.terminalArrivals.endMinute = 360 }
             == ["fares.lirr.peakRule.terminalArrivals: needs 0 ≤ startMinute < endMinute ≤ 1440"])
         #expect(issues { $0.transit.links.maxFootpathWalkSeconds = 3601 } == ["transit.links.maxFootpathWalkSeconds: must be 1…3600"])
+        // LinksOptions(config:) converts it to UInt32; links stores the transfer walks as u16 footpath seconds.
+        #expect(issues { $0.transit.links.minTransferSeconds = 65_535 } == ["transit.links.minTransferSeconds: must be 0…65534"])
+        #expect(issues { $0.transit.links.minTransferSeconds = -1 } == ["transit.links.minTransferSeconds: must be 0…65534"])
+        #expect(issues { $0.transit.links.minTransferSeconds = 65_534 }.isEmpty)
         #expect(issues { $0.fares.mta.inSystemTransfers = $0.fares.mta.outOfSystemTransfers }
             == ["fares.mta: S:A1–S:B1 is both an in-system and an out-of-system transfer"])
         #expect(issues { $0.bikeShare.vehicleTypes.ebike = ["1"] } == ["bikeShare.vehicleTypes: vehicle type 1 listed twice"])

@@ -533,8 +533,11 @@ public struct ConfigAfterBikeChange: Sendable, Equatable, Codable {
     }
 }
 
-/// A journey whose last leg is boarded in round `pruneRound` or later must save more than
-/// `minSavingSeconds` over the best with fewer legs.
+/// A journey of exactly `pruneRound` transit legs (its last leg boarded in RAPTOR round
+/// `pruneRound`; round 0 is access only) must arrive more than `minSavingSeconds` before the best
+/// journey with fewer legs. Journeys with more legs are not held to this rule; the engine searches
+/// at most 4 legs (`RaptorLimits.maxRounds` 5, not a config value), so with `pruneRound` 4 it
+/// covers the last round.
 public struct ConfigExtraLeg: Sendable, Equatable, Codable {
     public var pruneRound: Int
     public var minSavingSeconds: Int
@@ -548,13 +551,13 @@ public struct ConfigExtraLeg: Sendable, Equatable, Codable {
 /// The `links` build parameters. `links` bakes these in, and its header's `builtAgainst` will
 /// name the config it was built from.
 public struct ConfigLinks: Sendable, Equatable, Codable {
-    /// Station access charged once at every street↔platform transition. At most 65,535.
+    /// Station access charged once at every street↔platform transition. At most 65,534.
     public var stationAccessSeconds: ConfigSystemValues
     /// How far an access point may lie from the walk graph.
     public var maxSnapMeters: ConfigSystemValues
     /// A footpath is listed when it walks at most this long, station access at both ends on top.
     public var maxFootpathWalkSeconds: Int
-    /// In-station transfers quicker than this are raised to it.
+    /// In-station transfers quicker than this are raised to it. At most 65,534.
     public var minTransferSeconds: Int
     /// Station links are listed when the walk between the station and a stop's access point is
     /// at most this far.

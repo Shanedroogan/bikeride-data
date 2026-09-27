@@ -638,7 +638,8 @@ payload golden (`ConfigFormatTests`) pins the bytes of a hand-built document on 
 **Checks.** `MappedConfig` checks the envelope, decodes, then applies the *structural* rules an
 engine needs (`ConfigValidation.structuralIssues`): no negative prices or times, unique ids and
 dates, a zone fare for every pair of zones that stations use, peak windows inside 0–1440, a
-footpath bound of 1–3,600 s and link seconds below 65,535, disjoint vehicle types, no fixed
+footpath bound of 1–3,600 s and link seconds (station access, `minTransferSeconds`, fixed
+transfers) below 65,535, disjoint vehicle types, no fixed
 transfer listed twice (either direction). The compiler also applies the writer's *canonical*
 rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
 never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
@@ -721,7 +722,7 @@ to the zone fare.
 | `minimumPlatformChangeSeconds` | int | Floor on `transfers.txt` platform-to-platform times |
 | `accessSlack` | {`baseSeconds`, `walkPercent`} | Slack after walking to the first stop: base + walk × percent / 100 (integer division) |
 | `afterBikeChange` | {`minSeconds`, `ridePercent`} | Change time after a bike leg: max(min, ride × percent / 100) |
-| `extraLeg` | {`pruneRound`, `minSavingSeconds`} | A journey whose last leg boards in round `pruneRound` or later must save more than `minSavingSeconds` over the best with fewer legs |
+| `extraLeg` | {`pruneRound`, `minSavingSeconds`} | A journey of exactly `pruneRound` transit legs (its last leg boards in round `pruneRound`; round 0 is access only) must arrive more than `minSavingSeconds` before the best journey with fewer legs. Journeys with more legs are not held to it; the engine searches at most 4 legs (a limit that is not in config), so `pruneRound` 4 covers the last round |
 | `maxJourneySeconds` | int | No label later than departure + this |
 | `accessWalkLimitSeconds`, `directWalkLimitSeconds` | int | Walk-tree reach; the direct walk |
 | `originSnapMeters` | int | How far an origin or destination may lie from the walk graph |
@@ -734,7 +735,7 @@ to the zone fare.
 | `stationAccessSeconds` | per system | Charged once at every street↔platform transition; ≤ 65,534. Must equal `links`' `systemAccessSeconds` |
 | `maxSnapMeters` | per system | How far an access point may lie from the walk graph |
 | `maxFootpathWalkSeconds` | int | Footpath walk bound, 1–3,600; station access at both ends comes on top |
-| `minTransferSeconds` | int | In-station transfers are raised to at least this |
+| `minTransferSeconds` | int | In-station transfers are raised to at least this; ≤ 65,534 |
 | `stationLinkMaxWalkMeters` | int | Station-link walk bound |
 | `walkSpeedHundredthsMph` | int | 350 = 3.5 mph (× 0.44704 m/s per mph) |
 | `streetAccessOnlyInsideServiceArea` | array of system | Systems whose access points outside the service area get no street access; sorted |

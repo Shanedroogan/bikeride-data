@@ -8,7 +8,7 @@ import Foundation
 /// ``ConfigValidation/structuralIssues(_:)``. The decode ignores keys it doesn't know at any
 /// depth (a key added within the format is optional, with its default documented next to it),
 /// reads `null` as absent, and rejects an unknown enum value, a missing required key or a value
-/// of the wrong type. Opening costs well under a millisecond: the document is about 20 KB.
+/// of the wrong type. Opening costs about a millisecond: the v1 document is about 14 KB.
 public struct MappedConfig: Sendable {
     /// The raw artifact's file name inside a data directory such as `build/data`.
     public static let fileName = "config.bin"
