@@ -1,5 +1,7 @@
+import BRConfig
 import BRCore
 import BRData
+import BRFlows
 import BRStreetCore
 import BRTimetable
 import Foundation
@@ -239,6 +241,8 @@ public final class GateContext {
     private var timetables: [TransitSystem: Timetable] = [:]
     private var streetGraph: MappedStreetGraph?
     private var linksArtifact: MappedLinks?
+    private var configArtifact: MappedConfig?
+    private var flowsArtifact: MappedFlows?
 
     init(dataDirectory: URL, reportsDirectory: URL, today: ServiceDate, configuration: GateConfiguration, runner: any ToolRunner,
          artifacts: [ArtifactKind: SetArtifactFile], previous: SetManifest?, previousTripCounts: TripCountSidecar?) {
@@ -288,10 +292,28 @@ public final class GateContext {
         guard let file = artifacts[.stations] else { return nil }
         return try MappedStations(contentsOf: file.rawURL)
     }
+
+    public func config() throws -> MappedConfig? {
+        if let configArtifact { return configArtifact }
+        guard let file = artifacts[.config] else { return nil }
+        configArtifact = try MappedConfig(contentsOf: file.rawURL)
+        return configArtifact
+    }
+
+    public func flows() throws -> MappedFlows? {
+        if let flowsArtifact { return flowsArtifact }
+        guard let file = artifacts[.flows] else { return nil }
+        flowsArtifact = try MappedFlows(contentsOf: file.rawURL, validate: true)
+        return flowsArtifact
+    }
+
+    /// The previous set's id, for messages ("none" without a previous manifest).
+    var previousSetId: String { previous?.setId ?? "none" }
 }
 
-/// A check added to the built-in ones: how the config reference checks (LIRR zones, valet) and the
-/// flows statistics join the gate (wired in `all`, M1 step P2b). A thrown error fails the check.
+/// A check added to the built-in ones: how the config reference checks and the flows statistics
+/// join the gate (``Gate/publishHooks``, which `bikeride-data gate` and `all` pass). A thrown
+/// error fails the check.
 public protocol GateCheck {
     var name: String { get }
     func run(_ context: GateContext) throws -> GateCheckResult
@@ -303,7 +325,8 @@ public protocol GateCheck {
 ///
 /// Checks, in order: `artifacts` (every required kind is in the set, each file opens with its
 /// reader, every `builtAgainst` names the set's exact input), `xz`, `coverage` (fail soft),
-/// `tripCounts`, `streets` (per-region kept share), `snapping`, then any ``extraChecks``. A set
+/// `tripCounts`, `streets` (per-region kept share), `snapping`, then any ``extraChecks`` (the
+/// published pipeline passes ``publishHooks``: `configReferences` and `flows`). A set
 /// may carry artifacts forward from the previous manifest (a job that did not rebuild them);
 /// those are not re-checked, but everything built against them must match them.
 public struct Gate {
@@ -435,8 +458,8 @@ public struct Gate {
                 case .links: _ = try context.links()
                 case .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
                     _ = try context.timetable(TransitSystem.allCases.first { ArtifactKind.timetable(for: $0) == file.kind }!)
-                case .flows, .config:
-                    notes.append("\(file.kind.name): header checked; its reader is not wired into the gate yet")
+                case .config: _ = try context.config()
+                case .flows: _ = try context.flows()
                 }
             } catch {
                 failures.append("\(file.kind.name): does not open: \(error)")

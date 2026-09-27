@@ -17,7 +17,7 @@ struct PublishSetTests {
         #expect(gate.check("tripCounts")?.status == .skipped)
         #expect(gate.check("streets")?.status == .pass)
         #expect(gate.check("snapping")?.metrics["stopsInServiceArea"] ?? 0 >= 10)
-        #expect(Set(gate.artifacts.keys) == Set(SetManifest.coreKinds.map(\.name) + ["config"]))
+        #expect(Set(gate.artifacts.keys) == Set(SetManifest.coreKinds.map(\.name)) && SetManifest.coreKinds.contains(.config))
         #expect(FileManager.default.fileExists(atPath: set.reports.appendingPathComponent("gate.json").path))
 
         let builder = set.manifestBuilder()
@@ -33,7 +33,7 @@ struct PublishSetTests {
                                                                   dates: 21, days: 20, status: .ok))
 
         // rawSha256 by artifact name (TransitDataSet's `.known` input), from the files themselves.
-        #expect(manifest.artifacts.keys.sorted() == (SetManifest.coreKinds.map(\.name) + ["config"]).sorted())
+        #expect(manifest.artifacts.keys.sorted() == SetManifest.coreKinds.map(\.name).sorted())
         for (name, entry) in manifest.artifacts {
             let raw = set.data.appendingPathComponent("\(name).bin")
             #expect(entry.rawSha256 == (try set.sha256(raw)), "\(name)")

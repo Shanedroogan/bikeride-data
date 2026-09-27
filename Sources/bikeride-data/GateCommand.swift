@@ -4,12 +4,14 @@ import Foundation
 
 let gateUsage = """
     USAGE: bikeride-data gate [--data DIR] [--reports DIR] [--previous FILE] [--today YYYYMMDD]
-                              [--repo-data DIR] [--now ISO8601]
+                              [--repo-data DIR] [--now ISO8601] [--require-flows]
 
     Runs the validation gate over the set in --data and writes <reports>/gate.json: every required
     artifact present, opening and consistent with builtAgainst; xz blobs one stream / one block and
     decoding to rawSha256; coverage (under 3 days fails soft: the system is marked noSchedule);
-    trip counts against the previous build; per-region street shares; stop snapping.
+    trip counts against the previous build; per-region street shares; stop snapping; the config's
+    reference checks against the set (LIRR zones, MTA and SIR stations, fixed transfers, valet
+    stations, station regions); the flows statistics in <reports>/flows.json.
 
       --data DIR       The set (default build/data)
       --reports DIR    Build reports, and where gate.json goes (default <data>/../reports)
@@ -20,6 +22,7 @@ let gateUsage = """
                        config/calendar/holidays.csv); default ./Data, ./Vendor/bikeride-data/Data,
                        or the source tree this binary was built from
       --now ISO8601    Timestamp for the report (default now)
+      --require-flows  A set without flows fails (by default flows is optional)
 
     Exit status: 0 pass or soft failure, 3 hard failure (publish nothing), 1 error, 64 usage.
     """
@@ -31,7 +34,8 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         return 0
     }
     do {
-        let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now"], flags: [])
+        let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now"],
+                                         flags: ["--require-flows"])
         let data = options.url("--data", default: "build/data")
         let reports = options.values["--reports"].map(CommandOptions.absoluteURL) ?? data.deletingLastPathComponent().appendingPathComponent("reports")
         // No gate.json may survive a run that fails before writing its own (manifest would take it).
@@ -44,6 +48,8 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         var gate = Gate(dataDirectory: data, reportsDirectory: reports, previousManifest: options.values["--previous"].map(CommandOptions.absoluteURL),
                         today: today, configuration: try GateConfiguration.load(repoData: repoData), runner: ProcessToolRunner())
         if let now = try publishNow(options) { gate.now = now }
+        gate.requiredKinds = SetManifest.requiredKinds(requireFlows: options.flags.contains("--require-flows"))
+        gate.extraChecks = Gate.publishHooks
         let started = Date()
         let report = try gate.run { logLine("gate", $0) }
         print("gate: \(report.status.rawValue) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; report \(gate.reportURL.path)")

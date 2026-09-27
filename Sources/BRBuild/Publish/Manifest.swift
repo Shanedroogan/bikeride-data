@@ -10,8 +10,14 @@ import Foundation
 public struct SetManifest: Codable, Sendable, Equatable {
     public static let fileName = "manifest.json"
     public static let schemaVersion = 1
-    /// The kinds every set must hold. `flows` and `config` join when their builders land (M1 P2b).
-    public static let coreKinds: [ArtifactKind] = [.streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath, .links]
+    /// The kinds every set must hold. `flows` is optional (a set may publish without it; `gate` and
+    /// `manifest` take `--require-flows` to require it, see ``requiredKinds(requireFlows:)``).
+    public static let coreKinds: [ArtifactKind] = [.streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath, .config, .links]
+
+    /// ``coreKinds``, plus `flows` when it is required.
+    public static func requiredKinds(requireFlows: Bool) -> [ArtifactKind] {
+        coreKinds + (requireFlows ? [.flows] : [])
+    }
 
     public struct Artifact: Codable, Sendable, Equatable {
         /// SHA-256 of the `.xz` blob: its name under `data/blobs/`.
