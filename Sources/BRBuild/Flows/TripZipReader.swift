@@ -14,11 +14,11 @@ public protocol TripArchive: Sendable {
 
 /// One entry being read.
 public struct TripEntryStream {
-    public var source: FileHandleChunkSource
+    public var source: TripChunkSource
     private let onFinish: () throws -> Void
     private let onCancel: () -> Void
 
-    public init(source: FileHandleChunkSource, finish: @escaping () throws -> Void, cancel: @escaping () -> Void) {
+    public init(source: TripChunkSource, finish: @escaping () throws -> Void, cancel: @escaping () -> Void) {
         self.source = source
         self.onFinish = finish
         self.onCancel = cancel
@@ -67,7 +67,7 @@ public struct ZipTripArchive: TripArchive {
         }
         let stream = try runner.stream(executable: "unzip", args: ["-p", archive.path, pattern])
         return TripEntryStream(
-            source: FileHandleChunkSource(stream.output, chunkSize: 1 << 20),
+            source: TripChunkSource(stream.output),
             finish: { try stream.waitUntilExit() },
             cancel: { stream.terminate() }
         )
@@ -97,6 +97,32 @@ public struct DirectoryTripArchive: TripArchive {
 
     public func open(_ entry: String) throws -> TripEntryStream {
         let handle = try FileHandle(forReadingFrom: directory.appendingPathComponent(entry))
-        return TripEntryStream(source: FileHandleChunkSource(handle), finish: { try handle.close() }, cancel: { try? handle.close() })
+        return TripEntryStream(source: TripChunkSource(handle), finish: { try handle.close() }, cancel: { try? handle.close() })
+    }
+}
+
+/// Reads a file or pipe in 1 MB chunks. On Apple platforms each read runs in its own autorelease
+/// pool: `FileHandle` hands back autoreleased buffers, and a worker thread that streams a 200 MB
+/// entry would otherwise hold every chunk until the entry ends (about 1.5 GB across 8 workers).
+public struct TripChunkSource: ByteChunkSource {
+    public let handle: FileHandle
+    public let chunkSize: Int
+
+    public init(_ handle: FileHandle, chunkSize: Int = 1 << 20) {
+        self.handle = handle
+        self.chunkSize = chunkSize
+    }
+
+    public mutating func nextChunk() throws -> [UInt8]? {
+        #if canImport(ObjectiveC)
+        return try autoreleasepool { try read() }
+        #else
+        return try read()
+        #endif
+    }
+
+    private func read() throws -> [UInt8]? {
+        guard let data = try handle.read(upToCount: chunkSize), !data.isEmpty else { return nil }
+        return [UInt8](data)
     }
 }
