@@ -1,4 +1,5 @@
 import BRBuild
+import BRConfig
 import BRCore
 import BRData
 import BRGeo
@@ -26,8 +27,8 @@ final class PublishScratch: @unchecked Sendable {
 func day(_ text: String) -> ServiceDate { ServiceDate(yyyymmdd: text)! }
 
 /// A complete small set built by the real compilers: a lattice city (region "Manhattan") with
-/// streets, stations, all five timetables and links, each raw file with its `.xz` blob, plus the
-/// streets report the gate reads. Build day 2026-10-06; every system covers 10/05–10/25.
+/// streets, stations, all five timetables, config and links, each raw file with its `.xz` blob,
+/// plus the streets report the gate reads. Build day 2026-10-06; every system covers 10/05–10/25.
 struct SyntheticSet {
     static let today = day("20261006")
     static let windowStart = day("20261005")
@@ -53,6 +54,7 @@ struct SyntheticSet {
         try buildStreets()
         try buildStations()
         for system in TransitSystem.allCases { try buildTimetable(system) }
+        try buildConfig()
         try buildLinks()
     }
 
@@ -179,9 +181,20 @@ struct SyntheticSet {
         try XZ.compress(raw, to: raw.appendingPathExtension("xz"), runner: publishRunner)
     }
 
+    /// The committed `Data/` config (what links is built from), without the reference checks.
+    /// Its fixed transfers name real PATH stations, which the lattice's tt-path doesn't have, so
+    /// they are cleared (links would fail on them).
+    func buildConfig() throws {
+        var document = try ConfigSources(root: Self.repoData).load()
+        document.transit.links.fixedTransfers = []
+        let raw = data.appendingPathComponent(MappedConfig.fileName)
+        try ConfigArtifactWriter.artifact(json: try ConfigArtifactWriter.json(document), dataVersion: "fixture").write(to: raw)
+        try XZ.compress(raw, to: raw.appendingPathExtension("xz"), runner: publishRunner)
+    }
+
     func buildLinks() throws {
         var configuration = LinksCompiler.Configuration(dataDirectory: data)
-        configuration.options.threads = 2
+        configuration.threads = 2
         _ = try LinksCompiler(runner: publishRunner, configuration: configuration).run()
     }
 

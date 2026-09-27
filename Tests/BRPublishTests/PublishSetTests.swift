@@ -17,7 +17,7 @@ struct PublishSetTests {
         #expect(gate.check("tripCounts")?.status == .skipped)
         #expect(gate.check("streets")?.status == .pass)
         #expect(gate.check("snapping")?.metrics["stopsInServiceArea"] ?? 0 >= 10)
-        #expect(Set(gate.artifacts.keys) == Set(SetManifest.coreKinds.map(\.name)))
+        #expect(Set(gate.artifacts.keys) == Set(SetManifest.coreKinds.map(\.name) + ["config"]))
         #expect(FileManager.default.fileExists(atPath: set.reports.appendingPathComponent("gate.json").path))
 
         let builder = set.manifestBuilder()
@@ -33,7 +33,7 @@ struct PublishSetTests {
                                                                   dates: 21, days: 20, status: .ok))
 
         // rawSha256 by artifact name (TransitDataSet's `.known` input), from the files themselves.
-        #expect(manifest.artifacts.keys.sorted() == SetManifest.coreKinds.map(\.name).sorted())
+        #expect(manifest.artifacts.keys.sorted() == (SetManifest.coreKinds.map(\.name) + ["config"]).sorted())
         for (name, entry) in manifest.artifacts {
             let raw = set.data.appendingPathComponent("\(name).bin")
             #expect(entry.rawSha256 == (try set.sha256(raw)), "\(name)")
@@ -280,15 +280,15 @@ struct PublishSetTests {
         var previous = first
         let flows = SetManifest.Artifact(sha: String(repeating: "f", count: 64), bytes: 3_600_000, rawBytes: 9_700_000,
                                          rawSha256: String(repeating: "a", count: 64), formatVersion: 0, dataVersion: "trips=202606-202608", builtAgainst: [:])
-        let config = SetManifest.Artifact(sha: String(repeating: "c", count: 64), bytes: 4_000, rawBytes: 25_000,
-                                          rawSha256: String(repeating: "b", count: 64), formatVersion: 0, dataVersion: "config", builtAgainst: [:])
+        // links names the config it was built from, so the carried config must be that one.
+        let config = try #require(first.artifacts["config"])
         previous.artifacts["flows"] = flows
         previous.artifacts["config"] = config
         previous.setId = try SetManifest.setId(previous.artifacts)
         let previousURL = try writePrevious(previous, sidecar: sidecar, to: set.scratch.url.appendingPathComponent("prev"))
 
-        // This job also did not rebuild the ferry: its files are gone from the data directory.
-        for name in ["tt-ferry.bin", "tt-ferry.bin.xz"] { try FileManager.default.removeItem(at: set.data.appendingPathComponent(name)) }
+        // This job also did not rebuild the ferry or the config: their files are gone from the data directory.
+        for name in ["tt-ferry.bin", "tt-ferry.bin.xz", "config.bin", "config.bin.xz"] { try FileManager.default.removeItem(at: set.data.appendingPathComponent(name)) }
         let gate = try set.gate(previous: previousURL)
         #expect(gate.status == .pass, "\(gate.checks.filter { $0.status == .fail })")
         #expect(gate.carriedForward == ["tt-ferry", "flows", "config"])
