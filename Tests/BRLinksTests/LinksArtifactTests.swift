@@ -10,8 +10,8 @@ import Testing
 
 /// The fixture world with stations, compiled links, and every artifact written to a data directory,
 /// with `config.bin` compiled from the committed `Data/` config. ``compiled`` is built with the
-/// literal ``LinksOptions/standard``, so a compiler build that matches it shows the config's values
-/// build the same bytes.
+/// literal options (``LinksOptions/standard`` unless given), so a compiler build that matches it
+/// shows the config's values build the same bytes.
 struct LinksFixture {
     let world: TransitFixture.World
     let network: LinkNetwork
@@ -28,10 +28,9 @@ struct LinksFixture {
     /// 1 km from both by bike, and none nearer.
     static let hopPlaces: [(String, Double, Double)] = [("h1", 1.1, 1.3), ("h2", 6.9, 7.1), ("h3", 0.8, 2.6)]
 
-    init(places: [(String, Double, Double)] = Self.places) throws {
+    init(places: [(String, Double, Double)] = Self.places, options: LinksOptions = .standard) throws {
         world = try TransitFixture.world()
         let graph = world.city.graph
-        let options = LinksOptions.standard
         network = LinkNetwork.make(timetables: world.timetables, graph: graph, options: options).network
         var (selected, _) = StationsBuilder.select(places.map { id, x, y in
             let c = SyntheticCity.coordinate(x, y)
@@ -194,8 +193,8 @@ struct LinksFixture {
         }
     }
 
-    /// Expects the payload of writing the directly compiled links (``LinksOptions/standard``)
-    /// with ``HopBuilder``'s hops (``HopOptions``' defaults, no holidays).
+    /// Expects the payload of writing the directly compiled links (the fixture's literal options)
+    /// with ``HopBuilder``'s hops (``HopOptions/standard``: no holidays).
     func expectDirectPayload(_ fixture: LinksFixture, _ file: URL, sourceLocation: SourceLocation = #_sourceLocation) throws {
         let timetables = fixture.world.timetables
         let parents = RailParents.make(timetables: timetables, network: fixture.network)
@@ -203,10 +202,10 @@ struct LinksFixture {
         let inputs = HopBuilder.Inputs(
             systemStopCounts: fixture.network.systemStopCounts, parents: parents, stationLinks: fixture.compiled.stationLinks,
             stationCount: stations.count, distances: stations,
-            oneSeat: OneSeatTable.build(timetables: timetables, network: fixture.network, parents: parents, options: HopOptions())
+            oneSeat: OneSeatTable.build(timetables: timetables, network: fixture.network, parents: parents, options: HopOptions.standard)
         )
         var compiled = fixture.compiled
-        compiled.hops = HopBuilder.build(inputs, options: HopOptions(), threads: 1).hops
+        compiled.hops = HopBuilder.build(inputs, options: HopOptions.standard, threads: 1).hops
         let written = try MappedArtifact(contentsOf: file)
         #expect(written.payload == (try ArtifactHeader.decode(from: fixture.artifact(compiled)).payload), sourceLocation: sourceLocation)
     }
@@ -235,7 +234,7 @@ struct LinksFixture {
         let s3 = fixture.network.global(.subway, "S3", in: timetables)
         func station(_ id: String) throws -> Int { try #require(fixture.stations.firstIndex { $0.id == id }) }
         let h1 = try station("h1"), h2 = try station("h2"), h3 = try station("h3")
-        #expect(hops.count == 3 && hops.parameters == HopOptions().parameters)
+        #expect(hops.count == 3 && hops.parameters == HopOptions.standard.parameters)
         #expect(hops.hops(fromParent: s1).map(\.target) == [s3] && hops.hops(fromParent: s2).map(\.target) == [s3])
         #expect(hops.hops(fromParent: s3).map(\.target) == [s1])
         let s1s3 = hops.hops(fromParent: s1)[0], s2s3 = hops.hops(fromParent: s2)[0], s3s1 = hops.hops(fromParent: s3)[0]
@@ -253,7 +252,7 @@ struct LinksFixture {
         func railHops(_ links: StationLinkTable) throws -> (hops: CompiledHops, stats: HopStats) {
             var seconds: [String: Double] = [:]
             return try LinksCompiler.railHops(timetables: timetables, network: fixture.network, stationLinks: links, stationCount: stations.count,
-                                              distances: stations, options: HopOptions(), threads: 1, seconds: &seconds)
+                                              distances: stations, options: HopOptions.standard, threads: 1, seconds: &seconds)
         }
         func missingLinks(_ links: StationLinkTable) -> Int? {
             do {
@@ -297,16 +296,19 @@ struct LinksFixture {
         }
     }
 
-    /// links takes its parameters from config.bin: without it the build fails, naming the file.
+    /// links takes its parameters from config.bin: without it the build fails, naming the file,
+    /// and the links an earlier run left there are gone (they weren't built from these inputs).
     @Test func needsTheConfigArtifact() throws {
         let fixture = try LinksFixture()
         try FileManager.default.removeItem(at: fixture.configFile)
         var configuration = LinksCompiler.Configuration(dataDirectory: fixture.data)
         configuration.compress = false
+        for file in [configuration.artifactFile, configuration.compressedFile] { try Data("earlier".utf8).write(to: file) }
         #expect(throws: LinksCompiler.LinksError.missingConfig(fixture.configFile.path)) {
             try LinksCompiler(runner: ProcessToolRunner(), configuration: configuration).run()
         }
         #expect(!FileManager.default.fileExists(atPath: configuration.artifactFile.path))
+        #expect(!FileManager.default.fileExists(atPath: configuration.compressedFile.path))
     }
 
     /// A fixed transfer whose end is not in its (loaded) timetable fails the build before
@@ -327,10 +329,47 @@ struct LinksFixture {
         #expect(!FileManager.default.fileExists(atPath: configuration.artifactFile.path))
 
         // Resolved, the L1 ↔ S1 walk becomes platform pairs both ways (S1N and S1S).
-        document.transit.links.fixedTransfers.removeLast()
+        let unresolved = document.transit.links.fixedTransfers.removeLast()
         try RepositoryConfig.write(document, into: fixture.data)
         let report = try LinksCompiler(runner: ProcessToolRunner(), configuration: configuration).run()
         #expect(report.network.fixedTransferPairs == 4 && !report.warnings.contains { $0.contains("fixed transfer") })
+
+        // Broken again, the build fails and the links built from the previous config are removed.
+        document.transit.links.fixedTransfers.append(unresolved)
+        try RepositoryConfig.write(document, into: fixture.data)
+        #expect(throws: LinksCompiler.LinksError.unresolvedFixedTransfers(["L:NOPE→S:S2"])) {
+            try LinksCompiler(runner: ProcessToolRunner(), configuration: configuration).run()
+        }
+        #expect(!FileManager.default.fileExists(atPath: configuration.artifactFile.path))
+    }
+
+    /// Fixed transfers that resolve, from the config, build the same payload as the same
+    /// transfers given as literals (in another order: each pair keeps its minimum), and a payload
+    /// that differs from the one without them.
+    @Test func fixedTransfersFromTheConfigBuildTheLiteralsPayload() throws {
+        let transfers = [
+            FixedTransfer(from: "S:S1", to: "B:B2", seconds: 45),
+            FixedTransfer(from: "S:S4N", to: "B:B2", seconds: 150),
+            FixedTransfer(from: "L:L1", to: "S:S1", seconds: 60),
+        ]
+        var literal = LinksOptions.standard
+        literal.fixedTransfers = transfers
+        let fixture = try LinksFixture(options: literal)
+        var document = try RepositoryConfig.document()
+        document.transit.links.fixedTransfers = transfers.reversed().map { ConfigFixedTransfer(from: $0.from, to: $0.to, seconds: Int($0.seconds)) }
+        try RepositoryConfig.write(document, into: fixture.data)
+
+        var configuration = LinksCompiler.Configuration(dataDirectory: fixture.data)
+        configuration.compress = false
+        configuration.threads = 2
+        let report = try LinksCompiler(runner: ProcessToolRunner(), configuration: configuration).run()
+        #expect(report.network.fixedTransferPairs == 10 && report.network.fixedTransfersUnresolved.isEmpty)
+        #expect(report.warnings == ["tt-ferry.bin missing; ferry stops are not linked", "tt-path.bin missing; path stops are not linked"])
+        try expectDirectPayload(fixture, configuration.artifactFile)
+
+        // The transfers reach the bytes: without them the payload is the standard fixture's.
+        let plain = try ArtifactHeader.decode(from: try LinksFixture().artifact()).payload
+        #expect(try MappedArtifact(contentsOf: configuration.artifactFile).payload != plain)
     }
 
     /// `--max-walk-seconds` replaces the config's footpath bound, and the report says so.

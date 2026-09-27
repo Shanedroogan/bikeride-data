@@ -10,7 +10,7 @@ import Testing
 /// The rail bike hops of a built data directory: a rebuild from its own inputs equals the stored
 /// block, and known pairs are kept or dropped for the documented reasons. Runs only when
 /// `BR_DATA_DIR` names a data directory whose `links.bin` has hops (and the `config.bin` it was
-/// built from), e.g.
+/// built from, when its `builtAgainst` names one), e.g.
 ///
 ///     BR_DATA_DIR=build/data swift test -c release -Xswiftc -enable-testing --filter RealDataHopTests
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["BR_DATA_DIR"] != nil))
@@ -41,8 +41,15 @@ struct RealDataHopTests {
         stationLinks.stopStation = Array(raw.stopStationStation)
         stationLinks.stopEnter = Array(raw.stopStationEnter)
         stationLinks.stopExit = Array(raw.stopStationExit)
-        // The hop options links was built with: the config's holidays and change after the bike.
-        var options = LinksOptions(config: try MappedConfig.load(fromDataDirectory: directory).document).hops
+        // The hop options links was built with: the holidays and change after the bike of the
+        // config its header names. Links built before it named one (P2a) used the literals.
+        var options = HopOptions.standard
+        if let configSha = links.header.builtAgainst[ArtifactKind.config.name] {
+            let configURL = directory.appendingPathComponent(MappedConfig.fileName)
+            let sha = try ProcessHasher(runner: ProcessToolRunner()).sha256(ofFileAt: configURL).hex
+            try #require(sha == configSha, "config.bin is not the one links.bin was built against (\(configSha.prefix(12)))")
+            options = HopOptions(config: try MappedConfig(contentsOf: configURL).document)
+        }
         #expect(stored.parameters == options.parameters)
         options.parameters = stored.parameters
         let parents = RailParents.make(timetables: timetables, network: network)

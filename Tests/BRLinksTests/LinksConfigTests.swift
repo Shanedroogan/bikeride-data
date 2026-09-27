@@ -35,11 +35,15 @@ import Testing
     /// The hop tunables stay `HopOptions`' (config doesn't carry them); the change after the bike
     /// and the holidays come from the config.
     @Test func hopOptionsTakeTheConfigsAfterBikeChangeAndHolidays() {
-        let hops = LinksOptions(config: document).hops, defaults = HopOptions()
-        #expect(hops.enabled && hops.parameters == defaults.parameters && hops.oneSeatFilter == defaults.oneSeatFilter)
-        #expect(hops.middayStartSeconds == defaults.middayStartSeconds && hops.middayEndSeconds == defaults.middayEndSeconds)
+        let hops = LinksOptions(config: document).hops, standard = HopOptions.standard
+        #expect(hops.enabled && hops.parameters == standard.parameters && hops.oneSeatFilter == standard.oneSeatFilter)
+        #expect(hops.middayStartSeconds == standard.middayStartSeconds && hops.middayEndSeconds == standard.middayEndSeconds)
         #expect(document.transit.afterBikeChange == ConfigAfterBikeChange(minSeconds: 60, ridePercent: 10))
-        #expect(hops.afterBikeMinSeconds == defaults.afterBikeMinSeconds && hops.afterBikeRidePermille == defaults.afterBikeRidePermille)
+        #expect(hops.afterBikeMinSeconds == standard.afterBikeMinSeconds && hops.afterBikeRidePermille == standard.afterBikeRidePermille)
+        // Apart from the holidays, the config's hop options are the literal ones.
+        var withoutHolidays = hops
+        withoutHolidays.holidays = []
+        #expect(withoutHolidays == standard)
         #expect(hops.holidays == Set(document.calendar.holidays.map(\.date)) && hops.holidays.count == document.calendar.holidays.count)
         #expect(hops.holidays.contains(ServiceDate(year: 2026, month: 11, day: 26)))
 

@@ -4,7 +4,10 @@ import BRTimetable
 import Foundation
 
 /// Tunables of the rail bike hops (`docs/formats.md`, "links: rail bike hops"). The stored
-/// ``parameters`` shape the artifact; the rest only decide which pairs are kept.
+/// ``parameters`` shape the artifact; the rest only decide which pairs are kept. The config
+/// carries the one-seat rule's change after the bike and its holidays, so ``init(afterBikeMinSeconds:afterBikeRidePermille:holidays:)``
+/// requires them (the shipping build takes them from `config.bin`: ``init(config:)``); the rest
+/// are the builder's own and have their defaults here.
 public struct HopOptions: Sendable, Equatable {
     /// Build the hop block (only when `stations.bin` is present).
     public var enabled = true
@@ -22,15 +25,18 @@ public struct HopOptions: Sendable, Equatable {
     public var middayStartSeconds = 36_000
     public var middayEndSeconds = 57_600
     /// The change after the bike that the door-to-door time includes: the larger of this and
-    /// ``afterBikeRidePermille`` of the ride.
-    public var afterBikeMinSeconds = 60
-    public var afterBikeRidePermille = 100
+    /// ``afterBikeRidePermille`` of the ride (the config's `transit.afterBikeChange`).
+    public var afterBikeMinSeconds: Int
+    public var afterBikeRidePermille: Int
     /// Dates never taken as the one-seat reference day (``OneSeatTable/referenceDate(_:excluding:)``):
-    /// holidays run a weekend-like midday. Empty until links is built from the config's holiday
-    /// calendar.
-    public var holidays: Set<ServiceDate> = []
+    /// holidays run a weekend-like midday (the config's `calendar.holidays`).
+    public var holidays: Set<ServiceDate>
 
-    public init() {}
+    public init(afterBikeMinSeconds: Int, afterBikeRidePermille: Int, holidays: Set<ServiceDate>) {
+        self.afterBikeMinSeconds = afterBikeMinSeconds
+        self.afterBikeRidePermille = afterBikeRidePermille
+        self.holidays = holidays
+    }
 }
 
 /// Where a bike matrix distance comes from: the `stations` artifact, or a table in tests.

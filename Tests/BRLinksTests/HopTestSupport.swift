@@ -133,7 +133,7 @@ struct RandomHopWorld {
                     dayMinInVehicleSeconds: midday == .max ? 200 + rng.nextInt(below: 1800) : midday - rng.nextInt(below: 200))
             }
         }
-        var options = HopOptions()
+        var options = HopOptions.standard
         options.parameters = LinkHopParameters(
             minRideSeconds: 240 + rng.nextInt(below: 120), maxRideSeconds: 1200 + rng.nextInt(below: 600),
             minSpeedMmPerSecond: 2500 + rng.nextInt(below: 1000), maxSpeedMmPerSecond: 4500 + rng.nextInt(below: 1500),

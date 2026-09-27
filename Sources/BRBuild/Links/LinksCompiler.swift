@@ -12,8 +12,10 @@ import Foundation
 /// A × the 2 best docks near parent station B, rides of 5–25 min, dropped when a one-seat ride
 /// beats the bike); then writes the raw artifact and its `.xz` blob, re-opens it, checks the
 /// footpath invariants and reports. Every build parameter but the hop tunables and the thread
-/// count comes from `config.bin` (``LinksOptions/init(config:)-(ConfigDocument)``), which is
-/// required and named in `builtAgainst` like the other inputs.
+/// count comes from `config.bin` (``LinksOptions/init(config:)``), which is required and named in
+/// `builtAgainst` like the other inputs. ``run(log:)`` first removes the `links.bin` and
+/// `links.bin.xz` a previous run left in the output directory, so a failed run (or one with
+/// ``Configuration/compress`` off) never leaves older links beside inputs they weren't built from.
 public struct LinksCompiler: Sendable {
     public struct Configuration: Sendable {
         /// Where `config.bin`, `streets.bin`, `stations.bin` and `tt-*.bin` are read from.
@@ -35,6 +37,7 @@ public struct LinksCompiler: Sendable {
         }
 
         public var artifactFile: URL { outputDirectory.appendingPathComponent(MappedLinks.fileName) }
+        public var compressedFile: URL { artifactFile.appendingPathExtension("xz") }
     }
 
     public struct Report: Codable, Sendable {
@@ -105,6 +108,13 @@ public struct LinksCompiler: Sendable {
         }
         let started = Date()
         let fileManager = FileManager.default
+
+        // 0. Nothing from an earlier run survives this one, whatever happens next.
+        for file in [config.artifactFile, config.compressedFile] where fileManager.fileExists(atPath: file.path) {
+            try fileManager.removeItem(at: file)
+            log("removed the previous \(file.lastPathComponent)")
+        }
+
         var inputs: [String: Report.Input] = [:]
         var warnings: [String] = []
         func input(_ kind: ArtifactKind, _ url: URL, _ header: ArtifactHeader) throws {

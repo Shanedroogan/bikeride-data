@@ -4,10 +4,10 @@ import BRStreetCore
 import BRTimetable
 import Foundation
 
-/// Tunables of the links compiler. The shipping build takes every value but ``hops`` and
-/// ``threads`` from the config artifact's `transit.links` (``init(config:)``, in
-/// `Config/LinksOptions+Config.swift`), so there are no defaults here: the plan of record lives in
-/// `Data/config` (`docs/formats.md`, "links" and "config").
+/// Tunables of the links compiler. The shipping build takes every value but ``threads`` and the
+/// hop tunables from the config artifact (``init(config:)``, in `Config/LinksOptions+Config.swift`),
+/// so there are no defaults here: the plan of record lives in `Data/config` (`docs/formats.md`,
+/// "links" and "config").
 public struct LinksOptions: Sendable {
     public var walk: WalkProfile
     /// A footpath p → q is listed when it takes at most this long plus the station access charged
@@ -21,10 +21,11 @@ public struct LinksOptions: Sendable {
     /// Station links are listed when the walk between the station and a stop's access point
     /// (snap legs included, station access excluded) is at most this far at walking speed.
     public var stationLinkMaxWalkMeters: Double
-    /// Station access charged once at every street↔platform transition.
+    /// Station access charged once at every street↔platform transition. One value per system:
+    /// a missing one traps where it is used (there is no default).
     public var accessSeconds: [TransitSystem: UInt32]
     /// How far an access point may lie from the walk graph. LIRR stops with nothing within
-    /// reach are ride-through only.
+    /// reach are ride-through only. One value per system, as ``accessSeconds``.
     public var maxSnapMeters: [TransitSystem: Double]
     /// Systems whose access points outside the service area (the streets graph's regions) get no
     /// street access, whatever lies nearby: PATH's Newark and Harrison stations are ride-through
@@ -42,7 +43,7 @@ public struct LinksOptions: Sendable {
     public init(walk: WalkProfile, maxFootpathWalkSeconds: UInt32, minTransferSeconds: UInt32, stationLinkMaxWalkMeters: Double,
                 accessSeconds: [TransitSystem: UInt32], maxSnapMeters: [TransitSystem: Double],
                 streetAccessOnlyInsideServiceArea: Set<TransitSystem>, fixedTransfers: [FixedTransfer],
-                hops: HopOptions = HopOptions(), threads: Int = ProcessInfo.processInfo.activeProcessorCount) {
+                hops: HopOptions, threads: Int = ProcessInfo.processInfo.activeProcessorCount) {
         self.walk = walk
         self.maxFootpathWalkSeconds = maxFootpathWalkSeconds
         self.minTransferSeconds = minTransferSeconds
@@ -55,8 +56,15 @@ public struct LinksOptions: Sendable {
         self.threads = threads
     }
 
-    func access(_ system: TransitSystem) -> UInt32 { accessSeconds[system] ?? 0 }
-    func snapLimit(_ system: TransitSystem) -> Double { maxSnapMeters[system] ?? 150 }
+    func access(_ system: TransitSystem) -> UInt32 {
+        guard let seconds = accessSeconds[system] else { preconditionFailure("LinksOptions.accessSeconds has no \(system)") }
+        return seconds
+    }
+
+    func snapLimit(_ system: TransitSystem) -> Double {
+        guard let meters = maxSnapMeters[system] else { preconditionFailure("LinksOptions.maxSnapMeters has no \(system)") }
+        return meters
+    }
 }
 
 /// Where an access point joins the walk graph: partway along one street segment.

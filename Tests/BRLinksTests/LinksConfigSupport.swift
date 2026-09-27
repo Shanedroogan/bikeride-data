@@ -7,8 +7,8 @@ import Foundation
 
 extension LinksOptions {
     /// The plan-of-record links parameters as literals: `LinksOptions`' defaults until links was
-    /// built from config (P2a moved them to `Data/config`). The tests build with these;
-    /// `LinksConfigTests` checks the committed config against them.
+    /// built from config (P2a moved them to `Data/config`), with ``HopOptions/standard``. The
+    /// tests build with these; `LinksConfigTests` checks the committed config against them.
     static let standard = LinksOptions(
         walk: WalkProfile(speedMetersPerSecond: 3.5 * 0.44704, stairsMultiplier: 2),
         maxFootpathWalkSeconds: 480,
@@ -17,8 +17,15 @@ extension LinksOptions {
         accessSeconds: [.subway: 120, .lirr: 240, .bus: 30, .ferry: 120, .path: 120],
         maxSnapMeters: [.subway: 150, .bus: 150, .lirr: 150, .ferry: 250, .path: 150],
         streetAccessOnlyInsideServiceArea: [.path],
-        fixedTransfers: FixedTransfer.pathSubway
+        fixedTransfers: FixedTransfer.pathSubway,
+        hops: .standard
     )
+}
+
+extension HopOptions {
+    /// `HopOptions`' tunables with the committed config's change after the bike (60 s, 10%) and
+    /// no holidays: what `HopOptions.standard` was until links was built from config (P2a).
+    static let standard = HopOptions(afterBikeMinSeconds: 60, afterBikeRidePermille: 100, holidays: [])
 }
 
 extension FixedTransfer {

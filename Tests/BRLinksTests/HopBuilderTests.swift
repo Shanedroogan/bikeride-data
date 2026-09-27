@@ -32,7 +32,7 @@ import Testing
         var oneSeat = OneSeatTable()
 
         var options: HopOptions {
-            var options = HopOptions()
+            var options = HopOptions.standard
             options.parameters = parameters
             return options
         }
@@ -220,7 +220,7 @@ import Testing
     /// one-seat comparison's bike time (`HopBuilder.evaluate`), so spare short tuples, even u = d,
     /// cannot keep a pair a one-seat ride beats.
     @Test func bikeTimeComesFromTheBestTupleOrALongerRide() {
-        var options = HopOptions()
+        var options = HopOptions.standard
         options.oneSeatFilter = false
         let p = options.parameters
         var hops = 0, shorterTuples = 0, longerTupleSetsBike = 0
@@ -331,7 +331,7 @@ import Testing
         #expect(parents.parents == [w, x, y, z].sorted())
         #expect(parents.platforms[parents.parents.firstIndex(of: x)!] == [parent("XN"), parent("XS")].sorted())
 
-        let table = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: HopOptions())
+        let table = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: HopOptions.standard)
         // 2026-10-05 is a Monday; the first covered Tuesday is the 6th.
         #expect(table.referenceDates == [.subway: ServiceDate(year: 2026, month: 10, day: 6)])
         // Existence: every forward pair of every pattern; W only as a destination nowhere (no pickup, first stop).
@@ -344,7 +344,7 @@ import Testing
         #expect(table.entry(from: z, to: x) == nil && table.entry(from: w, to: x) == nil)
 
         // A narrower window keeps only T1.
-        var options = HopOptions()
+        var options = HopOptions.standard
         options.middayStartSeconds = 9 * 3600
         options.middayEndSeconds = 10 * 3600 + 1
         let narrow = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: options)
@@ -356,7 +356,7 @@ import Testing
         #expect(OneSeatTable.referenceDate(subway, excluding: [day(6)]) == day(7))
         #expect(OneSeatTable.referenceDate(subway, excluding: [day(6), day(7), day(8)]) == day(5))
         #expect(OneSeatTable.referenceDate(subway, excluding: Set((5...9).map(day))) == day(5))
-        var holiday = HopOptions()
+        var holiday = HopOptions.standard
         holiday.holidays = [day(6)]
         #expect(OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: holiday).referenceDates == [.subway: day(7)])
     }
@@ -429,7 +429,7 @@ import Testing
         let network = LinkNetwork(systemStopCounts: [0, 0, 0, 0, 0], routable: [], stopAccess: [], accessPoints: [], transfers: [])
         let empty = HopBuilder.Inputs(systemStopCounts: [0, 0, 0, 0, 0], parents: RailParents(parents: [], platforms: []), pickups: [], docks: [],
                                       stationCount: 2, distances: DenseHopDistances(count: 2, values: [0, 7, 7, 0]), oneSeat: OneSeatTable())
-        let (hops, stats) = HopBuilder.build(empty, options: HopOptions(), threads: 4)
+        let (hops, stats) = HopBuilder.build(empty, options: HopOptions.standard, threads: 4)
         #expect(hops.start == [0] && hops.count == 0 && stats.hops == 0 && stats.candidatePairs == 0)
         let links = CompiledLinks(network: network, footpaths: FootpathTable(start: [0], target: [], seconds: []),
                                   stationLinks: .empty(stops: 0, stations: 2), stationCount: 2, options: LinksOptions.standard, hops: hops)

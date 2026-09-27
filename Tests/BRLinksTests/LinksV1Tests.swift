@@ -21,7 +21,6 @@ enum HandBuiltLinks {
         options.minTransferSeconds = 30
         options.stationLinkMaxWalkMeters = 350
         options.accessSeconds = [.subway: 120, .bus: 30, .lirr: 240, .ferry: 120, .path: 90]
-        options.maxSnapMeters = [:]
         options.streetAccessOnlyInsideServiceArea = []
         options.fixedTransfers = []
         options.threads = 1
