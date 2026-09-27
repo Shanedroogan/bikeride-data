@@ -328,7 +328,8 @@ public protocol GateCheck {
 /// `tripCounts`, `streets` (per-region kept share), `snapping`, then any ``extraChecks`` (the
 /// published pipeline passes ``publishHooks``: `configReferences` and `flows`). A set
 /// may carry artifacts forward from the previous manifest (a job that did not rebuild them);
-/// those are not re-checked, but everything built against them must match them.
+/// those are not re-opened, but their format must be one this build reads, and everything built
+/// against them must match them.
 public struct Gate {
     public var dataDirectory: URL
     public var reportsDirectory: URL
@@ -468,7 +469,14 @@ public struct Gate {
         // Everything in the set, fresh or carried forward, must match what it was built against.
         var entries = context.artifacts.values.map { ($0.kind.name, $0.header.builtAgainst) }
         for kind in context.carriedForward {
-            entries.append((kind.name, context.previous!.artifacts[kind.name]!.builtAgainst))
+            let entry = context.previous!.artifacts[kind.name]!
+            // A carried entry is not opened here (its blob is not in the data directory), but the
+            // apps must read it: its format must be one this build's readers take.
+            if !(UInt16(exactly: entry.formatVersion).map(kind.supportedFormatVersions.contains) ?? false) {
+                failures.append("\(kind.name): carried forward from set \(context.previous!.setId) at format \(entry.formatVersion), "
+                    + "but this build reads format \(kind.supportedFormatVersions.map(String.init).joined(separator: ", ")); rebuild \(kind.name)")
+            }
+            entries.append((kind.name, entry.builtAgainst))
             notes.append("\(kind.name): carried forward from set \(context.previous!.setId)")
         }
         for (name, builtAgainst) in entries.sorted(by: { $0.0 < $1.0 }) {

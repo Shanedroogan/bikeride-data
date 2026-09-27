@@ -69,7 +69,7 @@ Checks, in order:
 
 | Check | Rule | On failure |
 |---|---|---|
-| `artifacts` | every core kind (streets, stations, the five `tt-*`, config, links; flows too with `--require-flows`) is in the data directory or carried forward; each file opens with its reader (`MappedConfig`, and `MappedFlows` validated, included); every `builtAgainst` entry, of fresh and carried artifacts alike, equals the set's rawSha256 of that input | hard |
+| `artifacts` | every core kind (streets, stations, the five `tt-*`, config, links; flows too with `--require-flows`) is in the data directory or carried forward; each file opens with its reader (`MappedConfig`, and `MappedFlows` validated, included); a carried-forward entry's `formatVersion` is one its kind's readers support (a format-0 draft carried from an older set fails: rebuild it); every `builtAgainst` entry, of fresh and carried artifacts alike, equals the set's rawSha256 of that input | hard |
 | `xz` | each blob is 1 stream / 1 block (`XZCheck`) and `xz -dc` gives the raw size and rawSha256 | hard |
 | `coverage` | consecutive covered days from the build day ≥ `coverage.minDays` (3) | soft: `noSchedule`, real dates kept |
 | `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without `--previous`; with `--previous`, a manifest that does not read or a sidecar that is missing or does not match fails (an unreadable manifest fails `artifacts` too) | hard |

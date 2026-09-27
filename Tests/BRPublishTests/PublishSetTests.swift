@@ -307,6 +307,30 @@ struct PublishSetTests {
         #expect(counts.systems["ferry"] == sidecar.systems["ferry"])
     }
 
+    /// A carried entry is not opened, but the apps read it: a format-0 draft (or a format this
+    /// build does not know) carried from an older set fails the gate, so no manifest publishes it.
+    @Test func aCarriedArtifactMustBeAFormatThisBuildReads() throws {
+        let set = try SyntheticSet()
+        _ = try set.gate()
+        let (first, sidecar, _) = try set.manifestBuilder().build()
+        for version in [0, 2] {
+            var previous = first
+            previous.artifacts["flows"] = SetManifest.Artifact(
+                sha: String(repeating: "f", count: 64), bytes: 3_600_000, rawBytes: 9_700_000, rawSha256: String(repeating: "a", count: 64),
+                formatVersion: version, dataVersion: "trips=202606-202608", builtAgainst: [:])
+            previous.setId = try SetManifest.setId(previous.artifacts)
+            let previousURL = try writePrevious(previous, sidecar: sidecar, to: set.scratch.url.appendingPathComponent("prev-flows-\(version)"))
+            let gate = try set.gate(previous: previousURL)
+            #expect(gate.carriedForward == ["flows"] && gate.status == .fail)
+            #expect(gate.check("artifacts")?.failures == [
+                "flows: carried forward from set \(previous.setId) at format \(version), but this build reads format 1; rebuild flows",
+            ])
+            #expect(throws: SetManifest.ManifestError.gateFailed(set.reports.appendingPathComponent("gate.json").path)) {
+                try set.manifestBuilder(previous: previousURL).build()
+            }
+        }
+    }
+
     /// A links artifact in the data directory is always snapping-checked, so the streets it was
     /// built against must be there too.
     @Test func freshLinksWithoutItsStreetsFailsSnapping() throws {
