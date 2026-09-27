@@ -126,7 +126,7 @@ public struct TimetableBuild: Sendable {
                                          compress: compressSeconds, total: Date().timeIntervalSince(totalStart))
             systemReport.readerOpenMillis = openMillis
             systemReport.peakRSSBytesSoFar = Self.peakRSSBytes()
-            systemReport.tripCountsByDate = timetable.coveredDates.prefix(14).map { date in
+            systemReport.tripCountsByDate = timetable.coveredDates.map { date in
                 let view = timetable.dayView(for: date)
                 return .init(date: date.yyyymmdd, weekday: "\(date.weekday)", trips: view.activeTripCount, stopEvents: view.stopEventCount)
             }
@@ -471,6 +471,6 @@ public struct TimetableSystemReport: Codable, Sendable {
     public var peakRSSBytesSoFar = 0
     public var readerOpenMillis = 0.0
     public var representativeDay: Day?
-    /// Active trips and stop events for the first covered dates.
+    /// Active trips and stop events on every covered date (the validation gate's trip-count input).
     public var tripCountsByDate: [Day] = []
 }
