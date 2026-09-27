@@ -379,6 +379,7 @@ public struct Gate {
             generatedAt: SetArtifacts.isoTimestamp(now), tool: "bikeride-data \(BuildInfo.toolVersion) (Swift \(BuildInfo.swiftVersion))",
             buildDay: today.yyyymmdd, status: status,
             artifacts: Dictionary(uniqueKeysWithValues: artifacts.values.map { ($0.kind.name, $0.rawSha256) }),
+            blobs: SetArtifacts.blobHashes(artifacts),
             carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId, systems: systems, checks: checks)
         _ = try SetArtifacts.writeJSON(report, to: reportURL, pretty: true)
         return report

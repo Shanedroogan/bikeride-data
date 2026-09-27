@@ -44,7 +44,7 @@ public enum SetSystems {
 }
 
 /// One artifact file of a built set: `<name>.bin`, its `.xz` blob if present, the header and the
-/// raw hash, read from disk (never from a build report).
+/// raw and blob hashes, read from disk (never from a build report).
 public struct SetArtifactFile: Sendable {
     public var kind: ArtifactKind
     public var rawURL: URL
@@ -52,11 +52,14 @@ public struct SetArtifactFile: Sendable {
     public var header: ArtifactHeader
     public var rawBytes: Int
     public var rawSha256: String
+    /// SHA-256 and size of the `.xz` blob (the manifest's `sha` and `bytes`); nil without a blob.
+    public var xzSha256: String?
+    public var xzBytes: Int?
 }
 
 public enum SetArtifacts {
     /// Every `<name>.bin` in `directory` whose name is an artifact kind, with its header parsed
-    /// (the kind must match the name) and its raw bytes hashed.
+    /// (the kind must match the name) and its raw bytes and `.xz` blob hashed.
     public static func scan(_ directory: URL, runner: any ToolRunner) throws -> [ArtifactKind: SetArtifactFile] {
         var found: [ArtifactKind: SetArtifactFile] = [:]
         for kind in ArtifactKind.allCases {
@@ -66,11 +69,19 @@ public enum SetArtifacts {
             let (header, _) = try ArtifactHeader.decode(from: bytes)
             guard header.kind == kind else { throw SetError.kindMismatch(file: raw.lastPathComponent, header: header.kind.name) }
             let xz = raw.appendingPathExtension("xz")
+            let hasBlob = FileManager.default.fileExists(atPath: xz.path)
             found[kind] = SetArtifactFile(
-                kind: kind, rawURL: raw, xzURL: FileManager.default.fileExists(atPath: xz.path) ? xz : nil, header: header,
-                rawBytes: bytes.count, rawSha256: try sha256(of: raw, runner: runner))
+                kind: kind, rawURL: raw, xzURL: hasBlob ? xz : nil, header: header,
+                rawBytes: bytes.count, rawSha256: try sha256(of: raw, runner: runner),
+                xzSha256: hasBlob ? try sha256(of: xz, runner: runner) : nil,
+                xzBytes: hasBlob ? try FileManager.default.attributesOfItem(atPath: xz.path)[.size] as? Int : nil)
         }
         return found
+    }
+
+    /// Name → SHA-256 of the `.xz` blob, for the files that have one.
+    static func blobHashes(_ files: [ArtifactKind: SetArtifactFile]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: files.values.compactMap { file in file.xzSha256.map { (file.kind.name, $0) } })
     }
 
     static func sha256(of url: URL, runner: any ToolRunner) throws -> String {

@@ -78,8 +78,8 @@ public struct GateSystem: Codable, Sendable, Equatable {
 }
 
 /// `reports/gate.json`: written by every gate run, passing or not. The manifest requires one whose
-/// `status` is not `fail` and whose `artifacts` equal the set's raw hashes, so no manifest is ever
-/// written for bytes the gate did not pass.
+/// `status` is not `fail` and whose `artifacts` and `blobs` equal the set's raw and `.xz` hashes,
+/// so no manifest is ever written for bytes the gate did not pass.
 public struct GateReport: Codable, Sendable, Equatable {
     public static let fileName = "gate.json"
 
@@ -91,6 +91,8 @@ public struct GateReport: Codable, Sendable, Equatable {
     public var status: GateStatus
     /// The artifacts checked, as found in the data directory: name → rawSha256.
     public var artifacts: [String: String]
+    /// Their `.xz` blobs: name → SHA-256 of the blob (the manifest's `sha`).
+    public var blobs: [String: String]
     /// Artifacts not in the data directory that the previous manifest supplies (not re-checked).
     public var carriedForward: [String]
     public var previousSetId: String?

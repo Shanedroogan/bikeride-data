@@ -9,12 +9,13 @@ The artifact formats themselves are in `formats.md`.
 The gate runs before the manifest because a soft failure changes `systems.<s>.status`. A hard
 failure (`gate` exits 3) writes no manifest and no heartbeat, so the previous set stays current;
 `manifest` itself refuses (exit 3) unless `reports/gate.json` passed, or failed only soft, on
-exactly the raw files in the data directory, for the same build day and previous manifest.
+exactly the raw files and `.xz` blobs in the data directory, for the same build day and previous
+manifest.
 
 ## `reports/gate.json` (`GateReport`)
 
 `{schema, generatedAt, tool, buildDay (YYYYMMDD), status: pass|softFail|fail, artifacts: {name:
-rawSha256}, carriedForward: [name], previousSetId?, systems: {subway|bus|lirr|ferry|path: {status:
+rawSha256}, blobs: {name: sha256 of the .xz}, carriedForward: [name], previousSetId?, systems: {subway|bus|lirr|ferry|path: {status:
 ok|noSchedule, coverageDays, dates, first, last}}, checks: [{name, status: pass|softFail|fail|skipped,
 summary, failures, warnings, notes, metrics, seconds}]}`, pretty-printed.
 

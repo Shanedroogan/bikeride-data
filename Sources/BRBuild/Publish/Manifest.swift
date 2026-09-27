@@ -190,7 +190,7 @@ public struct TripCountSidecar: Codable, Sendable, Equatable {
 ///
 /// Every raw file and blob is re-hashed here; the build reports are not trusted (the timetable
 /// report keeps entries for systems a run did not build). A gate report (`reports/gate.json`)
-/// that passed, or failed only soft, on exactly these raw hashes is required. With a previous
+/// that passed, or failed only soft, on exactly these raw and blob hashes is required. With a previous
 /// manifest, kinds the data directory lacks are carried forward (entry, coverage, sources and trip
 /// counts), and every artifact's `builtAgainst` must name the set's exact inputs.
 public struct SetManifestBuilder {
@@ -229,11 +229,9 @@ public struct SetManifestBuilder {
         // Artifacts: the data directory's, then carried forward.
         var artifacts: [String: SetManifest.Artifact] = [:]
         for file in local.values {
-            guard let xz = file.xzURL else { throw SetManifest.ManifestError.missingBlob(file.kind.name) }
+            guard let sha = file.xzSha256, let bytes = file.xzBytes else { throw SetManifest.ManifestError.missingBlob(file.kind.name) }
             artifacts[file.kind.name] = SetManifest.Artifact(
-                sha: try SetArtifacts.sha256(of: xz, runner: runner),
-                bytes: (try FileManager.default.attributesOfItem(atPath: xz.path)[.size] as? Int) ?? 0,
-                rawBytes: file.rawBytes, rawSha256: file.rawSha256, formatVersion: Int(file.header.formatVersion),
+                sha: sha, bytes: bytes, rawBytes: file.rawBytes, rawSha256: file.rawSha256, formatVersion: Int(file.header.formatVersion),
                 dataVersion: file.header.dataVersion, builtAgainst: file.header.builtAgainst)
         }
         var carried: [String] = []
@@ -315,6 +313,12 @@ public struct SetManifestBuilder {
         guard gate.artifacts == hashes else {
             let changed = Set(gate.artifacts.keys).union(hashes.keys).filter { gate.artifacts[$0] != hashes[$0] }.sorted()
             throw SetManifest.ManifestError.gateStale("checked \(changed.joined(separator: ", ")) with other bytes (or not at all)")
+        }
+        // The blobs are what gets published: the gate must have checked these very bytes.
+        let blobs = SetArtifacts.blobHashes(local)
+        guard gate.blobs == blobs else {
+            let changed = Set(gate.blobs.keys).union(blobs.keys).filter { gate.blobs[$0] != blobs[$0] }.sorted()
+            throw SetManifest.ManifestError.gateStale("checked the blob of \(changed.joined(separator: ", ")) with other bytes (or not at all)")
         }
         guard gate.buildDay == today.yyyymmdd else {
             throw SetManifest.ManifestError.gateStale("the gate ran for build day \(gate.buildDay), not \(today.yyyymmdd)")

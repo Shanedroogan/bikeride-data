@@ -192,6 +192,15 @@ struct PublishSetTests {
         }
         try set.buildLinks()
         _ = try set.gate()
+        // A blob replaced after the gate ran (same raw file): the published bytes must be the checked ones.
+        let blob = set.data.appendingPathComponent("tt-ferry.bin.xz")
+        let checked = try Data(contentsOf: blob)
+        try Data((0..<checked.count).map { UInt8(truncatingIfNeeded: $0 &* 131 &+ 7) }).write(to: blob)
+        #expect(throws: SetManifest.ManifestError.gateStale("checked the blob of tt-ferry with other bytes (or not at all)")) {
+            try set.manifestBuilder().build()
+        }
+        try checked.write(to: blob)
+        #expect(throws: Never.self) { try set.manifestBuilder().build() }
         var otherDay = set.manifestBuilder()
         otherDay.today = day("20261007")
         #expect(throws: SetManifest.ManifestError.gateStale("the gate ran for build day 20261006, not 20261007")) { try otherDay.build() }
