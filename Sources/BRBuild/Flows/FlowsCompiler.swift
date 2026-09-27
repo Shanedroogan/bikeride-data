@@ -163,8 +163,10 @@ public struct FlowsCompiler: Sendable {
         log("universe: \(universe.stations.count) keys (\(universe.capacityZero) at capacity 0) from \(universe.feedStations) GBFS stations")
 
         // 5. Count, tally, smooth.
-        let inputs = zip(sources, records).map { source, record in
-            TripInput(system: source.system, month: source.month, archive: ZipTripArchive(archive: URL(fileURLWithPath: record.path), runner: runner))
+        // The cache's own path, not the record's: a record keeps the path it was downloaded to,
+        // which is stale once the cache moves (or is mounted elsewhere).
+        let inputs = try sources.map { source in
+            TripInput(system: source.system, month: source.month, archive: ZipTripArchive(archive: try cache.file(for: source), runner: runner))
         }
         let binned = try timed("count") {
             try FlowBinner.count(inputs, universe: universe, depots: depots, window: window, threads: config.threads, log: log)
