@@ -44,7 +44,9 @@ public enum ConfigSourceError: Error, Equatable, CustomStringConvertible {
 /// their source shape, re-encoded and compared with what was read, so an unknown or misspelled
 /// key fails (the app's reader, by contrast, ignores unknown keys), and so does an integer
 /// written as `325.0` or `3.25e2`. `null` counts as absent. CSV files need exactly the documented
-/// header. Set-like lists may be in any order in the sources: the document sorts them.
+/// header. Set-like lists may be in any order in the sources: the document sorts them. The M2c
+/// bike-planning sections come from optional files (``planningFiles``): a section whose file is
+/// absent is absent from the document.
 public struct ConfigSources: Sendable {
     public let root: URL
 
@@ -68,15 +70,32 @@ public struct ConfigSources: Sendable {
         "fares/citibike.json",
     ]
 
+    /// The source of each M2c bike-planning section, relative to ``root``. Each is optional: the
+    /// section is in the document exactly when its file exists (nothing is compiled in), so
+    /// sources from before M2c compile to the bytes they always did. `weather` also reads
+    /// ``weatherAlertKeywordsFile``, which is required once `weather.json` exists (and not read
+    /// otherwise).
+    public static let planningFiles: [(section: String, file: String)] = [
+        ("availability", "config/planning/availability.json"),
+        ("rules", "config/planning/rules.json"),
+        ("weather", "config/planning/weather.json"),
+        ("pace", "config/planning/pace.json"),
+        ("speeds", "config/planning/speeds.json"),
+        ("overheads", "config/planning/overheads.json"),
+    ]
+    public static let weatherAlertKeywordsFile = "config/planning/weather-alert-keywords.csv"
+
     /// Every file ``load()`` reads, relative to ``root``, sorted.
     public func files() throws -> [String] {
         let lirr = try decodeJSON(LIRRSource.self, "fares/lirr/lirr.json")
-        return (Self.fixedFiles + ["fares/lirr/\(lirr.stationsFile)", "fares/lirr/\(lirr.zoneFaresFile)"]).sorted()
+        var planning = Self.planningFiles.map(\.file).filter(exists)
+        if exists(Self.planningFile("weather")) { planning.append(Self.weatherAlertKeywordsFile) }
+        return (Self.fixedFiles + ["fares/lirr/\(lirr.stationsFile)", "fares/lirr/\(lirr.zoneFaresFile)"] + planning).sorted()
     }
 
     public func load() throws -> ConfigDocument {
         let app = try decodeJSON(AppSource.self, "config/app.json")
-        let document = ConfigDocument(
+        var document = ConfigDocument(
             minAppFormat: app.minAppFormat,
             flags: app.flags,
             calendar: ConfigCalendar(holidays: try holidays()),
@@ -86,9 +105,19 @@ public struct ConfigSources: Sendable {
             bikeShare: try bikeShare(),
             alerts: ConfigAlerts(pathKeywords: try pathKeywords())
         )
+        document.availability = try optionalJSON(ConfigAvailability.self, Self.planningFile("availability"))
+        document.rules = try rules()
+        document.weather = try weather()
+        document.pace = try optionalJSON(ConfigPace.self, Self.planningFile("pace"))
+        document.speeds = try optionalJSON(ConfigSpeeds.self, Self.planningFile("speeds"))
+        document.overheads = try optionalJSON(ConfigOverheads.self, Self.planningFile("overheads"))
         let issues = ConfigValidation.canonicalIssues(document)
         guard issues.isEmpty else { throw ConfigSourceError.invalidDocument(issues) }
         return document
+    }
+
+    static func planningFile(_ section: String) -> String {
+        planningFiles.first { $0.section == section }!.file
     }
 
     // MARK: - Sections
@@ -197,12 +226,19 @@ public struct ConfigSources: Sendable {
         )
     }
 
+    /// `valet.csv`'s header. The `hours` and `valid_until_date` columns are optional (the
+    /// shorter header is the format-1 original): an empty cell, or no such column, leaves the key
+    /// out.
+    static let valetHeader = ["station_id", "lat_e6", "lon_e6", "name", "hours", "valid_until_date", "source_note"]
+    static let valetHeaderWithoutHours = ["station_id", "lat_e6", "lon_e6", "name", "source_note"]
+
     private func bikeShare() throws -> ConfigBikeShare {
         let source = try decodeJSON(BikeShareSource.self, "config/bikeshare/bikeshare.json")
         var valet: [ConfigValetStation] = []
-        for row in try readCSV("config/bikeshare/valet.csv", header: ["station_id", "lat_e6", "lon_e6", "name", "source_note"]) {
+        for row in try readCSV("config/bikeshare/valet.csv", headers: [Self.valetHeader, Self.valetHeaderWithoutHours]) {
+            let validUntil = row["valid_until_date"].isEmpty ? nil : try row.date("valid_until_date")
             valet.append(ConfigValetStation(stationID: try row.identifier("station_id"), latE6: try row.int("lat_e6"),
-                                            lonE6: try row.int("lon_e6")))
+                                            lonE6: try row.int("lon_e6"), hours: try Self.valetHours(row), validUntilDate: validUntil))
         }
         let sorted: ([String]) -> [String] = { $0.sorted(by: Self.bytes(\.self)) }
         return ConfigBikeShare(
@@ -212,6 +248,34 @@ public struct ConfigSources: Sendable {
             maxStatusAgeSeconds: source.maxStatusAgeSeconds,
             valet: valet.sorted(by: Self.bytes(\.stationID))
         )
+    }
+
+    /// A `hours` cell: windows separated by `|`, each `<ISO weekday digits> <HH:MM>-<HH:MM>` in
+    /// local time, e.g. `12345 07:00-19:00|67 10:00-16:00` (Monday is 1; `24:00` ends a day).
+    /// Empty = no hours. The windows are sorted into the document's order.
+    static func valetHours(_ row: Row) throws -> [ConfigValetHours]? {
+        let cell = row["hours"]
+        guard !cell.isEmpty else { return nil }
+        func minute(_ text: Substring) -> Int? {
+            let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0].count == 2, parts[1].count == 2, parts.allSatisfy({ $0.allSatisfy(\.isASCII) }),
+                  let hour = Int(parts[0]), let minute = Int(parts[1]), (0...24).contains(hour), (0...59).contains(minute),
+                  hour < 24 || minute == 0 else { return nil }
+            return hour * 60 + minute
+        }
+        let windows = try cell.split(separator: "|", omittingEmptySubsequences: false).map { text -> ConfigValetHours in
+            let fields = text.split(separator: " ", omittingEmptySubsequences: false)
+            let times = fields.count == 2 ? fields[1].split(separator: "-", omittingEmptySubsequences: false) : []
+            guard fields.count == 2, !fields[0].isEmpty, fields[0].allSatisfy({ ("1"..."7").contains($0) }), times.count == 2,
+                  let start = minute(times[0]), let end = minute(times[1]) else {
+                throw row.error("hours window '\(text)' is not '<weekday digits 1–7> HH:MM-HH:MM'")
+            }
+            return ConfigValetHours(isoWeekdays: fields[0].map { Int(String($0))! }.sorted(), startMinute: start, endMinute: end)
+        }
+        return windows.sorted { a, b in
+            a.isoWeekdays != b.isoWeekdays ? a.isoWeekdays.lexicographicallyPrecedes(b.isoWeekdays)
+                : (a.startMinute, a.endMinute) < (b.startMinute, b.endMinute)
+        }
     }
 
     private func pathKeywords() throws -> [ConfigPathKeywordRule] {
@@ -224,10 +288,46 @@ public struct ConfigSources: Sendable {
         }
     }
 
+    // MARK: - Bike planning (M2c)
+
+    /// `rules.json`: the wire section; the guardrail choices may be in any order.
+    private func rules() throws -> ConfigRules? {
+        guard var rules = try optionalJSON(ConfigRules.self, Self.planningFile("rules")) else { return nil }
+        rules.guardrail.choicesCentsPerMinute.sort()
+        return rules
+    }
+
+    /// `weather.json` (the section but its alert keywords) and `weather-alert-keywords.csv`.
+    private func weather() throws -> ConfigWeather? {
+        guard let source = try optionalJSON(WeatherSource.self, Self.planningFile("weather")) else { return nil }
+        let rules = try readCSV(Self.weatherAlertKeywordsFile, header: ["class", "keywords"]).map { row in
+            guard let alertClass = ConfigWeatherAlertClass(rawValue: row["class"]) else {
+                throw row.error("class '\(row["class"])' is not a weather alert class")
+            }
+            let keywords = row["keywords"].split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            return ConfigWeatherAlertRule(keywords: keywords.sorted(by: Self.bytes(\.self)), alertClass: alertClass)
+        }
+        return ConfigWeather(
+            bucketSeconds: source.bucketSeconds, minuteHorizonSeconds: source.minuteHorizonSeconds,
+            forecastHorizonHours: source.forecastHorizonHours, pastHours: source.pastHours, cacheSeconds: source.cacheSeconds,
+            cacheCellMeters: source.cacheCellMeters, untimedAlertHours: source.untimedAlertHours,
+            clearWithinSeconds: source.clearWithinSeconds, presets: source.presets, alertKeywords: rules
+        )
+    }
+
     // MARK: - Strict JSON
 
     func decodeJSON<T: Codable>(_ type: T.Type, _ file: String) throws -> T {
         try Self.strictDecode(type, from: read(file), file: file)
+    }
+
+    /// ``decodeJSON(_:_:)``, or `nil` when the file doesn't exist.
+    func optionalJSON<T: Codable>(_ type: T.Type, _ file: String) throws -> T? {
+        exists(file) ? try decodeJSON(type, file) : nil
+    }
+
+    func exists(_ file: String) -> Bool {
+        FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path)
     }
 
     /// Reads `data` strictly (``StrictJSON``: a repeated key is an error), decodes it as `T`,
@@ -296,12 +396,19 @@ public struct ConfigSources: Sendable {
     /// Records of a CSV whose header must be exactly `header`; every record has exactly that
     /// many fields, in UTF-8.
     func readCSV(_ file: String, header expected: [String]) throws -> [Row] {
+        try readCSV(file, headers: [expected])
+    }
+
+    /// Records of a CSV whose header must be exactly one of `headers` (the first is the one error
+    /// messages name); every record has exactly as many fields as its header. A column the
+    /// header doesn't have reads as empty.
+    func readCSV(_ file: String, headers: [[String]]) throws -> [Row] {
         var reader = CSVReader(bytes: try read(file))
         do {
             guard let first = try reader.next() else { throw ConfigSourceError.invalidCSV(file: file, message: "empty (needs the header)") }
             let header = first.fields.map(\.string)
-            guard header == expected else {
-                throw ConfigSourceError.invalidCSV(file: file, message: "header is \(header.joined(separator: ",")), expected \(expected.joined(separator: ","))")
+            guard let expected = headers.first(where: { $0 == header }) else {
+                throw ConfigSourceError.invalidCSV(file: file, message: "header is \(header.joined(separator: ",")), expected \(headers[0].joined(separator: ","))")
             }
             var rows: [Row] = []
             while let record = try reader.next() {
@@ -419,4 +526,17 @@ struct BikeShareSource: Codable {
     var excludedRegions: [String]
     var vehicleTypes: ConfigVehicleTypes
     var maxStatusAgeSeconds: Int
+}
+
+/// `config/planning/weather.json`: the weather section without `alertKeywords` (a CSV).
+struct WeatherSource: Codable {
+    var bucketSeconds: Int
+    var minuteHorizonSeconds: Int
+    var forecastHorizonHours: Int
+    var pastHours: Int
+    var cacheSeconds: Int
+    var cacheCellMeters: Int
+    var untimedAlertHours: Int
+    var clearWithinSeconds: Int
+    var presets: ConfigWeatherPresets
 }

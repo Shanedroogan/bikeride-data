@@ -1,0 +1,15 @@
+{
+  "targetPercent": 90,
+  "itineraryMinPercent": 80,
+  "tightMinPercent": 70,
+  "bands": [
+    { "fromSeconds": 0, "pickupMinBikes": 1, "dropoffMinDocks": 1, "pickupFloorBikes": 0, "dropoffFloorDocks": 1 },
+    { "fromSeconds": 120, "pickupMinBikes": 2, "dropoffMinDocks": 2, "pickupFloorBikes": 2, "dropoffFloorDocks": 2 },
+    { "fromSeconds": 300, "pickupMinBikes": 1, "dropoffMinDocks": 2, "pickupFloorBikes": 0, "dropoffFloorDocks": 0 }
+  ],
+  "pooled": { "afterSeconds": 1200, "radiusMeters": 300, "discountPercent": 30, "maxStations": 3, "pickupMinBikes": 1, "dropoffMinDocks": 2 },
+  "reroute": { "belowPercent": 70, "minHorizonSeconds": 120 },
+  "trend": { "minWatchSeconds": 600, "windowSeconds": 1200, "weightPercent": 50, "maxStepCount": 4, "maxGapSeconds": 180 },
+  "variance": { "crossBinCorrelationPercent": 0, "inflationPercent": 100 },
+  "coldStart": { "neighborCount": 8, "radiusMeters": 1000, "farMaxPercent": 89 }
+}

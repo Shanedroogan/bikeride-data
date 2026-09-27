@@ -160,12 +160,127 @@ public enum ConfigValidation {
             if abs(valet.latE6) > 90_000_000 || abs(valet.lonE6) > 180_000_000 {
                 issues.add("bikeShare.valet: \(valet.stationID) has an impossible coordinate")
             }
+            for (index, window) in (valet.hours ?? []).enumerated() {
+                let path = "bikeShare.valet: \(valet.stationID) hours[\(index)]"
+                if window.isoWeekdays.isEmpty { issues.add("\(path) has no weekdays") }
+                if window.isoWeekdays.contains(where: { !(1...7).contains($0) }) { issues.add("\(path): isoWeekdays must be 1…7") }
+                if Set(window.isoWeekdays).count != window.isoWeekdays.count { issues.add("\(path): a weekday is listed twice") }
+                issues.check(window.startMinute >= 0 && window.startMinute < window.endMinute && window.endMinute <= 24 * 60,
+                             "\(path): needs 0 ≤ startMinute < endMinute ≤ 1440")
+            }
         }
 
         // Alerts.
         for (index, rule) in d.alerts.pathKeywords.enumerated() {
             if rule.keywords.isEmpty { issues.add("alerts.pathKeywords[\(index)]: no keywords") }
             if rule.keywords.contains("") { issues.add("alerts.pathKeywords[\(index)]: empty keyword") }
+        }
+
+        // The M2c bike-planning sections, each only when present.
+        if let availability = d.availability { structural(availability, &issues) }
+        if let rules = d.rules { structural(rules, &issues) }
+        if let weather = d.weather { structural(weather, &issues) }
+        if let pace = d.pace {
+            issues.positive(["relaxedPercent": pace.relaxedPercent, "typicalPercent": pace.typicalPercent, "fastPercent": pace.fastPercent,
+                             "minHundredthsMph": pace.minHundredthsMph, "maxHundredthsMph": pace.maxHundredthsMph], "pace")
+            issues.nonNegative(["learnAfterRides": pace.learnAfterRides, "planSdHundredths": pace.planSdHundredths], "pace")
+            issues.check(pace.minHundredthsMph <= pace.maxHundredthsMph, "pace: minHundredthsMph must not exceed maxHundredthsMph")
+        }
+        if let speeds = d.speeds {
+            let values = ["classicHundredthsMph": speeds.classicHundredthsMph, "ebikeHundredthsMph": speeds.ebikeHundredthsMph]
+            issues.positive(values, "speeds")
+            if let pace = d.pace {
+                for key in values.keys.sorted() where !(pace.minHundredthsMph...max(pace.minHundredthsMph, pace.maxHundredthsMph)).contains(values[key]!) {
+                    issues.add("speeds.\(key): must be within pace.minHundredthsMph…pace.maxHundredthsMph")
+                }
+            }
+        }
+        if let overheads = d.overheads {
+            issues.nonNegative(["unlockSeconds": overheads.unlockSeconds, "dockSeconds": overheads.dockSeconds], "overheads")
+        }
+    }
+
+    private static func structural(_ a: ConfigAvailability, _ issues: inout Issues) {
+        issues.percent(["targetPercent": a.targetPercent, "itineraryMinPercent": a.itineraryMinPercent, "tightMinPercent": a.tightMinPercent,
+                        "pooled.discountPercent": a.pooled.discountPercent, "reroute.belowPercent": a.reroute.belowPercent,
+                        "trend.weightPercent": a.trend.weightPercent,
+                        "variance.crossBinCorrelationPercent": a.variance.crossBinCorrelationPercent,
+                        "coldStart.farMaxPercent": a.coldStart.farMaxPercent], "availability")
+        issues.check(a.tightMinPercent <= a.targetPercent, "availability.tightMinPercent: must not exceed targetPercent")
+        if a.bands.isEmpty {
+            issues.add("availability.bands: empty")
+        } else {
+            issues.check(a.bands[0].fromSeconds == 0, "availability.bands: the first band must start at fromSeconds 0")
+            for (index, (earlier, later)) in zip(a.bands, a.bands.dropFirst()).enumerated() where later.fromSeconds <= earlier.fromSeconds {
+                issues.add("availability.bands[\(index + 1)]: fromSeconds \(later.fromSeconds) must be after \(earlier.fromSeconds) (strictly ascending)")
+            }
+            let last = a.bands[a.bands.count - 1].fromSeconds
+            issues.check(last < a.pooled.afterSeconds,
+                         "availability.bands: the last band starts at \(last) s, not before pooled.afterSeconds \(a.pooled.afterSeconds)")
+        }
+        for (index, band) in a.bands.enumerated() {
+            issues.nonNegative(["fromSeconds": band.fromSeconds, "pickupMinBikes": band.pickupMinBikes, "dropoffMinDocks": band.dropoffMinDocks,
+                                "pickupFloorBikes": band.pickupFloorBikes, "dropoffFloorDocks": band.dropoffFloorDocks],
+                               "availability.bands[\(index)]")
+        }
+        issues.positive(["pooled.afterSeconds": a.pooled.afterSeconds, "pooled.radiusMeters": a.pooled.radiusMeters,
+                         "pooled.maxStations": a.pooled.maxStations, "trend.maxGapSeconds": a.trend.maxGapSeconds,
+                         "variance.inflationPercent": a.variance.inflationPercent, "coldStart.neighborCount": a.coldStart.neighborCount,
+                         "coldStart.radiusMeters": a.coldStart.radiusMeters], "availability")
+        issues.nonNegative(["pooled.pickupMinBikes": a.pooled.pickupMinBikes, "pooled.dropoffMinDocks": a.pooled.dropoffMinDocks,
+                            "reroute.minHorizonSeconds": a.reroute.minHorizonSeconds, "trend.minWatchSeconds": a.trend.minWatchSeconds,
+                            "trend.windowSeconds": a.trend.windowSeconds, "trend.maxStepCount": a.trend.maxStepCount], "availability")
+        issues.check(a.trend.windowSeconds >= a.trend.minWatchSeconds, "availability.trend.windowSeconds: must be at least minWatchSeconds")
+    }
+
+    private static func structural(_ r: ConfigRules, _ issues: inout Issues) {
+        issues.nonNegative(["deltaMinSeconds": r.deltaMinSeconds, "minRideSeconds": r.minRideSeconds,
+                            "stationWalkLimitSeconds": r.stationWalkLimitSeconds, "ebikeMinSavingSeconds": r.ebikeMinSavingSeconds,
+                            "ebikeAllowanceCentsPerMinute": r.ebikeAllowanceCentsPerMinute,
+                            "guardrail.defaultCentsPerMinute": r.guardrail.defaultCentsPerMinute,
+                            "transferPenaltySeconds": r.transferPenaltySeconds, "cautionPenaltySeconds": r.cautionPenaltySeconds,
+                            "bucketSeconds": r.bucketSeconds], "rules")
+        issues.percent(["deltaPercent": r.deltaPercent], "rules")
+        issues.positive(["alternativesPerLayer": r.alternativesPerLayer, "enrichStopsPerLayer": r.enrichStopsPerLayer], "rules")
+        let choices = r.guardrail.choicesCentsPerMinute
+        issues.check(!choices.isEmpty, "rules.guardrail.choicesCentsPerMinute: empty")
+        issues.unique(choices.map(String.init), "rules.guardrail.choicesCentsPerMinute", what: "choice")
+        for choice in choices where choice <= 0 { issues.add("rules.guardrail.choicesCentsPerMinute: \(choice) must be positive") }
+        issues.check(choices.contains(r.guardrail.defaultCentsPerMinute),
+                     "rules.guardrail.defaultCentsPerMinute: \(r.guardrail.defaultCentsPerMinute) is not one of choicesCentsPerMinute")
+    }
+
+    private static func structural(_ w: ConfigWeather, _ issues: inout Issues) {
+        issues.positive(["bucketSeconds": w.bucketSeconds, "minuteHorizonSeconds": w.minuteHorizonSeconds,
+                         "forecastHorizonHours": w.forecastHorizonHours, "pastHours": w.pastHours, "cacheSeconds": w.cacheSeconds,
+                         "cacheCellMeters": w.cacheCellMeters], "weather")
+        issues.nonNegative(["untimedAlertHours": w.untimedAlertHours, "clearWithinSeconds": w.clearWithinSeconds], "weather")
+        for (name, p) in [("everyday", w.presets.everyday), ("fairWeather", w.presets.fairWeather), ("hardy", w.presets.hardy)] {
+            let prefix = "weather.presets.\(name)"
+            issues.percent(["rainBlockMinuteChancePercent": p.rainBlockMinuteChancePercent,
+                            "rainBlockHourlyChancePercent": p.rainBlockHourlyChancePercent,
+                            "rainCautionHourlyChancePercent": p.rainCautionHourlyChancePercent,
+                            "rainBeforeHumidityPercent": p.rainBeforeHumidityPercent, "stormMinChancePercent": p.stormMinChancePercent], prefix)
+            // Every quantity but the temperatures (`…F`, which may be negative).
+            var quantities = ["rainBlockMinuteHundredthsInPerHour": p.rainBlockMinuteHundredthsInPerHour,
+                              "rainBeforeHundredthsIn": p.rainBeforeHundredthsIn, "rainBeforeHours": p.rainBeforeHours,
+                              "rainBeforeLongHours": p.rainBeforeLongHours, "snowCoverTenthsIn": p.snowCoverTenthsIn,
+                              "snowCoverHours": p.snowCoverHours, "iceLookbackHours": p.iceLookbackHours, "windBlockMph": p.windBlockMph,
+                              "gustBlockMph": p.gustBlockMph, "windCautionMph": p.windCautionMph]
+            if let rate = p.rainBlockRateHundredthsInPerHour { quantities["rainBlockRateHundredthsInPerHour"] = rate }
+            issues.nonNegative(quantities, prefix)
+            issues.check(p.rainCautionHourlyChancePercent <= p.rainBlockHourlyChancePercent,
+                         "\(prefix).rainCautionHourlyChancePercent: must not exceed rainBlockHourlyChancePercent")
+            issues.check(p.rainBeforeHours <= p.rainBeforeLongHours, "\(prefix).rainBeforeLongHours: must be at least rainBeforeHours")
+            issues.check(p.windCautionMph <= p.windBlockMph, "\(prefix).windCautionMph: must not exceed windBlockMph")
+            issues.check(p.feelsLikeBlockBelowF <= p.feelsLikeCautionAtOrBelowF
+                            && p.feelsLikeCautionAtOrBelowF < p.feelsLikeCautionAtOrAboveF
+                            && p.feelsLikeCautionAtOrAboveF <= p.feelsLikeBlockAtOrAboveF,
+                         "\(prefix): needs feelsLikeBlockBelowF ≤ feelsLikeCautionAtOrBelowF < feelsLikeCautionAtOrAboveF ≤ feelsLikeBlockAtOrAboveF")
+        }
+        for (index, rule) in w.alertKeywords.enumerated() {
+            if rule.keywords.isEmpty { issues.add("weather.alertKeywords[\(index)]: no keywords") }
+            if rule.keywords.contains("") { issues.add("weather.alertKeywords[\(index)]: empty keyword") }
         }
     }
 
@@ -233,6 +348,27 @@ public enum ConfigValidation {
         issues.ascending(bikes.vehicleTypes.classic.map { [$0] }, "bikeShare.vehicleTypes.classic")
         issues.ascending(bikes.vehicleTypes.ebike.map { [$0] }, "bikeShare.vehicleTypes.ebike")
         issues.ascending(bikes.valet.map { [$0.stationID] }, "bikeShare.valet")
+        for valet in bikes.valet {
+            if let hours = valet.hours {
+                let path = "bikeShare.valet: \(valet.stationID)"
+                issues.check(!hours.isEmpty, "\(path) hours: empty (omit it: absent means never valet)")
+                issues.check(valet.validUntilDate != nil, "\(path) has hours but no validUntilDate (a stale schedule must not apply silently)")
+                for (index, window) in hours.enumerated() {
+                    issues.check(zip(window.isoWeekdays, window.isoWeekdays.dropFirst()).allSatisfy { $0 < $1 },
+                                 "\(path) hours[\(index)].isoWeekdays: must be strictly ascending")
+                }
+                issues.check(zip(hours, hours.dropFirst()).allSatisfy { Self.valetOrder($0, $1) },
+                             "\(path) hours: must be strictly ascending by (isoWeekdays, startMinute, endMinute)")
+                for (i, a) in hours.enumerated() {
+                    for b in hours[(i + 1)...] where !Set(a.isoWeekdays).isDisjoint(with: b.isoWeekdays)
+                        && a.startMinute < b.endMinute && b.startMinute < a.endMinute {
+                        issues.add("\(path) hours: two windows overlap on the same weekday")
+                    }
+                }
+            } else if valet.validUntilDate != nil {
+                issues.add("bikeShare.valet: \(valet.stationID) has a validUntilDate but no hours")
+            }
+        }
 
         var seenKeywords = Set<String>(), seenSeverities = Set<ConfigAlertSeverity>()
         for (index, rule) in d.alerts.pathKeywords.enumerated() {
@@ -245,6 +381,37 @@ public enum ConfigValidation {
                 issues.add("alerts.pathKeywords: \(rule.severity.rawValue) has two rules (merge them)")
             }
         }
+
+        if let rules = d.rules {
+            let choices = rules.guardrail.choicesCentsPerMinute
+            issues.check(zip(choices, choices.dropFirst()).allSatisfy { $0 < $1 },
+                         "rules.guardrail.choicesCentsPerMinute: must be strictly ascending")
+        }
+
+        // The weather alert keywords follow the PATH keywords' rules, and `unknown` (what no match
+        // gives) is never a rule's class.
+        if let weather = d.weather {
+            var seenWeatherKeywords = Set<String>(), seenClasses = Set<ConfigWeatherAlertClass>()
+            for (index, rule) in weather.alertKeywords.enumerated() {
+                issues.ascending(rule.keywords.map { [$0] }, "weather.alertKeywords[\(index)].keywords")
+                for keyword in rule.keywords {
+                    if keyword != keyword.lowercased() { issues.add("weather.alertKeywords: '\(keyword)' must be lowercase") }
+                    if !seenWeatherKeywords.insert(keyword).inserted { issues.add("weather.alertKeywords: '\(keyword)' is in two rules") }
+                }
+                if rule.alertClass == .unknown {
+                    issues.add("weather.alertKeywords[\(index)]: unknown is the class of no match, not a rule's")
+                }
+                if !seenClasses.insert(rule.alertClass).inserted {
+                    issues.add("weather.alertKeywords: \(rule.alertClass.rawValue) has two rules (merge them)")
+                }
+            }
+        }
+    }
+
+    /// Valet windows in canonical order: by weekdays (lexicographically), then start, then end.
+    private static func valetOrder(_ a: ConfigValetHours, _ b: ConfigValetHours) -> Bool {
+        if a.isoWeekdays != b.isoWeekdays { return a.isoWeekdays.lexicographicallyPrecedes(b.isoWeekdays) }
+        return (a.startMinute, a.endMinute) < (b.startMinute, b.endMinute)
     }
 
     // MARK: - Helpers
@@ -270,6 +437,11 @@ public enum ConfigValidation {
 
         mutating func positive(_ values: [String: Int], _ prefix: String) {
             for key in values.keys.sorted() where values[key]! <= 0 { add("\(prefix).\(key): must be positive") }
+        }
+
+        /// A probability or weight in whole percents.
+        mutating func percent(_ values: [String: Int], _ prefix: String) {
+            for key in values.keys.sorted() where !(0...100).contains(values[key]!) { add("\(prefix).\(key): must be 0…100") }
         }
 
         mutating func unique(_ values: [String], _ path: String, what: String) {

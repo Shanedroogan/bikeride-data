@@ -15,10 +15,13 @@ object, a missing key, a wrong type, an integer written as a decimal or with an 
 | `fixed-transfers.csv` | `transit.links.fixedTransfers` | PATH↔subway walk minimums |
 | `bikeshare/` | `bikeShare` | Its own `SOURCES.md` |
 | `alerts/path-keywords.csv` | `alerts.pathKeywords` | PATH alert title keywords |
+| `planning/` | `availability`, `rules`, `weather`, `pace`, `speeds`, `overheads` | The M2c bike-planning thresholds, each optional; its own `SOURCES.md` |
 
 The values were transcribed on 2026-09-27 from the literals they replace (BikeRideKit
 `RaptorConfig.swift`, `TransitPlanner.snapMeters`, `ServiceAlert.swift`; bikeride-data
-`LinkNetwork.swift`), unchanged.
+`LinkNetwork.swift`), unchanged. The `planning/` files are new values (the M2c plan's), not
+transcriptions; each is optional, and a section whose file is missing is left out of the
+document rather than defaulted.
 
 ## transit.json
 

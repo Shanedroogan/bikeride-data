@@ -110,7 +110,8 @@ builds that can't update in step with the pipeline, and because an in-progress t
   toolchain upgrade changes every file's `rawSha256` and the whole `builtAgainst` chain even when
   payloads are identical. Format goldens compare payload bytes; cache keys include the Swift version.
   `StreetsV1Tests`, `StationsV1Tests`, `TimetableV1Tests`, `LinksV1Tests` (hops included),
-  `FlowsV1Tests` and `ConfigV1Tests` pin the SHA-256 of the writer's payload for small hand-built
+  `FlowsV1Tests`, `ConfigV1Tests` and `ConfigV1M2cTests` (config's optional M2c keys) pin the
+  SHA-256 of the writer's payload for small hand-built
   inputs: not compiled from OSM, GBFS, GTFS or trip data, with every parameter spelled out (no
   tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
   digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
@@ -897,15 +898,17 @@ Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.51 MB xz (without `varianceAny`: 
 
 Fares, change times, the `links` build parameters, the bike-share filter and the alert keyword
 table: every value the engine and the links builder took from Swift literals before M1, as one
-JSON document. Writer: `ConfigArtifactWriter`, filled by `ConfigCompiler` from the reviewed
-sources in `Data/config/` and `Data/fares/` (BRBuild, `bikeride-data config`). Reader:
+JSON document; and, as optional keys added within format 1 for M2c, the bike-planning
+thresholds (availability, rules, weather, pace, speeds, overheads) and valet hours. Writer:
+`ConfigArtifactWriter`, filled by `ConfigCompiler` from the reviewed sources in `Data/config/`
+and `Data/fares/` (BRBuild, `bikeride-data config`). Reader:
 `MappedConfig` (BRConfig). Wire types: `ConfigDocument` and the `Config*` types
 (`Sources/BRConfig/ConfigDocument.swift`). `builtAgainst` is empty: config is a root input, like
 a GTFS zip. `dataVersion` is `config:` + the lowercase-hex SHA-256 of the JSON bytes.
 
-Why JSON and not arrays: the v1 document is about 14 KB (2.4 KB xz) and is decoded once per set
-open (about a millisecond), off the query path; every consumer builds its own lookup tables
-from it anyway. JSON keeps the reviewed diffs readable and lets the format grow by optional keys.
+Why JSON and not arrays: the v1 document is about 14 KB (2.4 KB xz), 18 KB with the M2c
+sections, and is decoded once per set open (about a millisecond), off the query path; every
+consumer builds its own lookup tables from it anyway. JSON keeps the reviewed diffs readable and lets the format grow by optional keys.
 
 | Field | Encoding | Notes |
 |---|---|---|
@@ -921,7 +924,8 @@ whitespace. Values are integers, booleans, strings, arrays and objects: no float
 anywhere, so no platform number formatting reaches the bytes. Arrays that are sets are written
 sorted by the UTF-8 bytes of their key (named per array below) with no repeats; ordered arrays
 say so. No Swift `Set` and no dictionary keyed by anything but a string are wire types. The
-payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macOS and Linux.
+payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macOS and Linux;
+`ConfigV1M2cTests` pins the same document with every M2c key filled in.
 
 **Compatibility of the JSON** (these hold from format 1 on; the format-0 draft followed them too):
 
@@ -940,16 +944,24 @@ payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macO
   (M4) so such apps skip the download.
 
 **Checks.** `MappedConfig` checks the envelope, decodes, then applies the *structural* rules an
-engine needs (`ConfigValidation.structuralIssues`): no negative prices or times, unique ids and
+engine needs (`ConfigValidation.structuralIssues`): no negative prices, times or counts (the
+`weather` temperatures, `…F`, may be negative), unique ids and
 dates, a zone fare for every pair of zones that stations use, peak windows inside 0–1440, a
 footpath bound of 1–3,600 s and link seconds (station access, `minTransferSeconds`, fixed
 transfers) below 65,535, disjoint vehicle types, no fixed transfer listed twice (either
-direction). The compiler also applies the writer's *canonical*
+direction), and, in each M2c section that is present (never when it is absent): probabilities
+and weights (`…Percent`, but for the factors `pace.*Percent` and
+`availability.variance.inflationPercent`) within 0–100, availability bands starting at 0 and
+strictly ascending with the last starting before `pooled.afterSeconds`, ordered weather
+thresholds, a guardrail default among its choices, speeds within the pace clamp (when both are
+present), valet windows inside 0–1440 on ISO weekdays 1–7. The compiler also applies the writer's *canonical*
 rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
 never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
 holidays Monday–Friday, CityTicket stations only in zones 1 and 3, `nycTerminals` in zone 1,
-the Far Rockaway destination zone in use, lowercase alert keywords each in one rule, excluded
-bike-share regions disjoint from the service area. Cross-artifact checks (the ids resolve in
+the Far Rockaway destination zone in use, lowercase alert keywords each in one rule (PATH and
+weather alike; a class or severity has one rule, and no weather rule has the class `unknown`),
+excluded bike-share regions disjoint from the service area, valet hours only with a
+`validUntilDate` and without overlapping windows. Cross-artifact checks (the ids resolve in
 `tt-*` and `stations`) are not the reader's: `ReferenceChecks` in BRBuild runs them in the
 compiler and, later, the gate.
 
@@ -964,6 +976,18 @@ compiler and, later, the gate.
 | `transit` | object | Change times and search bounds, and `links` |
 | `bikeShare` | object | Station filter, vehicle types, valet |
 | `alerts` | object | `pathKeywords` |
+| `availability` | optional object | Citi Bike availability (below). Absent = bike planning off |
+| `rules` | optional object | Bike admission, ranking and candidate limits (below). Absent = bike planning off |
+| `weather` | optional object | The weather gate (below). Absent = bike planning off |
+| `pace` | optional object | Pace presets and speed learning (below). Absent = bike planning off |
+| `speeds` | optional object | Default riding speeds (below). Absent = bike planning off |
+| `overheads` | optional object | Unlock and dock times (below). Absent = bike planning off |
+
+The six M2c sections were added within format 1 (2026-09-27): a config without them is the
+format-1 document as it froze, byte for byte, and an app plans bikes only when all six are
+present. The compiler writes a section only when its reviewed source exists
+(`Data/config/planning/`), never a compiled-in default. `minAppFormat` stays 1: an older app
+ignores the keys and never planned bikes.
 
 `calendar.holidays`: weekday holidays, strictly ascending by `date`, from
 `Data/config/calendar/holidays.csv` (the single holiday list).
@@ -1053,7 +1077,16 @@ to the zone fare.
 | `excludedRegions` | array of `region_id` | Known non-service regions (Citi Bike's test regions); sorted, disjoint from `regions` |
 | `vehicleTypes` | {`classic`, `ebike`}, arrays of `vehicle_type_id` | Sorted; disjoint |
 | `maxStatusAgeSeconds` | int | A station whose status is older is not used |
-| `valet` | array of {`stationID`, `latE6`, `lonE6`} | Valet stations by GBFS `station_id`, with the position they were matched at; sorted by `stationID`. May be empty (it is in v1: see `Data/config/bikeshare/SOURCES.md`). The element shape is frozen with format 1: a new field is an optional key |
+| `valet` | array of {`stationID`, `latE6`, `lonE6`, optional `hours`, optional `validUntilDate`} | Valet stations by GBFS `station_id`, with the position they were matched at; sorted by `stationID`. May be empty (it is in v1: see `Data/config/bikeshare/SOURCES.md`). The element shape is frozen with format 1: a new field is an optional key |
+
+`bikeShare.valet[]`'s optional keys (added within format 1 for M2c):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `hours` | optional array of {`isoWeekdays`, `startMinute`, `endMinute`} | When the station is valet, local time (America/New_York): on each ISO weekday listed (1 = Monday … 7 = Sunday; ascending, no repeats), from `startMinute` (included) to `endMinute` (excluded), minutes after midnight, 0 ≤ start < end ≤ 1440. Sorted by (`isoWeekdays`, `startMinute`, `endMinute`); windows sharing a weekday don't overlap. Absent = never valet |
+| `validUntilDate` | optional string `YYYYMMDD` | The last local date `hours` applies, inclusive; after it the station is not valet. Absent = no end date. The compiler writes `hours` only with a `validUntilDate`, so a stale weekly schedule never applies silently |
+
+Valet is judged at the rider's arrival time: while valet, a drop-off's P is 1.
 
 `alerts.pathKeywords`: ordered rules {`keywords`, `severity`}. PATH alert titles have no type;
 the first rule with a keyword the lowercased title contains gives the severity, and no match is
@@ -1061,8 +1094,98 @@ the first rule with a keyword the lowercased title contains gives the severity, 
 `severity`: `noService`, `suspended`, `partSuspended`, `detour`, `reroute`, `stopsSkipped`,
 `severeDelays`, `expressToLocal`, `delays`, `reducedService`, `plannedWork` or `info`.
 
+**The M2c bike-planning sections.** Each is optional (absent = bike planning off); inside a
+present section every key is required unless marked optional. Integers throughout, with the
+unit in the key name; probabilities are whole percents compared as P ≥ percent / 100. Reviewed
+defaults and their provenance: `Data/config/planning/SOURCES.md`.
+
+`availability` (Citi Bike availability: the model's tunables and the policy; τ is a station's
+effective horizon, the time to the rider's arrival there plus the age of its last report):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `targetPercent` | int, 0–100 | A station passes when its P reaches this |
+| `itineraryMinPercent` | int, 0–100 | An itinerary passes when the product of its stations' P reaches this |
+| `tightMinPercent` | int, 0–100, ≤ `targetPercent` | The lowest P labelled "Tight" |
+| `bands` | ordered array of {`fromSeconds`, `pickupMinBikes`, `dropoffMinDocks`, `pickupFloorBikes`, `dropoffFloorDocks`} | By τ: the first starts at 0, `fromSeconds` strictly ascends, each band runs to the next one's start and the last to `pooled.afterSeconds` inclusive (so it starts before it). P is P(at least `pickupMinBikes` bikes of the chosen type) at pickup and P(at least `dropoffMinDocks` open docks) at drop-off; a station reporting fewer than the floor now (bikes of the chosen type, or open docks) fails outright |
+| `pooled` | {`afterSeconds`, `radiusMeters`, `discountPercent`, `maxStations`, `pickupMinBikes`, `dropoffMinDocks`} | Pooled mode, for τ above `afterSeconds` and for depart-at: the target plus filtered stations within `radiusMeters` (straight line), at most `maxStations` counting the target, nearest walk first. P_pool = 1 − Π(1 − P_j), each at its own τ; P_adj = P_target + (P_pool − P_target) × (100 − `discountPercent`) / 100 must reach `targetPercent`. `pickupMinBikes` and `dropoffMinDocks` are the counts P is computed for in pooled mode |
+| `reroute` | {`belowPercent`, `minHorizonSeconds`} | During a ride: re-route when the dock's P falls below `belowPercent` while τ ≥ `minHorizonSeconds`, and closer than that only when it reports no open dock |
+| `trend` | {`minWatchSeconds`, `windowSeconds` ≥ `minWatchSeconds`, `weightPercent`, `maxStepCount`, `maxGapSeconds`} | The observed-trend blend: a station watched for `minWatchSeconds` (reports spanning it, no gap over `maxGapSeconds`) blends its drift over the last `windowSeconds`, ignoring report-to-report jumps larger than `maxStepCount`, into the model's net flow with weight `weightPercent` |
+| `variance` | {`crossBinCorrelationPercent` 0–100, `inflationPercent` > 0} | How flows' 15-minute bins add up over a horizon: ρ between bins' over-dispersion (0 = independent), and a scale on the summed variance (100 = as the flows give it; a factor, so it may exceed 100) |
+| `coldStart` | {`neighborCount`, `radiusMeters`, `farMaxPercent`} | A station with no flows row takes the capacity-scaled average of its `neighborCount` nearest stations with trips within `radiusMeters`; with none that close, the nearest ones anyway, with P capped at `farMaxPercent` |
+
+`rules` (bike itineraries; T0 is the no-bike baseline's arrival):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `deltaMinSeconds`, `deltaPercent` | int; int 0–100 | Δ = max(`deltaMinSeconds`, (T0 − query time) × `deltaPercent` / 100). A bike itinerary arrives at least Δ before T0, and each extra bike leg at least Δ before the best itinerary with one bike leg fewer |
+| `minRideSeconds` | int | Every bike ride (unlock to dock) is at least this long |
+| `stationWalkLimitSeconds` | int | Pickups and docks are considered within this walk |
+| `ebikeMinSavingSeconds` | int | Per bike leg, an e-bike replaces an available classic only if it saves at least this… |
+| `ebikeAllowanceCentsPerMinute` | int | …and costs at most this much more than the classic per minute saved (rides timed at the rider's learned speed for each type). The per-leg allowance is its own key, separate from the journey guardrail and by default looser. When no classic passes availability, the e-bike is judged against the baseline alone |
+| `guardrail` | {`defaultCentsPerMinute`, `choicesCentsPerMinute`} | The journey cost guardrail: a bike itinerary costs at most this much more than the baseline per minute saved. `choicesCentsPerMinute`: what the rider can pick, ascending, no repeats, including the default; the app always offers "No limit" too (a rider setting, not a value here) |
+| `transferPenaltySeconds`, `cautionPenaltySeconds` | int | Score = arrival + transfers × `transferPenaltySeconds` + `cautionPenaltySeconds` when the weather is at caution + Σ(1 − P_i) × F_i |
+| `bucketSeconds` | int | Options scoring within this of the best form one bucket, ordered by fewer mode changes, then cost |
+| `alternativesPerLayer` | int ≥ 1 | Bike itineraries kept per bike-leg count |
+| `enrichStopsPerLayer` | int ≥ 1 | Stops per bike-leg count enriched with real time |
+
+`weather` (the gate, g(t) ∈ allow, caution, block, judged per bucket of a bike leg's window):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `bucketSeconds` | int | A leg is judged per bucket of this length; its verdict is the worst over its buckets |
+| `minuteHorizonSeconds` | int | Minute data decides rain blocks this far past the fetch; hourly data after it |
+| `forecastHorizonHours` | int | Past this the forecast is unavailable and the gate doesn't apply |
+| `pastHours` | int | History asked for (rain before the ride, snow cover) |
+| `cacheSeconds`, `cacheCellMeters` | int | A forecast is reused this long within a cell of this size |
+| `untimedAlertHours` | int | An alert without an onset and end (WeatherKit's) gates rides starting within this of the fetch |
+| `clearWithinSeconds` | int | A blocked leg offers "Leave at …" when the block clears within this |
+| `presets` | {`everyday`, `fairWeather`, `hardy`}, all required | One preset each (below) |
+| `alertKeywords` | ordered array of {`class`, `keywords`} | Alerts have no reliable type: the first rule with a keyword the lowercased alert event (or summary) contains gives its class; no match is `unknown`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only; a class has at most one rule; `unknown` is never a rule's class. The order matters (a wind chill alert is `winterIce`, not `highWind`) |
+
+A weather preset. Measured values are real numbers and the thresholds integers: "≥" and "≤"
+are inclusive, "below" and "above" strict. Temperatures (`…F`, °F) may be negative; every other
+value is non-negative.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `rainBlockMinuteChancePercent`, `rainBlockMinuteHundredthsInPerHour` | int 0–100; int | Within the minute horizon, a minute with chance ≥ this at intensity ≥ this blocks |
+| `rainBlockHourlyChancePercent` | int 0–100 | Hourly chance ≥ this blocks |
+| `rainBlockRateHundredthsInPerHour` | optional int | When present, an hourly chance block also needs the hour's forecast amount ≥ this per hour. Absent = the chance alone blocks |
+| `rainCautionHourlyChancePercent` | int 0–100, ≤ the block chance | Hourly chance ≥ this (not blocked) is caution |
+| `rainBeforeHundredthsIn`, `rainBeforeHours`, `rainBeforeLongHours` | int | Rain before the ride: at least this much over the last `rainBeforeHours` is caution; the lookback is `rainBeforeLongHours` (≥ `rainBeforeHours`) when humidity is above `rainBeforeHumidityPercent`, the temperature below `rainBeforeBelowF`, or it is night |
+| `rainBeforeHumidityPercent`, `rainBeforeBelowF` | int 0–100; int °F | As above |
+| `stormMinChancePercent` | int 0–100 | A thunderstorm, freezing rain, sleet, hail or snow condition blocks, and so does a snow, sleet, hail or mixed precipitation kind at chance ≥ this |
+| `snowCoverTenthsIn`, `snowCoverMaxF`, `snowCoverHours` | int; int °F; int | Snowfall ≥ `snowCoverTenthsIn` over the last `snowCoverHours`, with the temperature ≤ `snowCoverMaxF` ever since the last snowfall hour, blocks |
+| `iceMaxF`, `iceLookbackHours` | int °F; int | A temperature ≤ `iceMaxF` with any precipitation in the last `iceLookbackHours` blocks |
+| `windBlockMph`, `gustBlockMph`, `windCautionMph` | int | Sustained wind ≥ `windBlockMph` or gusts ≥ `gustBlockMph` block; sustained wind ≥ `windCautionMph` (≤ `windBlockMph`) is caution |
+| `feelsLikeBlockBelowF`, `feelsLikeCautionAtOrBelowF`, `feelsLikeCautionAtOrAboveF`, `feelsLikeBlockAtOrAboveF` | int °F, in that order (≤, <, ≤) | Feels-like below the first or ≥ the last blocks; otherwise ≤ the second or ≥ the third is caution |
+| `cautionBlocks` | bool | Every caution blocks (Fair-weather) |
+| `alertVerdicts` | {`thunderstorm`, `winterIce`, `highWind`, `extremeHeat`, `tornado`, `informational`, `unknown`}, each `allow` \| `caution` \| `block` | What an active alert of each class does; every class is required |
+
+Alert classes: `thunderstorm`, `winterIce`, `highWind`, `extremeHeat`, `tornado`,
+`informational` (worth showing, not a reason to avoid a bike: coastal flood, rip current, air
+quality) and `unknown`. Strict like every config enum: a new class needs a bump (or a new
+optional key).
+
+`pace` (riding pace and speed learning; each bike type learns on its own, from its `speeds`
+default seeded by the rider's pace setting):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `relaxedPercent`, `typicalPercent`, `fastPercent` | int > 0 | The pace presets as a percent of each type's speed (factors, so they may exceed 100). The rider may instead enter a speed |
+| `minHundredthsMph`, `maxHundredthsMph` | int > 0, min ≤ max | Learned and entered speeds are clamped to this range |
+| `learnAfterRides` | int | A type's learned speed (an exponential moving average of its effective speed, with the residual standard deviation) is used once it has this many rides |
+| `planSdHundredths` | int | Before a scheduled boarding, ride times use the 60th-percentile speed: the average minus this many hundredths of a standard deviation (25 = 0.25 SD) |
+
+`speeds`: `classicHundredthsMph` and `ebikeHundredthsMph` (int > 0; within `pace`'s clamp when
+`pace` is present), each type's riding speed until the rider's own is learned.
+
+`overheads`: `unlockSeconds` and `dockSeconds` (int), fixed time on every ride besides riding:
+a ride takes unlock + ride + dock.
+
 **Not in format 1**, each to arrive within it as an optional key with the default named here: the
-availability, rules, weather, pace, speeds and overheads sections of M2c (absent = bike planning
-off), the realtime matcher tunables (their absent default is fixed when they are defined), and the
-rail bike-hop tunables under `transit.links` (absent = `HopOptions`' own values; of the hop
-inputs, only the change after the bike and the holidays come from config today).
+realtime matcher tunables (their absent default is fixed when they are defined), the rail
+bike-hop tunables under `transit.links` (absent = `HopOptions`' own values; of the hop inputs,
+only the change after the bike and the holidays come from config today), and the weight of the
+speed-learning average under `pace` (absent = the app's own value).

@@ -38,8 +38,11 @@ import Testing
         #expect(first.errors.isEmpty)
         #expect(first.checks.filter { $0.skipped == nil }.map(\.name) == ["stationSelectionRegions"])
         #expect(first.warnings.contains("lirrZones skipped: tt-lirr.bin is missing"))
-        #expect(first.sources.map(\.path).contains("fares/lirr/lirr-stations-2026.csv") && first.sources.count == 14)
+        // 14 files, plus the 7 bike-planning sources (six sections, the weather keywords CSV).
+        #expect(first.sources.map(\.path).contains("fares/lirr/lirr-stations-2026.csv") && first.sources.count == 21)
+        #expect(first.sources.map(\.path).contains("config/planning/weather-alert-keywords.csv"))
         #expect(first.summary.lirrStations == 126 && first.summary.unverifiedCitiBikePlans == ["dayPass", "reducedFare"])
+        #expect(first.summary.planningSections == ConfigDocument.planningSectionKeys)
     }
 
     @Test func requiredReferencesFailWithoutTheirInputs() throws {

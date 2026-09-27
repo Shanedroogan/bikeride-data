@@ -21,12 +21,22 @@
 
 ## valet.csv
 
-`station_id,lat_e6,lon_e6,name,source_note`: valet stations by GBFS `station_id`, with the
-coordinate (microdegrees) they were matched at.
+`station_id,lat_e6,lon_e6,name,hours,valid_until_date,source_note`: valet stations by GBFS
+`station_id`, with the coordinate (microdegrees) they were matched at, and when they are valet.
+The compiler also reads the format-1 header without the two optional columns
+(`station_id,lat_e6,lon_e6,name,source_note`), as older pinned sources have it.
 
-**Empty for now.** The GBFS feed has no valet field (checked on the pinned
-`station_information`: its keys are capacity, is_charging, lat, lon, name, region_id, rental_uris,
-short_name and station_id), and Citi Bike's valet schedule changes weekly. The list is to be
-filled from Citi Bike's Service page (web-published facts, not feed or trip data), cross-checked
-against GBFS history (bikes + docks above capacity), before M2c needs it. The compiler checks every
-row: the id must be in `stations.bin` and within 50 m of the listed coordinate.
+- `hours`: weekly windows in local time, separated by `|`, each `<ISO weekday digits>
+  <HH:MM>-<HH:MM>` (Monday is 1, Sunday 7; the end is excluded; `24:00` ends the day), e.g.
+  `12345 07:00-19:00|67 10:00-16:00`. Empty: never valet.
+- `valid_until_date`: `YYYYMMDD`, the last date the hours apply. Required whenever `hours` is
+  filled (the build fails otherwise), so a weekly schedule that stops being updated lapses instead
+  of applying silently; empty when `hours` is.
+
+**Empty for now**: M2c ships with valet off. The GBFS feed has no valet field (checked on the
+pinned `station_information`: its keys are capacity, is_charging, lat, lon, name, region_id,
+rental_uris, short_name and station_id), and Citi Bike's valet schedule changes weekly. If the
+list is maintained (not decided yet), it is filled from Citi Bike's Service page (web-published
+facts, not feed or trip data), cross-checked against GBFS history (bikes + docks above
+capacity). The compiler checks every row: the id must be in `stations.bin` and within 50 m of the
+listed coordinate.

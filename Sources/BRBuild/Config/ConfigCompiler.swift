@@ -73,6 +73,8 @@ public struct ConfigCompiler: Sendable {
             public var pathKeywordRules: Int
             public var flags: Int
             public var unverifiedCitiBikePlans: [String]
+            /// The M2c bike-planning sections in the document (bike planning needs all six).
+            public var planningSections: [String]
         }
 
         public var generatedAt: String
@@ -153,6 +155,8 @@ public struct ConfigCompiler: Sendable {
         let payload = ConfigArtifactWriter.payload(json: json)
         let jsonSha = try sha256(json), payloadSha = try sha256(payload)
         log("document: \(json.count) bytes of JSON, sha256 \(jsonSha.prefix(12))")
+        let planning = document.planningSections
+        log("bike planning sections: \(planning.isEmpty ? "none" : planning.joined(separator: ", ")) (\(planning.count) of \(ConfigDocument.planningSectionKeys.count))")
 
         // 2. Reference inputs.
         var inputs: [String: Report.Input] = [:]
@@ -267,7 +271,8 @@ public struct ConfigCompiler: Sendable {
                 pathKeywordRules: document.alerts.pathKeywords.count,
                 flags: document.flags.count,
                 unverifiedCitiBikePlans: [("nonMember", plans.nonMember), ("member", plans.member), ("dayPass", plans.dayPass),
-                                          ("reducedFare", plans.reducedFare)].filter { !$0.1.verified }.map(\.0)
+                                          ("reducedFare", plans.reducedFare)].filter { !$0.1.verified }.map(\.0),
+                planningSections: document.planningSections
             ),
             checks: checks,
             errors: errors,

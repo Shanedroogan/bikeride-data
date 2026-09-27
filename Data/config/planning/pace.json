@@ -1,0 +1,9 @@
+{
+  "relaxedPercent": 85,
+  "typicalPercent": 100,
+  "fastPercent": 115,
+  "minHundredthsMph": 500,
+  "maxHundredthsMph": 1500,
+  "learnAfterRides": 3,
+  "planSdHundredths": 25
+}

@@ -27,8 +27,26 @@ public struct ConfigDocument: Sendable, Equatable, Codable {
     public var bikeShare: ConfigBikeShare
     public var alerts: ConfigAlerts
 
+    // The M2c bike-planning sections: optional keys added within format 1. Each is absent in
+    // every config written before them; an app plans bikes only when all six are present
+    // (absent = bike planning off).
+    /// Citi Bike availability model and policy. Absent = bike planning off.
+    public var availability: ConfigAvailability?
+    /// Admission, ranking and candidate limits of bike itineraries. Absent = bike planning off.
+    public var rules: ConfigRules?
+    /// The weather gate. Absent = bike planning off.
+    public var weather: ConfigWeather?
+    /// Riding-pace presets and speed learning. Absent = bike planning off.
+    public var pace: ConfigPace?
+    /// Default riding speeds per bike type. Absent = bike planning off.
+    public var speeds: ConfigSpeeds?
+    /// Unlock and dock times. Absent = bike planning off.
+    public var overheads: ConfigOverheads?
+
     public init(minAppFormat: Int, flags: [String: Bool], calendar: ConfigCalendar, fares: ConfigFares,
-                transit: ConfigTransit, bikeShare: ConfigBikeShare, alerts: ConfigAlerts) {
+                transit: ConfigTransit, bikeShare: ConfigBikeShare, alerts: ConfigAlerts,
+                availability: ConfigAvailability? = nil, rules: ConfigRules? = nil, weather: ConfigWeather? = nil,
+                pace: ConfigPace? = nil, speeds: ConfigSpeeds? = nil, overheads: ConfigOverheads? = nil) {
         self.minAppFormat = minAppFormat
         self.flags = flags
         self.calendar = calendar
@@ -36,7 +54,26 @@ public struct ConfigDocument: Sendable, Equatable, Codable {
         self.transit = transit
         self.bikeShare = bikeShare
         self.alerts = alerts
+        self.availability = availability
+        self.rules = rules
+        self.weather = weather
+        self.pace = pace
+        self.speeds = speeds
+        self.overheads = overheads
     }
+
+    /// The M2c bike-planning sections this document carries, by key, in the order
+    /// ``ConfigDocument/planningSectionKeys`` lists them.
+    public var planningSections: [String] {
+        let present: [String: Bool] = [
+            "availability": availability != nil, "rules": rules != nil, "weather": weather != nil,
+            "pace": pace != nil, "speeds": speeds != nil, "overheads": overheads != nil,
+        ]
+        return Self.planningSectionKeys.filter { present[$0] == true }
+    }
+
+    /// The keys of the six M2c bike-planning sections.
+    public static let planningSectionKeys = ["availability", "rules", "weather", "pace", "speeds", "overheads"]
 }
 
 // MARK: - Calendar
@@ -653,11 +690,34 @@ public struct ConfigValetStation: Sendable, Equatable, Codable {
     public var stationID: String
     public var latE6: Int
     public var lonE6: Int
+    /// When the station is valet, in local time (America/New_York). Optional within format 1:
+    /// absent = never valet.
+    public var hours: [ConfigValetHours]?
+    /// The last local date the ``hours`` apply, inclusive; after it the station is not valet.
+    /// Optional within format 1: absent = no end date. The compiler requires it whenever
+    /// ``hours`` is present, so a stale weekly schedule never applies silently.
+    public var validUntilDate: ServiceDate?
 
-    public init(stationID: String, latE6: Int, lonE6: Int) {
+    public init(stationID: String, latE6: Int, lonE6: Int, hours: [ConfigValetHours]? = nil, validUntilDate: ServiceDate? = nil) {
         self.stationID = stationID
         self.latE6 = latE6
         self.lonE6 = lonE6
+        self.hours = hours
+        self.validUntilDate = validUntilDate
+    }
+}
+
+/// One weekly valet window: on each of ``isoWeekdays`` (1 = Monday … 7 = Sunday, ascending), from
+/// `startMinute` (included) to `endMinute` (excluded), minutes after local midnight.
+public struct ConfigValetHours: Sendable, Equatable, Codable {
+    public var isoWeekdays: [Int]
+    public var startMinute: Int
+    public var endMinute: Int
+
+    public init(isoWeekdays: [Int], startMinute: Int, endMinute: Int) {
+        self.isoWeekdays = isoWeekdays
+        self.startMinute = startMinute
+        self.endMinute = endMinute
     }
 }
 
@@ -698,4 +758,476 @@ public enum ConfigAlertSeverity: String, Sendable, Equatable, Codable, CaseItera
     case reducedService
     case plannedWork
     case info
+}
+
+// MARK: - Bike planning (M2c)
+//
+// Six optional top-level sections added within format 1. The compiler writes one only when its
+// reviewed source exists (never a compiled-in default), so a document without them is byte for
+// byte what it was before they were defined. The app plans bikes only when all six are present.
+// Keys inside a present section are required unless marked optional.
+
+/// Citi Bike availability: the probability model's tunables, the threshold bands by horizon,
+/// pooled clusters, re-routing, the observed-trend blend and the cold-start prior. Probabilities
+/// are whole percents, compared as `P ≥ percent / 100`.
+public struct ConfigAvailability: Sendable, Equatable, Codable {
+    /// A station passes when its P reaches this.
+    public var targetPercent: Int
+    /// An itinerary passes when the product of its stations' P reaches this.
+    public var itineraryMinPercent: Int
+    /// The lowest P labelled "Tight" (on re-plans; at or above the target is "Likely").
+    public var tightMinPercent: Int
+    /// By effective horizon τ (time to arrival plus the station report's age). Ordered: the first
+    /// starts at 0, `fromSeconds` strictly ascends, and each runs to the next one's start; the
+    /// last runs to ``ConfigAvailabilityPooled/afterSeconds`` inclusive.
+    public var bands: [ConfigAvailabilityBand]
+    public var pooled: ConfigAvailabilityPooled
+    public var reroute: ConfigAvailabilityReroute
+    public var trend: ConfigAvailabilityTrend
+    public var variance: ConfigAvailabilityVariance
+    public var coldStart: ConfigAvailabilityColdStart
+
+    public init(targetPercent: Int, itineraryMinPercent: Int, tightMinPercent: Int, bands: [ConfigAvailabilityBand],
+                pooled: ConfigAvailabilityPooled, reroute: ConfigAvailabilityReroute, trend: ConfigAvailabilityTrend,
+                variance: ConfigAvailabilityVariance, coldStart: ConfigAvailabilityColdStart) {
+        self.targetPercent = targetPercent
+        self.itineraryMinPercent = itineraryMinPercent
+        self.tightMinPercent = tightMinPercent
+        self.bands = bands
+        self.pooled = pooled
+        self.reroute = reroute
+        self.trend = trend
+        self.variance = variance
+        self.coldStart = coldStart
+    }
+}
+
+/// One horizon band: the counts P is computed for, and hard floors on the counts reported now.
+public struct ConfigAvailabilityBand: Sendable, Equatable, Codable {
+    public var fromSeconds: Int
+    /// P(at least this many bikes of the chosen type at pickup).
+    public var pickupMinBikes: Int
+    /// P(at least this many open docks at drop-off).
+    public var dropoffMinDocks: Int
+    /// The station fails when it reports fewer bikes of the chosen type than this now.
+    public var pickupFloorBikes: Int
+    /// The station fails when it reports fewer open docks than this now.
+    public var dropoffFloorDocks: Int
+
+    public init(fromSeconds: Int, pickupMinBikes: Int, dropoffMinDocks: Int, pickupFloorBikes: Int, dropoffFloorDocks: Int) {
+        self.fromSeconds = fromSeconds
+        self.pickupMinBikes = pickupMinBikes
+        self.dropoffMinDocks = dropoffMinDocks
+        self.pickupFloorBikes = pickupFloorBikes
+        self.dropoffFloorDocks = dropoffFloorDocks
+    }
+}
+
+/// Pooled mode, past the last band (and for depart-at): the target station plus its nearest
+/// filtered neighbours count together, discounted.
+public struct ConfigAvailabilityPooled: Sendable, Equatable, Codable {
+    /// Pooled mode applies when τ is more than this.
+    public var afterSeconds: Int
+    /// Neighbours within this straight-line distance of the target join the cluster.
+    public var radiusMeters: Int
+    /// P_adj = P_target + (P_pool − P_target) × (100 − discountPercent) / 100.
+    public var discountPercent: Int
+    /// The cluster keeps at most this many stations, the target included, nearest walk first.
+    public var maxStations: Int
+    public var pickupMinBikes: Int
+    public var dropoffMinDocks: Int
+
+    public init(afterSeconds: Int, radiusMeters: Int, discountPercent: Int, maxStations: Int, pickupMinBikes: Int, dropoffMinDocks: Int) {
+        self.afterSeconds = afterSeconds
+        self.radiusMeters = radiusMeters
+        self.discountPercent = discountPercent
+        self.maxStations = maxStations
+        self.pickupMinBikes = pickupMinBikes
+        self.dropoffMinDocks = dropoffMinDocks
+    }
+}
+
+/// During a ride: re-route when the dock's P falls below ``belowPercent`` while τ is at least
+/// ``minHorizonSeconds``; closer than that, only when it reports no open dock.
+public struct ConfigAvailabilityReroute: Sendable, Equatable, Codable {
+    public var belowPercent: Int
+    public var minHorizonSeconds: Int
+
+    public init(belowPercent: Int, minHorizonSeconds: Int) {
+        self.belowPercent = belowPercent
+        self.minHorizonSeconds = minHorizonSeconds
+    }
+}
+
+/// The observed-trend blend: once a station has been watched for ``minWatchSeconds`` (reports
+/// spanning it with no gap over ``maxGapSeconds``), its drift over the last ``windowSeconds``,
+/// ignoring report-to-report jumps larger than ``maxStepCount``, is blended into the model's net
+/// flow with weight ``weightPercent``.
+public struct ConfigAvailabilityTrend: Sendable, Equatable, Codable {
+    public var minWatchSeconds: Int
+    public var windowSeconds: Int
+    public var weightPercent: Int
+    public var maxStepCount: Int
+    public var maxGapSeconds: Int
+
+    public init(minWatchSeconds: Int, windowSeconds: Int, weightPercent: Int, maxStepCount: Int, maxGapSeconds: Int) {
+        self.minWatchSeconds = minWatchSeconds
+        self.windowSeconds = windowSeconds
+        self.weightPercent = weightPercent
+        self.maxStepCount = maxStepCount
+        self.maxGapSeconds = maxGapSeconds
+    }
+}
+
+/// How per-bin flows add up over a horizon.
+public struct ConfigAvailabilityVariance: Sendable, Equatable, Codable {
+    /// ρ, the correlation of the over-dispersion between bins: 0 = independent bins.
+    public var crossBinCorrelationPercent: Int
+    /// A scale on the summed variance (100 = as the flows give it). A factor, not a probability:
+    /// it may exceed 100.
+    public var inflationPercent: Int
+
+    public init(crossBinCorrelationPercent: Int, inflationPercent: Int) {
+        self.crossBinCorrelationPercent = crossBinCorrelationPercent
+        self.inflationPercent = inflationPercent
+    }
+}
+
+/// The prior for a station with no flows row: the capacity-scaled average of its
+/// ``neighborCount`` nearest stations with trips within ``radiusMeters``; with none that close,
+/// the nearest ones anyway, with P capped at ``farMaxPercent``.
+public struct ConfigAvailabilityColdStart: Sendable, Equatable, Codable {
+    public var neighborCount: Int
+    public var radiusMeters: Int
+    public var farMaxPercent: Int
+
+    public init(neighborCount: Int, radiusMeters: Int, farMaxPercent: Int) {
+        self.neighborCount = neighborCount
+        self.radiusMeters = radiusMeters
+        self.farMaxPercent = farMaxPercent
+    }
+}
+
+/// Which bike itineraries are admitted and how options rank, plus the candidate limits.
+public struct ConfigRules: Sendable, Equatable, Codable {
+    /// Δ = max(deltaMinSeconds, (T0 − t_query) × deltaPercent / 100): a bike itinerary must
+    /// arrive at least Δ before the no-bike baseline T0, and each extra bike leg at least Δ
+    /// before the best with one bike leg fewer.
+    public var deltaMinSeconds: Int
+    public var deltaPercent: Int
+    /// Every bike ride (unlock to dock) is at least this long.
+    public var minRideSeconds: Int
+    /// Pickups and docks are considered within this walk of the origin, destination or stop.
+    public var stationWalkLimitSeconds: Int
+    /// Per bike leg, an e-bike replaces an available classic only if it saves at least this…
+    public var ebikeMinSavingSeconds: Int
+    /// …and costs at most this much more than the classic per minute it saves (both timed at the
+    /// rider's learned speed for their type). A per-leg allowance of its own, separate from the
+    /// journey guardrail and by default looser.
+    public var ebikeAllowanceCentsPerMinute: Int
+    public var guardrail: ConfigGuardrail
+    /// Score = arrival + transfers × this + …
+    public var transferPenaltySeconds: Int
+    /// … + this when the weather is at caution + Σ(1 − P_i) × F_i.
+    public var cautionPenaltySeconds: Int
+    /// Options scoring within this of the best form one bucket, ordered by fewer mode changes,
+    /// then cost.
+    public var bucketSeconds: Int
+    /// Bike itineraries kept per bike-leg count.
+    public var alternativesPerLayer: Int
+    /// Stops per bike-leg count enriched with real time.
+    public var enrichStopsPerLayer: Int
+
+    public init(deltaMinSeconds: Int, deltaPercent: Int, minRideSeconds: Int, stationWalkLimitSeconds: Int,
+                ebikeMinSavingSeconds: Int, ebikeAllowanceCentsPerMinute: Int, guardrail: ConfigGuardrail,
+                transferPenaltySeconds: Int, cautionPenaltySeconds: Int, bucketSeconds: Int, alternativesPerLayer: Int,
+                enrichStopsPerLayer: Int) {
+        self.deltaMinSeconds = deltaMinSeconds
+        self.deltaPercent = deltaPercent
+        self.minRideSeconds = minRideSeconds
+        self.stationWalkLimitSeconds = stationWalkLimitSeconds
+        self.ebikeMinSavingSeconds = ebikeMinSavingSeconds
+        self.ebikeAllowanceCentsPerMinute = ebikeAllowanceCentsPerMinute
+        self.guardrail = guardrail
+        self.transferPenaltySeconds = transferPenaltySeconds
+        self.cautionPenaltySeconds = cautionPenaltySeconds
+        self.bucketSeconds = bucketSeconds
+        self.alternativesPerLayer = alternativesPerLayer
+        self.enrichStopsPerLayer = enrichStopsPerLayer
+    }
+}
+
+/// The journey cost guardrail: a bike itinerary may cost at most this much more than the
+/// baseline per minute it saves. The rider picks one of ``choicesCentsPerMinute`` or "No limit"
+/// (a rider setting, always offered, not a value here).
+public struct ConfigGuardrail: Sendable, Equatable, Codable {
+    public var defaultCentsPerMinute: Int
+    /// Ascending, no repeats; includes the default.
+    public var choicesCentsPerMinute: [Int]
+
+    public init(defaultCentsPerMinute: Int, choicesCentsPerMinute: [Int]) {
+        self.defaultCentsPerMinute = defaultCentsPerMinute
+        self.choicesCentsPerMinute = choicesCentsPerMinute
+    }
+}
+
+/// The weather gate: g(t) ∈ {allow, caution, block}, per 5-minute bucket of a bike leg's window.
+public struct ConfigWeather: Sendable, Equatable, Codable {
+    /// Each leg is judged per bucket of this length.
+    public var bucketSeconds: Int
+    /// Minute data decides rain blocks this far ahead of the fetch; hourly data after it.
+    public var minuteHorizonSeconds: Int
+    /// Past this the forecast is unavailable and the gate doesn't apply.
+    public var forecastHorizonHours: Int
+    /// History asked for (rain before the ride, snow cover).
+    public var pastHours: Int
+    public var cacheSeconds: Int
+    public var cacheCellMeters: Int
+    /// An alert without an onset and end (WeatherKit's) gates rides that start within this of
+    /// the fetch.
+    public var untimedAlertHours: Int
+    /// A blocked leg offers "Leave at …" when the block clears within this.
+    public var clearWithinSeconds: Int
+    public var presets: ConfigWeatherPresets
+    /// Alert text has no reliable type: the first rule with a keyword the lowercased alert event
+    /// (or summary) contains gives its class; no match is ``ConfigWeatherAlertClass/unknown``. In
+    /// priority order.
+    public var alertKeywords: [ConfigWeatherAlertRule]
+
+    public init(bucketSeconds: Int, minuteHorizonSeconds: Int, forecastHorizonHours: Int, pastHours: Int, cacheSeconds: Int,
+                cacheCellMeters: Int, untimedAlertHours: Int, clearWithinSeconds: Int, presets: ConfigWeatherPresets,
+                alertKeywords: [ConfigWeatherAlertRule]) {
+        self.bucketSeconds = bucketSeconds
+        self.minuteHorizonSeconds = minuteHorizonSeconds
+        self.forecastHorizonHours = forecastHorizonHours
+        self.pastHours = pastHours
+        self.cacheSeconds = cacheSeconds
+        self.cacheCellMeters = cacheCellMeters
+        self.untimedAlertHours = untimedAlertHours
+        self.clearWithinSeconds = clearWithinSeconds
+        self.presets = presets
+        self.alertKeywords = alertKeywords
+    }
+}
+
+/// The rider's weather preset; every one is required.
+public struct ConfigWeatherPresets: Sendable, Equatable, Codable {
+    public var everyday: ConfigWeatherPreset
+    public var fairWeather: ConfigWeatherPreset
+    public var hardy: ConfigWeatherPreset
+
+    public init(everyday: ConfigWeatherPreset, fairWeather: ConfigWeatherPreset, hardy: ConfigWeatherPreset) {
+        self.everyday = everyday
+        self.fairWeather = fairWeather
+        self.hardy = hardy
+    }
+}
+
+/// One preset's thresholds. Integers compared with measured values: "≥" and "≤" are inclusive,
+/// "below" and "above" strict. Temperatures (`…F`, °F) may be negative.
+public struct ConfigWeatherPreset: Sendable, Equatable, Codable {
+    /// Rain during the ride, minute data: a minute with chance ≥ this…
+    public var rainBlockMinuteChancePercent: Int
+    /// …at intensity ≥ this blocks.
+    public var rainBlockMinuteHundredthsInPerHour: Int
+    /// Hourly data: chance ≥ this blocks…
+    public var rainBlockHourlyChancePercent: Int
+    /// …(when present, only if the hour's forecast amount is also ≥ this per hour). Optional:
+    /// absent = the chance alone blocks.
+    public var rainBlockRateHundredthsInPerHour: Int?
+    /// Hourly chance ≥ this (and below the block chance) is caution.
+    public var rainCautionHourlyChancePercent: Int
+    /// Rain before the ride: at least this much over the lookback is caution.
+    public var rainBeforeHundredthsIn: Int
+    public var rainBeforeHours: Int
+    /// The lookback when humidity is above ``rainBeforeHumidityPercent``, the temperature is
+    /// below ``rainBeforeBelowF``, or it is night.
+    public var rainBeforeLongHours: Int
+    public var rainBeforeHumidityPercent: Int
+    public var rainBeforeBelowF: Int
+    /// A thunderstorm, freezing rain, sleet, hail or snow condition blocks, and so does a snow,
+    /// sleet, hail or mixed precipitation kind at chance ≥ this.
+    public var stormMinChancePercent: Int
+    /// Snow cover: snowfall ≥ this over ``snowCoverHours``, with the temperature ≤
+    /// ``snowCoverMaxF`` ever since the last snowfall hour, blocks.
+    public var snowCoverTenthsIn: Int
+    public var snowCoverMaxF: Int
+    public var snowCoverHours: Int
+    /// Ice: temperature ≤ this with any precipitation in the last ``iceLookbackHours`` blocks.
+    public var iceMaxF: Int
+    public var iceLookbackHours: Int
+    /// Sustained wind ≥ this blocks.
+    public var windBlockMph: Int
+    /// Gusts ≥ this block.
+    public var gustBlockMph: Int
+    /// Sustained wind ≥ this (and below the block speed) is caution.
+    public var windCautionMph: Int
+    /// Feels-like below this blocks.
+    public var feelsLikeBlockBelowF: Int
+    /// Feels-like ≤ this (and not blocked) is caution.
+    public var feelsLikeCautionAtOrBelowF: Int
+    /// Feels-like ≥ this (and not blocked) is caution.
+    public var feelsLikeCautionAtOrAboveF: Int
+    /// Feels-like ≥ this blocks.
+    public var feelsLikeBlockAtOrAboveF: Int
+    /// Every caution blocks (Fair-weather).
+    public var cautionBlocks: Bool
+    public var alertVerdicts: ConfigWeatherAlertVerdicts
+
+    public init(rainBlockMinuteChancePercent: Int, rainBlockMinuteHundredthsInPerHour: Int, rainBlockHourlyChancePercent: Int,
+                rainBlockRateHundredthsInPerHour: Int? = nil, rainCautionHourlyChancePercent: Int, rainBeforeHundredthsIn: Int,
+                rainBeforeHours: Int, rainBeforeLongHours: Int, rainBeforeHumidityPercent: Int, rainBeforeBelowF: Int,
+                stormMinChancePercent: Int, snowCoverTenthsIn: Int, snowCoverMaxF: Int, snowCoverHours: Int, iceMaxF: Int,
+                iceLookbackHours: Int, windBlockMph: Int, gustBlockMph: Int, windCautionMph: Int, feelsLikeBlockBelowF: Int,
+                feelsLikeCautionAtOrBelowF: Int, feelsLikeCautionAtOrAboveF: Int, feelsLikeBlockAtOrAboveF: Int,
+                cautionBlocks: Bool, alertVerdicts: ConfigWeatherAlertVerdicts) {
+        self.rainBlockMinuteChancePercent = rainBlockMinuteChancePercent
+        self.rainBlockMinuteHundredthsInPerHour = rainBlockMinuteHundredthsInPerHour
+        self.rainBlockHourlyChancePercent = rainBlockHourlyChancePercent
+        self.rainBlockRateHundredthsInPerHour = rainBlockRateHundredthsInPerHour
+        self.rainCautionHourlyChancePercent = rainCautionHourlyChancePercent
+        self.rainBeforeHundredthsIn = rainBeforeHundredthsIn
+        self.rainBeforeHours = rainBeforeHours
+        self.rainBeforeLongHours = rainBeforeLongHours
+        self.rainBeforeHumidityPercent = rainBeforeHumidityPercent
+        self.rainBeforeBelowF = rainBeforeBelowF
+        self.stormMinChancePercent = stormMinChancePercent
+        self.snowCoverTenthsIn = snowCoverTenthsIn
+        self.snowCoverMaxF = snowCoverMaxF
+        self.snowCoverHours = snowCoverHours
+        self.iceMaxF = iceMaxF
+        self.iceLookbackHours = iceLookbackHours
+        self.windBlockMph = windBlockMph
+        self.gustBlockMph = gustBlockMph
+        self.windCautionMph = windCautionMph
+        self.feelsLikeBlockBelowF = feelsLikeBlockBelowF
+        self.feelsLikeCautionAtOrBelowF = feelsLikeCautionAtOrBelowF
+        self.feelsLikeCautionAtOrAboveF = feelsLikeCautionAtOrAboveF
+        self.feelsLikeBlockAtOrAboveF = feelsLikeBlockAtOrAboveF
+        self.cautionBlocks = cautionBlocks
+        self.alertVerdicts = alertVerdicts
+    }
+}
+
+/// What a weather alert of each class does to a bike leg; every class is required.
+public struct ConfigWeatherAlertVerdicts: Sendable, Equatable, Codable {
+    public var thunderstorm: ConfigWeatherVerdict
+    public var winterIce: ConfigWeatherVerdict
+    public var highWind: ConfigWeatherVerdict
+    public var extremeHeat: ConfigWeatherVerdict
+    public var tornado: ConfigWeatherVerdict
+    public var informational: ConfigWeatherVerdict
+    public var unknown: ConfigWeatherVerdict
+
+    public init(thunderstorm: ConfigWeatherVerdict, winterIce: ConfigWeatherVerdict, highWind: ConfigWeatherVerdict,
+                extremeHeat: ConfigWeatherVerdict, tornado: ConfigWeatherVerdict, informational: ConfigWeatherVerdict,
+                unknown: ConfigWeatherVerdict) {
+        self.thunderstorm = thunderstorm
+        self.winterIce = winterIce
+        self.highWind = highWind
+        self.extremeHeat = extremeHeat
+        self.tornado = tornado
+        self.informational = informational
+        self.unknown = unknown
+    }
+
+    public subscript(alertClass: ConfigWeatherAlertClass) -> ConfigWeatherVerdict {
+        switch alertClass {
+        case .thunderstorm: thunderstorm
+        case .winterIce: winterIce
+        case .highWind: highWind
+        case .extremeHeat: extremeHeat
+        case .tornado: tornado
+        case .informational: informational
+        case .unknown: unknown
+        }
+    }
+}
+
+public enum ConfigWeatherVerdict: String, Sendable, Equatable, Codable, CaseIterable {
+    case allow
+    case caution
+    case block
+}
+
+/// Weather alert classes. Strict, like every config enum: a new class needs a format bump or a
+/// new optional key.
+public enum ConfigWeatherAlertClass: String, Sendable, Equatable, Codable, CaseIterable {
+    case thunderstorm
+    case winterIce
+    case highWind
+    case extremeHeat
+    case tornado
+    /// Worth showing, not a reason to avoid a bike (coastal flood, rip current, air quality).
+    case informational
+    /// No rule matched. Never a rule's class.
+    case unknown
+}
+
+public struct ConfigWeatherAlertRule: Sendable, Equatable, Codable {
+    /// Lowercase substrings.
+    public var keywords: [String]
+    public var alertClass: ConfigWeatherAlertClass
+
+    public init(keywords: [String], alertClass: ConfigWeatherAlertClass) {
+        self.keywords = keywords
+        self.alertClass = alertClass
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case keywords
+        case alertClass = "class"
+    }
+}
+
+/// Riding pace and speed learning. Each bike type (classic, e-bike) learns on its own: an
+/// exponential moving average of its effective speed plus the residual standard deviation, from
+/// ``ConfigSpeeds``' default for that type as seeded by the rider's pace setting.
+public struct ConfigPace: Sendable, Equatable, Codable {
+    /// The pace presets, as a percent of each type's speed: Relaxed, Typical, Fast. (The rider may
+    /// instead enter a speed, clamped like a learned one.)
+    public var relaxedPercent: Int
+    public var typicalPercent: Int
+    public var fastPercent: Int
+    /// Learned and entered speeds are clamped to [min, max].
+    public var minHundredthsMph: Int
+    public var maxHundredthsMph: Int
+    /// A type's learned speed is used once it has this many rides.
+    public var learnAfterRides: Int
+    /// Before a scheduled boarding, ride times use the 60th-percentile speed: the average minus
+    /// this many hundredths of a standard deviation (25 = 0.25 SD).
+    public var planSdHundredths: Int
+
+    public init(relaxedPercent: Int, typicalPercent: Int, fastPercent: Int, minHundredthsMph: Int, maxHundredthsMph: Int,
+                learnAfterRides: Int, planSdHundredths: Int) {
+        self.relaxedPercent = relaxedPercent
+        self.typicalPercent = typicalPercent
+        self.fastPercent = fastPercent
+        self.minHundredthsMph = minHundredthsMph
+        self.maxHundredthsMph = maxHundredthsMph
+        self.learnAfterRides = learnAfterRides
+        self.planSdHundredths = planSdHundredths
+    }
+}
+
+/// Riding speeds per bike type until the rider's own are learned.
+public struct ConfigSpeeds: Sendable, Equatable, Codable {
+    public var classicHundredthsMph: Int
+    public var ebikeHundredthsMph: Int
+
+    public init(classicHundredthsMph: Int, ebikeHundredthsMph: Int) {
+        self.classicHundredthsMph = classicHundredthsMph
+        self.ebikeHundredthsMph = ebikeHundredthsMph
+    }
+}
+
+/// Fixed time on every bike ride besides riding: a ride takes unlock + ride + dock.
+public struct ConfigOverheads: Sendable, Equatable, Codable {
+    public var unlockSeconds: Int
+    public var dockSeconds: Int
+
+    public init(unlockSeconds: Int, dockSeconds: Int) {
+        self.unlockSeconds = unlockSeconds
+        self.dockSeconds = dockSeconds
+    }
 }
