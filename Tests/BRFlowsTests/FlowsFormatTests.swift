@@ -186,6 +186,64 @@ import Testing
         #expect(throws: FlowsFormatError.notFlows(found: 2)) { try MappedFlows(artifact: MappedArtifact(fileBytes: stations)) }
     }
 
+    /// Table-of-contents damage, one patch each, chosen so the error named is the first one met
+    /// (the padding and overlap pass runs before any section is viewed).
+    @Test func rejectsMalformedSectionTables() throws {
+        let (header, payload) = try ArtifactHeader.decode(from: HandBuiltFlows.artifact())
+        let base = Data(payload)
+        func load<T: FixedWidthInteger>(_ offset: Int, as type: T.Type) -> T { base.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) } }
+        func entry(_ section: FlowsSection) -> Int {
+            let at = (0..<Int(load(8, as: UInt32.self))).map { FlowsFormat.preambleSize + $0 * FlowsFormat.tocEntrySize }
+            return at.first { load($0, as: UInt32.self) == section.rawValue }!
+        }
+        func offset(_ section: FlowsSection) -> UInt64 { load(entry(section) + 8, as: UInt64.self) }
+        func count(_ section: FlowsSection) -> UInt64 { load(entry(section) + 16, as: UInt64.self) }
+        func open(_ payload: Data) throws { _ = try reader(header.assemble(payload: payload)) }
+        try open(base)
+
+        // Repeated: a second `info`.
+        #expect(throws: FlowsFormatError.duplicateSection(FlowsSection.info.rawValue)) {
+            try open(base.replacing(FlowsSection.info.rawValue, at: entry(.holidays)))
+        }
+        // Missing: `holidays` renamed to an id no reader knows.
+        #expect(throws: FlowsFormatError.missingSection(.holidays)) { try open(base.replacing(UInt32(99), at: entry(.holidays))) }
+        // Misaligned: `keyOffsets` one byte early (the byte it takes and the byte it frees are both 0).
+        #expect(throws: FlowsFormatError.misalignedSection(.keyOffsets)) {
+            try open(base.replacing(offset(.keyOffsets) - 1, at: entry(.keyOffsets) + 8))
+        }
+        // Overlapping: `keyBytes` moved onto `keyOffsets`.
+        #expect(throws: FlowsFormatError.sectionsOverlap(FlowsSection.keyBytes.rawValue)) {
+            try open(base.replacing(offset(.keyOffsets), at: entry(.keyBytes) + 8))
+        }
+        // The wrong element size: `stationCapacity` as bytes over the same extent.
+        #expect(throws: FlowsFormatError.elementSizeMismatch(.stationCapacity, found: 1)) {
+            try open(base.replacing(UInt32(1), at: entry(.stationCapacity) + 4).replacing(count(.stationCapacity) * 2, at: entry(.stationCapacity) + 16))
+        }
+        // Out of bounds: one element past the end, a byte count that overflows, an offset past the end.
+        let cells = FlowsSection.cells.rawValue
+        #expect(throws: FlowsFormatError.sectionOutOfBounds(cells)) { try open(base.replacing(count(.cells) + 1, at: entry(.cells) + 16)) }
+        #expect(throws: FlowsFormatError.sectionOutOfBounds(cells)) { try open(base.replacing(UInt64.max / 2 + 1, at: entry(.cells) + 16)) }
+        #expect(throws: FlowsFormatError.sectionOutOfBounds(cells)) { try open(base.replacing(UInt64(base.count + 8), at: entry(.cells) + 8)) }
+    }
+
+    /// A row outside `0 ..< count` (``FlowsFormat/noRow`` from the stations join) stops the process
+    /// instead of reading past a buffer, in release builds too.
+    @Test func rowAccessorsStopOnARowOutOfRange() async {
+        await #expect(processExitsWith: .failure) {
+            // Exit 0 if the file does not open, so only the precondition can pass this test.
+            guard let flows = try? MappedFlows(artifact: MappedArtifact(fileBytes: HandBuiltFlows.artifact(), expecting: .flows)) else { exit(0) }
+            _ = flows.key(Int(FlowsFormat.noRow))
+        }
+        await #expect(processExitsWith: .failure) {
+            guard let flows = try? MappedFlows(artifact: MappedArtifact(fileBytes: HandBuiltFlows.artifact(), expecting: .flows)) else { exit(0) }
+            _ = flows.mean(flows.count, .weekday, .departures, .classic, bin: 0)
+        }
+        await #expect(processExitsWith: .failure) {
+            guard let flows = try? MappedFlows(artifact: MappedArtifact(fileBytes: HandBuiltFlows.artifact(), expecting: .flows)) else { exit(0) }
+            _ = flows.capacity(-1)
+        }
+    }
+
     @Test func skipsSectionsItDoesNotKnowAndInfoEntriesPastItsOwn() throws {
         let data = HandBuiltFlows.data()
         var sections = FlowsSectionWriter()

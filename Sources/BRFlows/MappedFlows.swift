@@ -91,9 +91,17 @@ public final class MappedFlows: @unchecked Sendable {
 
     // MARK: - Keys and the stations join
 
+    /// Stops the process on a row outside `0 ..< count` (``FlowsFormat/noRow`` included), in every
+    /// build configuration: the accessors read raw buffers, which are unchecked in release builds.
+    @inline(__always)
+    private func check(_ row: Int) {
+        precondition(row >= 0 && row < count, "flows row out of range")
+    }
+
     /// The key (GBFS `short_name`) of `row`.
     public func key(_ row: Int) -> String {
-        String(decoding: keyBytes(row), as: UTF8.self)
+        check(row)
+        return String(decoding: keyBytes(row), as: UTF8.self)
     }
 
     /// The row of a key, by binary search on the key bytes; `nil` when the file has no such key.
@@ -121,18 +129,31 @@ public final class MappedFlows: @unchecked Sendable {
 
     // MARK: - Station metadata
 
-    public func latE6(_ row: Int) -> Int32 { layout.latE6[row] }
-    public func lonE6(_ row: Int) -> Int32 { layout.lonE6[row] }
-    public func capacity(_ row: Int) -> UInt16 { layout.capacity[row] }
+    public func latE6(_ row: Int) -> Int32 {
+        check(row)
+        return layout.latE6[row]
+    }
+
+    public func lonE6(_ row: Int) -> Int32 {
+        check(row)
+        return layout.lonE6[row]
+    }
+
+    public func capacity(_ row: Int) -> UInt16 {
+        check(row)
+        return layout.capacity[row]
+    }
 
     /// Days of `dayType` on which the station counted for `direction`: the denominator of its means.
     public func activeDays(_ row: Int, _ dayType: FlowDayType, _ direction: FlowDirection) -> Int {
-        Int(layout.activeDays[FlowsFormat.activeDaysIndex(row: row, dayType: dayType, direction: direction)])
+        check(row)
+        return Int(layout.activeDays[FlowsFormat.activeDaysIndex(row: row, dayType: dayType, direction: direction)])
     }
 
     /// The row's flags, with undefined bits masked off.
     public func flags(_ row: Int) -> FlowStationFlags {
-        FlowStationFlags(rawValue: layout.stationFlags[row]).intersection(.known)
+        check(row)
+        return FlowStationFlags(rawValue: layout.stationFlags[row]).intersection(.known)
     }
 
     // MARK: - Cells
@@ -140,6 +161,7 @@ public final class MappedFlows: @unchecked Sendable {
     /// One stored value (per 15-minute bin), exact.
     @inline(__always)
     public func value(_ row: Int, _ dayType: FlowDayType, _ direction: FlowDirection, _ slot: FlowSlot, bin: Int) -> Float {
+        check(row)
         precondition(bin >= 0 && bin < FlowsFormat.binsPerDay, "bin out of range")
         return HalfFloat.float(fromBits: layout.cells[FlowsFormat.cellIndex(row: row, dayType: dayType, direction: direction, slot: slot, bin: bin)])
     }
@@ -169,6 +191,7 @@ public final class MappedFlows: @unchecked Sendable {
         _ row: Int, _ dayType: FlowDayType, _ direction: FlowDirection, _ slot: FlowSlot,
         _ body: (UnsafeBufferPointer<UInt16>) throws -> R
     ) rethrows -> R {
+        check(row)
         let start = FlowsFormat.cellIndex(row: row, dayType: dayType, direction: direction, slot: slot, bin: 0)
         return try body(UnsafeBufferPointer(rebasing: layout.cells[start..<start + FlowsFormat.binsPerDay]))
     }
