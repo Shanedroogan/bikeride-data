@@ -7,9 +7,10 @@ let configUsage = """
                                 [--report FILE] [--offline] [--no-xz] [--require-references]
 
     Builds the config artifact from the reviewed sources in DIR/config and DIR/fares (read
-    strictly: an unknown or misspelled key fails), checks it against the tt-* and stations
-    artifacts (MTA and SIR stations, LIRR zones, fixed transfers, valet stations, station
-    regions), and warns when Citi Bike's GBFS pricing plans differ from the configured prices.
+    strictly: an unknown, misspelled or repeated key fails, and so does an integer written as
+    325.0 or 3.25e2), checks it against the tt-* and stations artifacts (MTA and SIR stations,
+    LIRR zones, fixed transfers, valet stations, station regions), and warns when Citi Bike's
+    GBFS pricing plans differ from the configured prices.
 
       --config-sources DIR  Reviewed sources (default ./Data, else ./Vendor/bikeride-data/Data)
       --data DIR            Artifacts the reference checks read (default build/data); checks

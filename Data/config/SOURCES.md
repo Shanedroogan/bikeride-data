@@ -1,8 +1,9 @@
 # Config sources
 
 Reviewed inputs of the `config` artifact, besides the fares in `../fares/`. `bikeride-data
-config` reads them strictly: an unknown or misspelled JSON key, a missing key, a wrong type, or a
-CSV whose header is not exactly the one below fails the build. Keys and units: "config" in
+config` reads them strictly: an unknown or misspelled JSON key, a key written twice in one
+object, a missing key, a wrong type, an integer written as a decimal or with an exponent (`325.0`,
+`3.25e2`), or a CSV whose header is not exactly the one below fails the build. Keys and units: "config" in
 `docs/formats.md`. Set-like lists may be in any order here; the compiler sorts them.
 
 | File | Artifact key | Contents |
