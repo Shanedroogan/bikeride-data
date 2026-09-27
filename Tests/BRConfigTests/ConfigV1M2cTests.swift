@@ -67,7 +67,7 @@ enum HandBuiltM2cConfig {
     }()
 
     static let pace = ConfigPace(relaxedPercent: 85, typicalPercent: 100, fastPercent: 115, minHundredthsMph: 500, maxHundredthsMph: 1500,
-                                 learnAfterRides: 3, planSdHundredths: 25)
+                                 learnAfterRides: 3, emaWeightPercent: 25, planSdHundredths: 25)
     static let speeds = ConfigSpeeds(classicHundredthsMph: 800, ebikeHundredthsMph: 1000)
     static let overheads = ConfigOverheads(unlockSeconds: 90, dockSeconds: 60)
 
@@ -107,7 +107,7 @@ enum HandBuiltM2cConfig {
     /// builderSwiftVersion). The same on macOS and Linux, run after run. What may change it: a
     /// deliberate change to the hand-built document, or a newly defined optional key it fills.
     /// Never a change to a key already here: that is a new formatVersion.
-    static let payloadGolden = "4abb14cd849e817caabb3dce7f5961e1372681b6d969c063cce21fee6eaf95e9"
+    static let payloadGolden = "51acf006470f6ba58e0bfe5d2ab3e8541d33148bbe4a1bbe37c1465378182962"
 
     func reader(_ file: Data) throws -> MappedConfig {
         try MappedConfig(artifact: MappedArtifact(fileBytes: file, expecting: .config))
@@ -215,7 +215,7 @@ enum HandBuiltM2cConfig {
     }
 
     @Test(arguments: ["weather.presets.fairWeather", "availability.pooled", "weather.presets.hardy.alertVerdicts.unknown",
-                      "rules.ebikeAllowanceCentsPerMinute", "pace.planSdHundredths", "overheads.dockSeconds"])
+                      "rules.ebikeAllowanceCentsPerMinute", "pace.planSdHundredths", "pace.emaWeightPercent", "overheads.dockSeconds"])
     func rejectsAMissingRequiredKeyInAPresentSection(path: String) throws {
         var tree = try HandBuiltConfig.tree(HandBuiltM2cConfig.document)
         tree.set(path, nil)

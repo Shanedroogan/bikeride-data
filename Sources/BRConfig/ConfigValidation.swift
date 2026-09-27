@@ -185,6 +185,7 @@ public enum ConfigValidation {
                              "minHundredthsMph": pace.minHundredthsMph, "maxHundredthsMph": pace.maxHundredthsMph], "pace")
             issues.nonNegative(["learnAfterRides": pace.learnAfterRides, "planSdHundredths": pace.planSdHundredths], "pace")
             issues.check(pace.minHundredthsMph <= pace.maxHundredthsMph, "pace: minHundredthsMph must not exceed maxHundredthsMph")
+            issues.check((1...100).contains(pace.emaWeightPercent), "pace.emaWeightPercent: must be 1…100 (0 would never learn)")
         }
         if let speeds = d.speeds {
             let values = ["classicHundredthsMph": speeds.classicHundredthsMph, "ebikeHundredthsMph": speeds.ebikeHundredthsMph]

@@ -83,6 +83,11 @@ import Testing
         #expect(structural { $0.availability!.variance.inflationPercent = 150 }.isEmpty)
         #expect(structural { $0.availability!.variance.inflationPercent = 0 } == ["availability.variance.inflationPercent: must be positive"])
         #expect(structural { $0.pace!.relaxedPercent = 0 } == ["pace.relaxedPercent: must be positive"])
+        // The learning weight is a weight, and 0 would never learn.
+        #expect(structural { $0.pace!.emaWeightPercent = 100 }.isEmpty)
+        #expect(structural { $0.pace!.emaWeightPercent = 1 }.isEmpty)
+        #expect(structural { $0.pace!.emaWeightPercent = 0 } == ["pace.emaWeightPercent: must be 1…100 (0 would never learn)"])
+        #expect(structural { $0.pace!.emaWeightPercent = 101 } == ["pace.emaWeightPercent: must be 1…100 (0 would never learn)"])
     }
 
     @Test func negativeTimesAndCountsAreRejected() {

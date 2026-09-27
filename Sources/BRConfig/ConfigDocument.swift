@@ -694,8 +694,8 @@ public struct ConfigValetStation: Sendable, Equatable, Codable {
     /// absent = never valet.
     public var hours: [ConfigValetHours]?
     /// The last local date the ``hours`` apply, inclusive; after it the station is not valet.
-    /// Optional within format 1: absent = no end date. The compiler requires it whenever
-    /// ``hours`` is present, so a stale weekly schedule never applies silently.
+    /// Optional within format 1: absent = the ``hours`` never apply (not valet), so a stale weekly
+    /// schedule never applies silently. The compiler requires it whenever ``hours`` is present.
     public var validUntilDate: ServiceDate?
 
     public init(stationID: String, latE6: Int, lonE6: Int, hours: [ConfigValetHours]? = nil, validUntilDate: ServiceDate? = nil) {
@@ -1195,18 +1195,22 @@ public struct ConfigPace: Sendable, Equatable, Codable {
     public var maxHundredthsMph: Int
     /// A type's learned speed is used once it has this many rides.
     public var learnAfterRides: Int
+    /// The weight of each new ride in a type's moving average of effective speed, and in its
+    /// moving variance of the residuals (25 = each ride counts 25%, the history 75%).
+    public var emaWeightPercent: Int
     /// Before a scheduled boarding, ride times use the 60th-percentile speed: the average minus
     /// this many hundredths of a standard deviation (25 = 0.25 SD).
     public var planSdHundredths: Int
 
     public init(relaxedPercent: Int, typicalPercent: Int, fastPercent: Int, minHundredthsMph: Int, maxHundredthsMph: Int,
-                learnAfterRides: Int, planSdHundredths: Int) {
+                learnAfterRides: Int, emaWeightPercent: Int, planSdHundredths: Int) {
         self.relaxedPercent = relaxedPercent
         self.typicalPercent = typicalPercent
         self.fastPercent = fastPercent
         self.minHundredthsMph = minHundredthsMph
         self.maxHundredthsMph = maxHundredthsMph
         self.learnAfterRides = learnAfterRides
+        self.emaWeightPercent = emaWeightPercent
         self.planSdHundredths = planSdHundredths
     }
 }

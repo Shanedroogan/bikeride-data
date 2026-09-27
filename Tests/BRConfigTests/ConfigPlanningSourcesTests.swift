@@ -63,7 +63,7 @@ import Testing
             transferPenaltySeconds: 120, cautionPenaltySeconds: 180, bucketSeconds: 120, alternativesPerLayer: 3, enrichStopsPerLayer: 3
         ))
         #expect(document.pace == ConfigPace(relaxedPercent: 85, typicalPercent: 100, fastPercent: 115, minHundredthsMph: 500,
-                                            maxHundredthsMph: 1500, learnAfterRides: 3, planSdHundredths: 25))
+                                            maxHundredthsMph: 1500, learnAfterRides: 3, emaWeightPercent: 25, planSdHundredths: 25))
         #expect(document.speeds == ConfigSpeeds(classicHundredthsMph: 800, ebikeHundredthsMph: 1000))
         #expect(document.overheads == ConfigOverheads(unlockSeconds: 90, dockSeconds: 60))
 

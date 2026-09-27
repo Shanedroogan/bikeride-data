@@ -1091,7 +1091,7 @@ to the zone fare.
 | Key | Type | Meaning |
 |---|---|---|
 | `hours` | optional array of {`isoWeekdays`, `startMinute`, `endMinute`} | When the station is valet, local time (America/New_York): on each ISO weekday listed (1 = Monday … 7 = Sunday; ascending, no repeats), from `startMinute` (included) to `endMinute` (excluded), minutes after midnight, 0 ≤ start < end ≤ 1440. Sorted by (`isoWeekdays`, `startMinute`, `endMinute`); windows sharing a weekday don't overlap. Absent = never valet |
-| `validUntilDate` | optional string `YYYYMMDD` | The last local date `hours` applies, inclusive; after it the station is not valet. Absent = no end date. The compiler writes `hours` only with a `validUntilDate`, so a stale weekly schedule never applies silently |
+| `validUntilDate` | optional string `YYYYMMDD` | The last local date `hours` applies, inclusive; after it the station is not valet. Absent = the `hours` never apply (the station is not valet): a schedule applies only with an end date, so a stale weekly schedule never applies silently. The compiler also refuses `hours` without a `validUntilDate` |
 
 Valet is judged at the rider's arrival time: while valet, a drop-off's P is 1.
 
@@ -1185,6 +1185,7 @@ default seeded by the rider's pace setting):
 | `relaxedPercent`, `typicalPercent`, `fastPercent` | int > 0 | The pace presets as a percent of each type's speed (factors, so they may exceed 100). The rider may instead enter a speed |
 | `minHundredthsMph`, `maxHundredthsMph` | int > 0, min ≤ max | Learned and entered speeds are clamped to this range |
 | `learnAfterRides` | int | A type's learned speed (an exponential moving average of its effective speed, with the residual standard deviation) is used once it has this many rides |
+| `emaWeightPercent` | int 1–100 | The weight of each new ride in that average and in the moving variance of the residuals; the history keeps the rest |
 | `planSdHundredths` | int | Before a scheduled boarding, ride times use the 60th-percentile speed: the average minus this many hundredths of a standard deviation (25 = 0.25 SD) |
 
 `speeds`: `classicHundredthsMph` and `ebikeHundredthsMph` (int > 0; within `pace`'s clamp when
@@ -1197,5 +1198,4 @@ a ride takes unlock + ride + dock.
 realtime matcher tunables (their absent default is fixed when they are defined), the rail
 bike-hop tunables under `transit.links` (absent = the **Defaults** listed with the links' bike
 hops above; of the hop inputs, only the change after the bike and the holidays come from config
-today), and the weight of the speed-learning average under `pace` (its absent default is fixed,
-and written here, when it is defined).
+today).

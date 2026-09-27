@@ -102,5 +102,7 @@ containing a keyword of an earlier row (it could never decide a match). Names fr
 - Pace presets seed it: Relaxed 85%, Typical 100%, Fast 115% of each type's speed, or a speed the
   rider enters (clamped like a learned one).
 - Overheads: unlock 90 s, dock 60 s.
-- **Not here yet:** the average's weight. The plan says "an EMA" without one; it arrives as an
-  optional `pace` key when M6's speed learning defines it.
+- The average's weight: 25% per ride (`emaWeightPercent`), for the average and for the variance
+  of the residuals. The plan says "an EMA" without a weight; 25% follows a rider's change of habit
+  within about 4 rides while one unusual ride moves the speed by a quarter of its deviation. Set by
+  Claude on 2026-09-27 when M2c took on the per-type tracker; M6 tunes it on real rides.
