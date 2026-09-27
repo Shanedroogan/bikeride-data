@@ -49,6 +49,23 @@ import Testing
         #expect(structural { $0.availability!.bands.removeLast(2) }.isEmpty) // one band from 0 is enough
         #expect(structural { $0.availability!.bands[1].pickupFloorBikes = -1 }
             == ["availability.bands[1].pickupFloorBikes: must not be negative"])
+        // P(at least 0) is always 1: the counts are at least 1, while a floor of 0 is no floor.
+        #expect(structural { $0.availability!.bands[1].pickupFloorBikes = 0 }.isEmpty)
+        #expect(structural { $0.availability!.bands[0].pickupMinBikes = 0 } == ["availability.bands[0].pickupMinBikes: must be positive"])
+        #expect(structural { $0.availability!.bands[2].dropoffMinDocks = 0 } == ["availability.bands[2].dropoffMinDocks: must be positive"])
+        #expect(structural {
+            $0.availability!.pooled.pickupMinBikes = 0
+            $0.availability!.pooled.dropoffMinDocks = -1
+        } == ["availability.pooled.dropoffMinDocks: must be positive", "availability.pooled.pickupMinBikes: must be positive"])
+    }
+
+    /// A capped cold-start station is never "Likely" (the availability design's cold start).
+    @Test func theColdStartCapIsBelowTheTarget() {
+        #expect(structural { $0.availability!.coldStart.farMaxPercent = 90 }
+            == ["availability.coldStart.farMaxPercent: must be below targetPercent"])
+        #expect(structural { $0.availability!.targetPercent = 89 }
+            == ["availability.coldStart.farMaxPercent: must be below targetPercent"])
+        #expect(structural { $0.availability!.coldStart.farMaxPercent = 0 }.isEmpty)
     }
 
     @Test func probabilitiesAreZeroToOneHundredButFactorsMayExceedIt() {
@@ -171,8 +188,23 @@ import Testing
             == ["weather.alertKeywords: highWind has two rules (merge them)"])
         #expect(canonical { $0.weather!.alertKeywords[3].alertClass = .unknown }
             == ["weather.alertKeywords[3]: unknown is the class of no match, not a rule's"])
-        // Order between rules is the priority, not a sort: reordering is not a canonical issue.
-        #expect(canonical { $0.weather!.alertKeywords.reverse() }.isEmpty)
+        #expect(canonical { $0.weather!.alertKeywords[3].keywords = [" coastal flood"] }
+            == ["weather.alertKeywords: ' coastal flood' has surrounding whitespace"])
+        #expect(canonical { $0.weather!.alertKeywords[3].keywords = ["coastal flood\t"] }
+            == ["weather.alertKeywords: 'coastal flood\t' has surrounding whitespace"])
+        // Order between rules is the priority, not a sort: a reorder is fine unless it makes a
+        // keyword unreachable (one containing an earlier rule's never decides a match).
+        #expect(canonical { $0.weather!.alertKeywords.swapAt(0, 3) }.isEmpty)
+        #expect(canonical { $0.weather!.alertKeywords.reverse() }
+            == ["weather.alertKeywords: 'wind chill' can never match: it contains 'wind', which an earlier rule has"])
+        #expect(canonical { $0.weather!.alertKeywords[3].keywords = ["tornado warning"] }
+            == ["weather.alertKeywords: 'tornado warning' can never match: it contains 'tornado', which an earlier rule has"])
+        // PATH's table follows the same rules.
+        #expect(canonical { $0.alerts.pathKeywords[1].keywords = ["delay", "no service today"] }
+            == ["alerts.pathKeywords: 'no service today' can never match: it contains 'no service', which an earlier rule has"])
+        #expect(canonical { $0.alerts.pathKeywords[1].keywords = ["delay "] }
+            == ["alerts.pathKeywords: 'delay ' has surrounding whitespace"])
+        #expect(canonical { $0.alerts.pathKeywords.reverse() }.isEmpty)
         // Valet.
         #expect(canonical { $0.bikeShare.valet[0].validUntilDate = nil }
             == ["bikeShare.valet: abc-123 has hours but no validUntilDate (a stale schedule must not apply silently)"])

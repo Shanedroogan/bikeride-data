@@ -46,7 +46,8 @@ public enum ConfigSourceError: Error, Equatable, CustomStringConvertible {
 /// written as `325.0` or `3.25e2`. `null` counts as absent. CSV files need exactly the documented
 /// header. Set-like lists may be in any order in the sources: the document sorts them. The M2c
 /// bike-planning sections come from optional files (``planningFiles``): a section whose file is
-/// absent is absent from the document.
+/// absent is absent from the document. Any other file in ``planningDirectory`` fails the build
+/// (a misspelled name would otherwise just drop its section, silently turning bike planning off).
 public struct ConfigSources: Sendable {
     public let root: URL
 
@@ -84,6 +85,9 @@ public struct ConfigSources: Sendable {
         ("overheads", "config/planning/overheads.json"),
     ]
     public static let weatherAlertKeywordsFile = "config/planning/weather-alert-keywords.csv"
+    /// Where ``planningFiles`` live. Besides them, ``weatherAlertKeywordsFile`` and `SOURCES.md`,
+    /// it may hold only names starting with `.` (Finder's `.DS_Store`), which are ignored.
+    public static let planningDirectory = "config/planning"
 
     /// Every file ``load()`` reads, relative to ``root``, sorted.
     public func files() throws -> [String] {
@@ -105,6 +109,7 @@ public struct ConfigSources: Sendable {
             bikeShare: try bikeShare(),
             alerts: ConfigAlerts(pathKeywords: try pathKeywords())
         )
+        try checkPlanningDirectory()
         document.availability = try optionalJSON(ConfigAvailability.self, Self.planningFile("availability"))
         document.rules = try rules()
         document.weather = try weather()
@@ -118,6 +123,28 @@ public struct ConfigSources: Sendable {
 
     static func planningFile(_ section: String) -> String {
         planningFiles.first { $0.section == section }!.file
+    }
+
+    /// Fails on anything in ``planningDirectory`` (when it exists) that isn't one of its sources,
+    /// `SOURCES.md` or a name starting with `.`.
+    private func checkPlanningDirectory() throws {
+        let directory = root.appendingPathComponent(Self.planningDirectory)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) else { return }
+        guard isDirectory.boolValue else {
+            throw ConfigSourceError.invalidValue(file: Self.planningDirectory, message: "is not a directory")
+        }
+        let known = (Self.planningFiles.map(\.file) + [Self.weatherAlertKeywordsFile]).map { String($0.split(separator: "/").last!) }
+            + ["SOURCES.md"]
+        let stray = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { !$0.hasPrefix(".") && !known.contains($0) }
+            .sorted(by: Self.bytes(\.self))
+        guard stray.isEmpty else {
+            throw ConfigSourceError.invalidValue(
+                file: Self.planningDirectory,
+                message: "\(stray.joined(separator: ", ")): not a bike-planning source (expected only "
+                    + known.sorted(by: Self.bytes(\.self)).joined(separator: ", ") + "; a misspelled name would drop its section)")
+        }
     }
 
     // MARK: - Sections
@@ -256,9 +283,12 @@ public struct ConfigSources: Sendable {
     static func valetHours(_ row: Row) throws -> [ConfigValetHours]? {
         let cell = row["hours"]
         guard !cell.isEmpty else { return nil }
+        // Only ASCII digits: `Int` alone would take `+7`, and a digit carrying a combining mark
+        // (one Character, not ASCII) must not reach the weekday conversion below.
+        func isDigit(_ c: Character, _ digits: ClosedRange<Character> = "0"..."9") -> Bool { c.isASCII && digits.contains(c) }
         func minute(_ text: Substring) -> Int? {
             let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-            guard parts.count == 2, parts[0].count == 2, parts[1].count == 2, parts.allSatisfy({ $0.allSatisfy(\.isASCII) }),
+            guard parts.count == 2, parts[0].count == 2, parts[1].count == 2, parts.allSatisfy({ $0.allSatisfy { isDigit($0) } }),
                   let hour = Int(parts[0]), let minute = Int(parts[1]), (0...24).contains(hour), (0...59).contains(minute),
                   hour < 24 || minute == 0 else { return nil }
             return hour * 60 + minute
@@ -266,11 +296,11 @@ public struct ConfigSources: Sendable {
         let windows = try cell.split(separator: "|", omittingEmptySubsequences: false).map { text -> ConfigValetHours in
             let fields = text.split(separator: " ", omittingEmptySubsequences: false)
             let times = fields.count == 2 ? fields[1].split(separator: "-", omittingEmptySubsequences: false) : []
-            guard fields.count == 2, !fields[0].isEmpty, fields[0].allSatisfy({ ("1"..."7").contains($0) }), times.count == 2,
+            guard fields.count == 2, !fields[0].isEmpty, fields[0].allSatisfy({ isDigit($0, "1"..."7") }), times.count == 2,
                   let start = minute(times[0]), let end = minute(times[1]) else {
                 throw row.error("hours window '\(text)' is not '<weekday digits 1–7> HH:MM-HH:MM'")
             }
-            return ConfigValetHours(isoWeekdays: fields[0].map { Int(String($0))! }.sorted(), startMinute: start, endMinute: end)
+            return ConfigValetHours(isoWeekdays: fields[0].compactMap(\.wholeNumberValue).sorted(), startMinute: start, endMinute: end)
         }
         return windows.sorted { a, b in
             a.isoWeekdays != b.isoWeekdays ? a.isoWeekdays.lexicographicallyPrecedes(b.isoWeekdays)

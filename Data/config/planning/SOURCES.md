@@ -5,7 +5,9 @@ The six optional bike-planning sections of the `config` artifact: `availability`
 `docs/formats.md`). Each section comes from its own file here and is in the document exactly
 when the file exists: nothing is compiled in, so config sources from before M2c (such as a pinned
 Tier B fixture's) still compile to the bytes they always did. The app plans bikes only when all
-six are present. The files are read strictly, like every config source.
+six are present. The files are read strictly, like every config source. Nothing else may be in
+this directory (names starting with `.`, such as Finder's `.DS_Store`, are ignored): a misspelled
+file name fails the build instead of quietly dropping its section and with it bike planning.
 
 | File | Artifact key |
 |---|---|
@@ -79,7 +81,9 @@ yet: M6's backtest and ride logs tune them.
   cover and ice rules.
 - `weather-alert-keywords.csv`: `class,keywords`, keywords separated by `|`, rows in priority
   order (the first rule with a keyword the lowercased alert event or summary contains wins; no
-  match is `unknown`, which is caution). Names from NWS's event list (api.weather.gov/alerts/types),
+  match is `unknown`, which is caution). The compiler checks the keywords like
+`alerts/path-keywords.csv`'s: lowercase, no surrounding spaces, each in one row, and none
+containing a keyword of an earlier row (it could never decide a match). Names from NWS's event list (api.weather.gov/alerts/types),
   which WeatherKit's summaries follow. Order matters: `winterIce` comes before `highWind`, so a
   Wind Chill alert is cold, not wind; "Extreme Cold" is `winterIce`, "Extreme Wind" `highWind`.
   `informational` (allow): coastal flood, rip current and air quality (the M2c review), plus beach

@@ -1035,7 +1035,8 @@ public struct ConfigWeatherPreset: Sendable, Equatable, Codable {
     /// …(when present, only if the hour's forecast amount is also ≥ this per hour). Optional:
     /// absent = the chance alone blocks.
     public var rainBlockRateHundredthsInPerHour: Int?
-    /// Hourly chance ≥ this (and below the block chance) is caution.
+    /// Hourly chance ≥ this (and not blocked) is caution: with ``rainBlockRateHundredthsInPerHour``,
+    /// an hour at or over the block chance but under the rate is caution, not allow.
     public var rainCautionHourlyChancePercent: Int
     /// Rain before the ride: at least this much over the lookback is caution.
     public var rainBeforeHundredthsIn: Int

@@ -7,7 +7,7 @@ import BRCore
 ///   uniqueness, a complete LIRR zone matrix). ``MappedConfig`` rejects a document that fails one.
 /// - ``canonicalIssues(_:)``: those, plus the writer's rules (set-like arrays sorted by UTF-8
 ///   bytes, system-qualified ids, holidays on weekdays, CityTicket only in zones 1 and 3,
-///   lowercase alert keywords). The compiler refuses to write a document that fails one.
+///   lowercase and reachable alert keywords). The compiler refuses to write a document that fails one.
 ///
 /// Each issue is one line naming the key path, e.g. `fares.lirr.zoneFares: no fare for zones 1–3`.
 public enum ConfigValidation {
@@ -207,6 +207,8 @@ public enum ConfigValidation {
                         "variance.crossBinCorrelationPercent": a.variance.crossBinCorrelationPercent,
                         "coldStart.farMaxPercent": a.coldStart.farMaxPercent], "availability")
         issues.check(a.tightMinPercent <= a.targetPercent, "availability.tightMinPercent: must not exceed targetPercent")
+        // A capped cold-start station is never "Likely".
+        issues.check(a.coldStart.farMaxPercent < a.targetPercent, "availability.coldStart.farMaxPercent: must be below targetPercent")
         if a.bands.isEmpty {
             issues.add("availability.bands: empty")
         } else {
@@ -218,17 +220,18 @@ public enum ConfigValidation {
             issues.check(last < a.pooled.afterSeconds,
                          "availability.bands: the last band starts at \(last) s, not before pooled.afterSeconds \(a.pooled.afterSeconds)")
         }
+        // The counts P is asked about are at least 1 (P of ≥ 0 is always 1); a floor of 0 is no floor.
         for (index, band) in a.bands.enumerated() {
-            issues.nonNegative(["fromSeconds": band.fromSeconds, "pickupMinBikes": band.pickupMinBikes, "dropoffMinDocks": band.dropoffMinDocks,
-                                "pickupFloorBikes": band.pickupFloorBikes, "dropoffFloorDocks": band.dropoffFloorDocks],
-                               "availability.bands[\(index)]")
+            issues.nonNegative(["fromSeconds": band.fromSeconds, "pickupFloorBikes": band.pickupFloorBikes,
+                                "dropoffFloorDocks": band.dropoffFloorDocks], "availability.bands[\(index)]")
+            issues.positive(["pickupMinBikes": band.pickupMinBikes, "dropoffMinDocks": band.dropoffMinDocks], "availability.bands[\(index)]")
         }
         issues.positive(["pooled.afterSeconds": a.pooled.afterSeconds, "pooled.radiusMeters": a.pooled.radiusMeters,
+                         "pooled.pickupMinBikes": a.pooled.pickupMinBikes, "pooled.dropoffMinDocks": a.pooled.dropoffMinDocks,
                          "pooled.maxStations": a.pooled.maxStations, "trend.maxGapSeconds": a.trend.maxGapSeconds,
                          "variance.inflationPercent": a.variance.inflationPercent, "coldStart.neighborCount": a.coldStart.neighborCount,
                          "coldStart.radiusMeters": a.coldStart.radiusMeters], "availability")
-        issues.nonNegative(["pooled.pickupMinBikes": a.pooled.pickupMinBikes, "pooled.dropoffMinDocks": a.pooled.dropoffMinDocks,
-                            "reroute.minHorizonSeconds": a.reroute.minHorizonSeconds, "trend.minWatchSeconds": a.trend.minWatchSeconds,
+        issues.nonNegative(["reroute.minHorizonSeconds": a.reroute.minHorizonSeconds, "trend.minWatchSeconds": a.trend.minWatchSeconds,
                             "trend.windowSeconds": a.trend.windowSeconds, "trend.maxStepCount": a.trend.maxStepCount], "availability")
         issues.check(a.trend.windowSeconds >= a.trend.minWatchSeconds, "availability.trend.windowSeconds: must be at least minWatchSeconds")
     }
@@ -370,13 +373,9 @@ public enum ConfigValidation {
             }
         }
 
-        var seenKeywords = Set<String>(), seenSeverities = Set<ConfigAlertSeverity>()
-        for (index, rule) in d.alerts.pathKeywords.enumerated() {
-            issues.ascending(rule.keywords.map { [$0] }, "alerts.pathKeywords[\(index)].keywords")
-            for keyword in rule.keywords {
-                if keyword != keyword.lowercased() { issues.add("alerts.pathKeywords: '\(keyword)' must be lowercase") }
-                if !seenKeywords.insert(keyword).inserted { issues.add("alerts.pathKeywords: '\(keyword)' is in two rules") }
-            }
+        keywordTable(d.alerts.pathKeywords.map(\.keywords), "alerts.pathKeywords", &issues)
+        var seenSeverities = Set<ConfigAlertSeverity>()
+        for rule in d.alerts.pathKeywords {
             if !seenSeverities.insert(rule.severity).inserted {
                 issues.add("alerts.pathKeywords: \(rule.severity.rawValue) has two rules (merge them)")
             }
@@ -391,18 +390,35 @@ public enum ConfigValidation {
         // The weather alert keywords follow the PATH keywords' rules, and `unknown` (what no match
         // gives) is never a rule's class.
         if let weather = d.weather {
-            var seenWeatherKeywords = Set<String>(), seenClasses = Set<ConfigWeatherAlertClass>()
+            keywordTable(weather.alertKeywords.map(\.keywords), "weather.alertKeywords", &issues)
+            var seenClasses = Set<ConfigWeatherAlertClass>()
             for (index, rule) in weather.alertKeywords.enumerated() {
-                issues.ascending(rule.keywords.map { [$0] }, "weather.alertKeywords[\(index)].keywords")
-                for keyword in rule.keywords {
-                    if keyword != keyword.lowercased() { issues.add("weather.alertKeywords: '\(keyword)' must be lowercase") }
-                    if !seenWeatherKeywords.insert(keyword).inserted { issues.add("weather.alertKeywords: '\(keyword)' is in two rules") }
-                }
                 if rule.alertClass == .unknown {
                     issues.add("weather.alertKeywords[\(index)]: unknown is the class of no match, not a rule's")
                 }
                 if !seenClasses.insert(rule.alertClass).inserted {
                     issues.add("weather.alertKeywords: \(rule.alertClass.rawValue) has two rules (merge them)")
+                }
+            }
+        }
+    }
+
+    /// The writer's rules for an ordered first-match keyword table (PATH and weather alerts): each
+    /// rule's keywords sorted, lowercase, without surrounding whitespace (a stray space changes
+    /// the substring matched), each in one rule only, and none unreachable (a keyword containing
+    /// an earlier rule's keyword never decides a match).
+    private static func keywordTable(_ rules: [[String]], _ path: String, _ issues: inout Issues) {
+        var seen = Set<String>()
+        for (index, keywords) in rules.enumerated() {
+            issues.ascending(keywords.map { [$0] }, "\(path)[\(index)].keywords")
+            for keyword in keywords {
+                if keyword != keyword.lowercased() { issues.add("\(path): '\(keyword)' must be lowercase") }
+                if keyword.first?.isWhitespace == true || keyword.last?.isWhitespace == true {
+                    issues.add("\(path): '\(keyword)' has surrounding whitespace")
+                }
+                if !seen.insert(keyword).inserted { issues.add("\(path): '\(keyword)' is in two rules") }
+                for earlier in rules[..<index].joined() where earlier != keyword && !earlier.isEmpty && keyword.contains(earlier) {
+                    issues.add("\(path): '\(keyword)' can never match: it contains '\(earlier)', which an earlier rule has")
                 }
             }
         }

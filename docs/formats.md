@@ -934,8 +934,12 @@ payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macO
   never the value some app build compiled in. Every key listed below is required unless marked
   optional.
 - A required key never changes type, unit or meaning without a formatVersion bump. Units are in
-  the names of quantities: `…Cents`, `…Seconds`, `…Minutes`, `…Meters`, `…Percent`,
-  `…HundredthsMph`, `…E6` (microdegrees).
+  the names of quantities: `…Cents`, `…CentsPerMinute`, `…Seconds`, `…Minutes`, `…Minute`
+  (minutes after local midnight), `…Hours`, `…Meters`, `…Percent`, `…Mph`, `…HundredthsMph`,
+  `…F` (°F, signed), `…TenthsIn` (tenths of an inch), `…HundredthsIn`, `…HundredthsInPerHour`,
+  `…Hundredths` (hundredths of a unitless quantity, e.g. of a standard deviation), `…E6`
+  (microdegrees). Counts are named for what they count (`…Bikes`, `…Docks`, `…Rides`,
+  `…Stations`, `…Count`).
 - Enum strings are strict: an unknown value fails the decode, so the set fails verification and
   is not switched to. A new value needs a bump (or a new optional key that carries it).
 - `null` reads as absent. Writers omit an absent optional.
@@ -952,14 +956,17 @@ transfers) below 65,535, disjoint vehicle types, no fixed transfer listed twice 
 direction), and, in each M2c section that is present (never when it is absent): probabilities
 and weights (`…Percent`, but for the factors `pace.*Percent` and
 `availability.variance.inflationPercent`) within 0–100, availability bands starting at 0 and
-strictly ascending with the last starting before `pooled.afterSeconds`, ordered weather
-thresholds, a guardrail default among its choices, speeds within the pace clamp (when both are
-present), valet windows inside 0–1440 on ISO weekdays 1–7. The compiler also applies the writer's *canonical*
+strictly ascending with the last starting before `pooled.afterSeconds`, the counts P is asked
+about (`…MinBikes`, `…MinDocks`) at least 1, the cold-start cap below `targetPercent`, ordered
+weather thresholds, a guardrail default among its choices, speeds within the pace clamp (when
+both are present), valet windows inside 0–1440 on ISO weekdays 1–7. The compiler also applies the writer's *canonical*
 rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
 never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
 holidays Monday–Friday, CityTicket stations only in zones 1 and 3, `nycTerminals` in zone 1,
-the Far Rockaway destination zone in use, lowercase alert keywords each in one rule (PATH and
-weather alike; a class or severity has one rule, and no weather rule has the class `unknown`),
+the Far Rockaway destination zone in use, lowercase alert keywords without surrounding
+whitespace, each in one rule and none containing an earlier rule's keyword, which would make it
+unreachable (PATH and weather alike; a class or severity has one rule, and no weather rule has
+the class `unknown`),
 excluded bike-share regions disjoint from the service area, valet hours only with a
 `validUntilDate` and without overlapping windows. Cross-artifact checks (the ids resolve in
 `tt-*` and `stations`) are not the reader's: `ReferenceChecks` in BRBuild runs them in the
@@ -1090,7 +1097,9 @@ Valet is judged at the rider's arrival time: while valet, a drop-off's P is 1.
 
 `alerts.pathKeywords`: ordered rules {`keywords`, `severity`}. PATH alert titles have no type;
 the first rule with a keyword the lowercased title contains gives the severity, and no match is
-`info`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only.
+`info`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only (the
+compiler also refuses surrounding whitespace and a keyword containing an earlier rule's, which
+could never decide a match).
 `severity`: `noService`, `suspended`, `partSuspended`, `detour`, `reroute`, `stopsSkipped`,
 `severeDelays`, `expressToLocal`, `delays`, `reducedService`, `plannedWork` or `info`.
 
@@ -1107,12 +1116,12 @@ effective horizon, the time to the rider's arrival there plus the age of its las
 | `targetPercent` | int, 0–100 | A station passes when its P reaches this |
 | `itineraryMinPercent` | int, 0–100 | An itinerary passes when the product of its stations' P reaches this |
 | `tightMinPercent` | int, 0–100, ≤ `targetPercent` | The lowest P labelled "Tight" |
-| `bands` | ordered array of {`fromSeconds`, `pickupMinBikes`, `dropoffMinDocks`, `pickupFloorBikes`, `dropoffFloorDocks`} | By τ: the first starts at 0, `fromSeconds` strictly ascends, each band runs to the next one's start and the last to `pooled.afterSeconds` inclusive (so it starts before it). P is P(at least `pickupMinBikes` bikes of the chosen type) at pickup and P(at least `dropoffMinDocks` open docks) at drop-off; a station reporting fewer than the floor now (bikes of the chosen type, or open docks) fails outright |
-| `pooled` | {`afterSeconds`, `radiusMeters`, `discountPercent`, `maxStations`, `pickupMinBikes`, `dropoffMinDocks`} | Pooled mode, for τ above `afterSeconds` and for depart-at: the target plus filtered stations within `radiusMeters` (straight line), at most `maxStations` counting the target, nearest walk first. P_pool = 1 − Π(1 − P_j), each at its own τ; P_adj = P_target + (P_pool − P_target) × (100 − `discountPercent`) / 100 must reach `targetPercent`. `pickupMinBikes` and `dropoffMinDocks` are the counts P is computed for in pooled mode |
+| `bands` | ordered array of {`fromSeconds`, `pickupMinBikes`, `dropoffMinDocks`, `pickupFloorBikes`, `dropoffFloorDocks`} | By τ: the first starts at 0, `fromSeconds` strictly ascends, each band runs to the next one's start and the last to `pooled.afterSeconds` inclusive (so it starts before it). P is P(at least `pickupMinBikes` bikes of the chosen type) at pickup and P(at least `dropoffMinDocks` open docks) at drop-off (both ≥ 1); a station reporting fewer than the floor now (bikes of the chosen type, or open docks) fails outright |
+| `pooled` | {`afterSeconds`, `radiusMeters`, `discountPercent`, `maxStations`, `pickupMinBikes`, `dropoffMinDocks`} | Pooled mode, for τ above `afterSeconds` and for depart-at: the target plus filtered stations within `radiusMeters` (straight line), at most `maxStations` counting the target, nearest walk first. P_pool = 1 − Π(1 − P_j), each at its own τ; P_adj = P_target + (P_pool − P_target) × (100 − `discountPercent`) / 100 must reach `targetPercent`. `pickupMinBikes` and `dropoffMinDocks` (≥ 1) are the counts P is computed for in pooled mode |
 | `reroute` | {`belowPercent`, `minHorizonSeconds`} | During a ride: re-route when the dock's P falls below `belowPercent` while τ ≥ `minHorizonSeconds`, and closer than that only when it reports no open dock |
 | `trend` | {`minWatchSeconds`, `windowSeconds` ≥ `minWatchSeconds`, `weightPercent`, `maxStepCount`, `maxGapSeconds`} | The observed-trend blend: a station watched for `minWatchSeconds` (reports spanning it, no gap over `maxGapSeconds`) blends its drift over the last `windowSeconds`, ignoring report-to-report jumps larger than `maxStepCount`, into the model's net flow with weight `weightPercent` |
 | `variance` | {`crossBinCorrelationPercent` 0–100, `inflationPercent` > 0} | How flows' 15-minute bins add up over a horizon: ρ between bins' over-dispersion (0 = independent), and a scale on the summed variance (100 = as the flows give it; a factor, so it may exceed 100) |
-| `coldStart` | {`neighborCount`, `radiusMeters`, `farMaxPercent`} | A station with no flows row takes the capacity-scaled average of its `neighborCount` nearest stations with trips within `radiusMeters`; with none that close, the nearest ones anyway, with P capped at `farMaxPercent` |
+| `coldStart` | {`neighborCount`, `radiusMeters`, `farMaxPercent`} | A station with no flows row takes the capacity-scaled average of its `neighborCount` nearest stations with trips within `radiusMeters`; with none that close, the nearest ones anyway, with P capped at `farMaxPercent` (below `targetPercent`, so such a station is never "Likely") |
 
 `rules` (bike itineraries; T0 is the no-bike baseline's arrival):
 
@@ -1141,7 +1150,7 @@ effective horizon, the time to the rider's arrival there plus the age of its las
 | `untimedAlertHours` | int | An alert without an onset and end (WeatherKit's) gates rides starting within this of the fetch |
 | `clearWithinSeconds` | int | A blocked leg offers "Leave at …" when the block clears within this |
 | `presets` | {`everyday`, `fairWeather`, `hardy`}, all required | One preset each (below) |
-| `alertKeywords` | ordered array of {`class`, `keywords`} | Alerts have no reliable type: the first rule with a keyword the lowercased alert event (or summary) contains gives its class; no match is `unknown`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only; a class has at most one rule; `unknown` is never a rule's class. The order matters (a wind chill alert is `winterIce`, not `highWind`) |
+| `alertKeywords` | ordered array of {`class`, `keywords`} | Alerts have no reliable type: the first rule with a keyword the lowercased alert event (or summary) contains gives its class; no match is `unknown`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only (and, for the compiler, trimmed and none containing an earlier rule's); a class has at most one rule; `unknown` is never a rule's class. The order matters (a wind chill alert is `winterIce`, not `highWind`) |
 
 A weather preset. Measured values are real numbers and the thresholds integers: "≥" and "≤"
 are inclusive, "below" and "above" strict. Temperatures (`…F`, °F) may be negative; every other
@@ -1186,6 +1195,7 @@ a ride takes unlock + ride + dock.
 
 **Not in format 1**, each to arrive within it as an optional key with the default named here: the
 realtime matcher tunables (their absent default is fixed when they are defined), the rail
-bike-hop tunables under `transit.links` (absent = `HopOptions`' own values; of the hop inputs,
-only the change after the bike and the holidays come from config today), and the weight of the
-speed-learning average under `pace` (absent = the app's own value).
+bike-hop tunables under `transit.links` (absent = the **Defaults** listed with the links' bike
+hops above; of the hop inputs, only the change after the bike and the holidays come from config
+today), and the weight of the speed-learning average under `pace` (its absent default is fixed,
+and written here, when it is defined).

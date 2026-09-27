@@ -179,6 +179,35 @@ import Testing
         #expect(try !ConfigSources(root: root).files().contains(ConfigSources.weatherAlertKeywordsFile))
     }
 
+    /// Only the planning sources (and SOURCES.md) may be in `config/planning/`: a misspelled
+    /// name would otherwise drop its section, and bike planning with it, without a word.
+    @Test func aStrayFileInPlanningFailsTheBuild() throws {
+        let known = "SOURCES.md, availability.json, overheads.json, pace.json, rules.json, speeds.json, weather-alert-keywords.csv, weather.json"
+        func strayError(_ edit: (URL) throws -> Void) throws -> ConfigSourceError? {
+            do { _ = try load { try edit($0.appendingPathComponent("config/planning")) }; return nil } catch let error as ConfigSourceError { return error }
+        }
+        func stray(_ names: String) -> ConfigSourceError {
+            .invalidValue(file: "config/planning",
+                          message: "\(names): not a bike-planning source (expected only \(known); a misspelled name would drop its section)")
+        }
+        #expect(try strayError { dir in
+            try FileManager.default.moveItem(at: dir.appendingPathComponent("availability.json"), to: dir.appendingPathComponent("availabilty.json"))
+        } == stray("availabilty.json"))
+        #expect(try strayError { try Data("{}".utf8).write(to: $0.appendingPathComponent("extra.json")) } == stray("extra.json"))
+        #expect(try strayError { dir in
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("old"), withIntermediateDirectories: false)
+            try Data("{}".utf8).write(to: dir.appendingPathComponent("rules.json~"))
+        } == stray("old, rules.json~"))
+        // Hidden files (Finder's .DS_Store) are ignored; the committed directory passes as is.
+        #expect(try strayError { try Data([0, 0, 0, 1]).write(to: $0.appendingPathComponent(".DS_Store")) } == nil)
+        // Removing a known file is still just an absent section.
+        #expect(try strayError { try FileManager.default.removeItem(at: $0.appendingPathComponent("pace.json")) } == nil)
+        #expect(try strayError { dir in
+            try FileManager.default.removeItem(at: dir)
+            try Data().write(to: dir)
+        } == .invalidValue(file: "config/planning", message: "is not a directory"))
+    }
+
     // MARK: - Strictness
 
     @Test func unknownAndMisspelledKeysFailTheBuild() throws {
@@ -248,6 +277,17 @@ import Testing
             == .invalidCSV(file: file, message: "header is severity,keywords, expected class,keywords"))
         #expect(try loadError(file) { $0.replacingOccurrences(of: "extremeHeat,heat", with: "extremeHeat,heat|") }
             == .invalidDocument(["weather.alertKeywords[3]: empty keyword"]))
+        // A stray space changes the substring matched.
+        #expect(try loadError(file) { $0.replacingOccurrences(of: "extremeHeat,heat", with: "extremeHeat, heat") }
+            == .invalidDocument(["weather.alertKeywords: ' heat' has surrounding whitespace"]))
+        #expect(try loadError(file) { $0.replacingOccurrences(of: "tropical storm", with: "tropical storm ") }
+            == .invalidDocument(["weather.alertKeywords: 'tropical storm ' has surrounding whitespace"]))
+        // A keyword containing an earlier row's can never decide a match: highWind before winterIce
+        // would make every wind chill alert high wind.
+        #expect(try loadError(file) {
+            $0.replacingOccurrences(of: "highWind,wind|hurricane|tropical storm\n", with: "")
+                .replacingOccurrences(of: "thunderstorm,thunderstorm\n", with: "thunderstorm,thunderstorm\nhighWind,wind|hurricane|tropical storm\n")
+        } == .invalidDocument(["weather.alertKeywords: 'wind chill' can never match: it contains 'wind', which an earlier rule has"]))
         // Keywords within a rule may be in any order in the source; the rules' order is kept.
         let loaded = try load { root in
             let url = root.appendingPathComponent(file)
@@ -305,7 +345,11 @@ import Testing
         for (bad, window) in [("12345", "12345"), ("12345 7:00-19:00", "12345 7:00-19:00"), ("12345 07:00-19:60", "12345 07:00-19:60"),
                               ("12345 07:00-24:30", "12345 07:00-24:30"), ("08 07:00-19:00", "08 07:00-19:00"),
                               ("12345  07:00-19:00", "12345  07:00-19:00"), ("12345 07:00-19:00|", ""), ("12345 07:00", "12345 07:00"),
-                              ("１ 07:00-19:00", "１ 07:00-19:00")] {
+                              // Only ASCII digits: a fullwidth digit, a digit with a combining mark (one
+                              // Character, which a range of Characters would admit), a sign `Int` would take.
+                              ("１ 07:00-19:00", "１ 07:00-19:00"), ("1\u{303} 07:00-19:00", "1\u{303} 07:00-19:00"),
+                              ("1 +7:00-+9:00", "1 +7:00-+9:00"), ("1 07:+0-09:00", "1 07:+0-09:00"),
+                              ("1 07:00-0\u{663}:00", "1 07:00-0\u{663}:00")] {
             #expect(try valetError(row(bad))
                 == .invalidCSV(file: file, message: "record 2: hours window '\(window)' is not '<weekday digits 1–7> HH:MM-HH:MM'"), "\(bad)")
         }
