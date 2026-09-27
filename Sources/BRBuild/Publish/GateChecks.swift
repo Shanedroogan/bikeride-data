@@ -263,7 +263,8 @@ public enum GateChecks {
         }
         return .verdict("snapping", checked: true,
                         summary: failures.isEmpty ? "\(inside) routable stops in the service area reach the street within \(Int(maxSnapMeters)) m"
-                                                  : "\(failures.count) routable stop(s) fail street access or snapping",
+                                 : inside == 0 ? "no routable stop in the service area to check"
+                                 : "\(failures.count) routable stop(s) fail street access or snapping",
                         failures: failures, warnings: warnings, notes: notes,
                         metrics: ["stopsInServiceArea": Double(inside), "stopsOutside": Double(outside), "maxSnapMetersWithinLimit": worst,
                                   "allowlisted": Double(used.count)])
