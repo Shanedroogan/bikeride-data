@@ -571,7 +571,7 @@ L station links.
 | stopStationStart | `array<u32>`, T + 1 | |
 | stopStationStation | `array<u32>`, L | Station index |
 | stopStationEnter, stopStationExit | `array<u16>`, L each | The same links, indexed by stop |
-| extensions | extension tail | See Compatibility. Id 1: the rail bike hops (below), written whenever the links were built with stations; a reader that skips it, or a file without it, has no bike hops, which is still correct. Readers skip every other id |
+| extensions | extension tail | See Compatibility. Id 1: the rail bike hops (below), written whenever the links were built with stations and hops enabled (`HopOptions.enabled`, the default; the CLI has no switch for it); a reader that skips it, or a file without it, has no bike hops, which is still correct. Readers skip every other id |
 
 Nothing follows the tail.
 
@@ -653,7 +653,7 @@ Counts: T global stops (as above), H hops, kP pickup and kD dock slots per hop.
 | hopDock | `array<u16>`, H · kD | The same, for docks |
 | hopMinDecameters | `array<u16>`, H | The least matrix distance over the stored tuples with a path (a pruning bound) |
 | hopMinWalkSeconds | `array<u16>`, H | The least exit(u) + enter(d) over the same tuples (per parent: its nearest platform), station access included |
-| hopFlags | `array<u8>`, H | Bit 0: some trip (any day) rides A → B without a change, but it did not beat the bike at midday. A hint. Bits 1–7 are undefined: written 0, ignored by readers |
+| hopFlags | `array<u8>`, H | Bit 0: some trip (any day) rides A → B without a change; with the one-seat rule on (`HopOptions.oneSeatFilter`, the default; the CLI has no switch for it) the hop was kept because none beat the bike at midday. A hint. Bits 1–7 are undefined: written 0, ignored by readers |
 
 The nine parameters are `u32`s in the order above, from the block's first byte. The arrays are
 8-aligned relative to the block, which the tail places 8-aligned in the payload, so they view in
