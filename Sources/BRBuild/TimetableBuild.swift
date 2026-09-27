@@ -221,10 +221,14 @@ public struct TimetableBuild: Sendable {
         let fallbackSlots = Set(all.filter(\.isFallback).map(\.slot))
         var failedSlots = Set<String>()
         var specs: [GTFSFeedSpec] = []
+        func warn(_ message: String) {
+            warnings.append(message)
+            log("  warning: \(message)")
+        }
         for spec in all where !spec.isFallback {
             if !offline {
                 do {
-                    let fetched = try fetcher.fetch(spec)
+                    let fetched = try fetcher.fetch(spec, warn: warn)
                     log("  fetch \(spec.name): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
                 } catch {
                     guard fallbackSlots.contains(spec.slot) else { throw error }
@@ -242,7 +246,7 @@ public struct TimetableBuild: Sendable {
         for spec in all where spec.isFallback && failedSlots.contains(spec.slot) {
             if !offline {
                 do {
-                    let fetched = try fetcher.fetch(spec)
+                    let fetched = try fetcher.fetch(spec, warn: warn)
                     log("  fetch \(spec.name) (fallback): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
                 } catch {
                     warnings.append("fallback \(spec.name) not refreshed (\(error))")

@@ -74,7 +74,10 @@ public struct GTFSDownloadRecord: Codable, Sendable, Equatable {
 /// `<directory>/<feed>.zip` is the current version. With an ``archive`` (the default,
 /// `<directory>/archive`), every version the fetcher has held is kept there too: the current zip
 /// is added before a download replaces it and the new one right after, so an older version stays
-/// available for the dates a newer one no longer covers (``GTFSSourceArchive``).
+/// available for the dates a newer one no longer covers (``GTFSSourceArchive``). Archiving is
+/// best-effort: a version whose calendar cannot be read (a malformed row, an HTML error page
+/// served with 200) is not archived and the fetch goes on, so the next fetch still reaches the
+/// server; the build then fails when it parses that zip, as it did before the archive existed.
 public struct GTFSFetcher: Sendable {
     public static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 bikeride-data"
 
@@ -103,8 +106,9 @@ public struct GTFSFetcher: Sendable {
     }
 
     /// Refreshes one feed. Returns its record; the zip is replaced only on a 200 response.
+    /// `warn` receives archiving problems, which never fail the fetch.
     @discardableResult
-    public func fetch(_ feed: GTFSFeedSpec, now: Date = Date()) throws -> GTFSDownloadRecord {
+    public func fetch(_ feed: GTFSFeedSpec, now: Date = Date(), warn: (String) -> Void = { _ in }) throws -> GTFSDownloadRecord {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let archive = archiveURL(for: feed)
         let partial = directory.appendingPathComponent("\(feed.name).zip.partial")
@@ -114,7 +118,7 @@ public struct GTFSFetcher: Sendable {
         let previous = self.record(for: feed)
         // The zip about to be replaced must already be in the archive (it is, unless it was
         // downloaded before the archive existed).
-        if haveArchive { try archiveCurrent(feed, record: previous, now: now) }
+        if haveArchive { archiveCurrentBestEffort(feed, record: previous, now: now, warn: warn) }
         var args = ["-sS", "-L", "--fail", "-R", "-A", Self.userAgent, "--retry", "2",
                     "-o", partial.path, "-D", headers.path, "-w", "%{http_code}"]
         if haveArchive {
@@ -162,15 +166,30 @@ public struct GTFSFetcher: Sendable {
             record.downloadedAt = iso.string(from: now)
             record.bytes = (try? FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? Int) ?? 0
             record.notModified = false
-            try archiveCurrent(feed, record: record, now: now)
         default:
             try? FileManager.default.removeItem(at: newETag)
             throw GTFSFetchError.unexpectedStatus(feed: feed.name, status: status)
         }
+        // The record must describe the zip on disk before anything else can fail: a stale record
+        // would give the new bytes the old ETag and publish stamp.
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(record).write(to: recordURL(for: feed))
+        if status == 200 { archiveCurrentBestEffort(feed, record: record, now: now, warn: warn) }
         return record
+    }
+
+    /// ``archiveCurrent(_:record:now:)``, reporting a failure through `warn` instead of throwing.
+    /// A version that cannot be archived is skipped rather than recorded with no coverage: a
+    /// transient failure (unzip missing, a runner error) would otherwise mark a good version empty
+    /// for good (versions are deduplicated by SHA-256) and online builds would delete it. While it
+    /// is the current zip it is simply tried again on the next fetch.
+    func archiveCurrentBestEffort(_ feed: GTFSFeedSpec, record: GTFSDownloadRecord?, now: Date, warn: (String) -> Void) {
+        do {
+            try archiveCurrent(feed, record: record, now: now)
+        } catch {
+            warn("\(feed.name): current zip not archived (\(error))")
+        }
     }
 
     /// Adds the current `<feed>.zip` to ``archive`` unless a version with its ETag and size, or

@@ -186,6 +186,51 @@ private let unzipInstalled = ProcessToolRunner().locate("unzip") != nil
         #expect(curl.remaining == 0)
     }
 
+    /// A 200 whose body cannot be archived (a malformed calendar, an HTML error page) is kept as the
+    /// current zip with its own record, and never stops a later fetch from reaching the server.
+    @Test func aVersionThatCannotBeArchivedDoesNotStopLaterFetches() throws {
+        let scratch = try ScratchDirectory()
+        let gtfs = scratch.url.appendingPathComponent("gtfs")
+        let v1 = StoredZip.make(VersionedSources.feed(trip: "T1", from: "20261005", to: "20261011"))
+        // Same size as v1, so a stale record's ETag + size would pass for it.
+        let badCalendar = StoredZip.make(VersionedSources.feed(trip: "T1", from: "20261005", to: "2026101X"))
+        #expect(badCalendar.count == v1.count && badCalendar != v1)
+        let html = Data("<html><body>Service Unavailable</body></html>\n".utf8)
+        let v2 = StoredZip.make(VersionedSources.feed(trip: "T2", from: "20261010", to: "20261020"))
+        let curl = FakeCurlRunner(responses: [
+            .ok(v1, etag: "\"one\"", lastModified: "Mon, 10 Aug 2026 13:03:08 GMT"),
+            .ok(badCalendar, etag: "\"two\"", lastModified: "Tue, 11 Aug 2026 13:03:08 GMT"),
+            .ok(html, etag: "\"three\"", lastModified: "Wed, 12 Aug 2026 13:03:08 GMT"),
+            .ok(v2, etag: "\"four\"", lastModified: "Thu, 13 Aug 2026 13:03:08 GMT"),
+        ])
+        let fetcher = GTFSFetcher(runner: curl, directory: gtfs)
+        let spec = GTFSFeedSpec(system: .ferry, name: "ferry_test", url: "https://example.test/ferry.zip", slot: "ferry")
+        let archive = try #require(fetcher.archive)
+        var warnings: [String] = []
+        let collect: (String) -> Void = { warnings.append($0) }
+
+        try fetcher.fetch(spec, warn: collect)
+        #expect(warnings.isEmpty)
+        // The malformed version: the fetch succeeds, the record names the new bytes, nothing is archived.
+        try fetcher.fetch(spec, warn: collect)
+        #expect(try Data(contentsOf: fetcher.archiveURL(for: spec)) == badCalendar)
+        #expect(fetcher.record(for: spec)?.etag == "\"two\"")
+        #expect(fetcher.sourceInfo(for: spec).publishedAt == "2026-08-11T13:03:08Z")
+        #expect(try archive.records(feed: "ferry_test").map(\.key) == ["one"])
+        #expect(warnings.count == 1 && warnings[0].hasPrefix("ferry_test: current zip not archived"))
+        // Not a zip at all: the old current and the new one both fail to archive, with warnings.
+        try fetcher.fetch(spec, warn: collect)
+        #expect(fetcher.record(for: spec)?.etag == "\"three\"")
+        #expect(warnings.count == 3)
+        // The server is fixed: the next fetch reaches it and archives the good version.
+        try fetcher.fetch(spec, warn: collect)
+        #expect(curl.remaining == 0)
+        #expect(try Data(contentsOf: fetcher.archiveURL(for: spec)) == v2)
+        #expect(fetcher.record(for: spec)?.etag == "\"four\"")
+        #expect(try archive.records(feed: "ferry_test").map(\.key) == ["four", "one"])
+        #expect(warnings.count == 4)   // only the HTML page, once more, before the download
+    }
+
     @Test func versionPredatingTheArchiveIsKeptWhenReplaced() throws {
         let scratch = try ScratchDirectory()
         let gtfs = scratch.url.appendingPathComponent("gtfs")

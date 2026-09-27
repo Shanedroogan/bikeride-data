@@ -85,7 +85,10 @@ the ETag without `W/` and quotes, bytes outside `[A-Za-z0-9._-]` mapped to `_`, 
 dot-led or over 96 characters (the zip's SHA-256 fills in); it is also the R2 key
 `sources/<feed>/<key>.zip`. The fetcher adds the current zip before a download replaces it and the
 new one after, deduplicated by SHA-256. The flat `sources/gtfs/<feed>.zip` stays the current
-version.
+version. Archiving is best-effort: the download record is written first, and a version whose
+calendar cannot be read (a malformed row, an HTML error page served with 200) is not archived but
+logged as a build warning, so the next fetch still reaches the server; the build fails when it
+parses that zip, as before the archive existed.
 
 Each build passes every feed's current zip plus the archived versions that can still be selected
 on some date of the window; the compiler then takes, per date, the newest version covering it
