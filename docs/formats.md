@@ -115,17 +115,18 @@ builds that can't update in step with the pipeline, and because an in-progress t
   tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
   digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
   formatVersion (or, for the links hops, a new extension id). The links freeze re-pinned its
-  digest once, for the revision bytes (draft 3 → 1); the flows and config drafts were already
-  revision 1 and froze with their digests unchanged.
+  digest once, for the revision bytes (draft 3 → 1). The flows and config drafts were already
+  revision 1: config froze with its digest unchanged, and flows re-pinned once when its
+  hand-built keys were replaced by made-up ones.
 - **Committed v1 files.** `Tests/Fixtures/v1` holds `streets.bin`, `stations.bin` and
   `tt-sample.bin` (a `tt-ferry` file), written on 2026-09-26, and `links.bin`, `flows.bin` and
   `config.bin`, written on 2026-09-27, each by the format-1 writer from those same hand-typed
   inputs. None is compiled from a real extract, feed or trip file: the streets, stations and links
   are made up; the timetable sample is two Staten Island Ferry terminals and two trips typed by
   hand (the terminal names and coordinates are the real ones); the flows sample is three keys in
-  the forms Citi Bike's short_names take (two are current station short_names) with made-up
-  coordinates, capacities, day counts and cells; the config is a small hand-typed document with
-  made-up ids.
+  the forms Citi Bike's short_names take, none of them a station's, with made-up coordinates,
+  capacities, day counts and cells; the config is a small hand-typed document with made-up stop,
+  route and station ids (its bike-share region ids are Citi Bike's real ones, from `Data/`).
   They are never rebuilt when the writer changes: every later reader must open them, validated,
   and read the values the tests list. `BR_WRITE_V1_FIXTURES=1 swift test --filter <suite>`
   rewrites a suite's file (a bare `--filter V1` rewrites all six), for a deliberate reason only.

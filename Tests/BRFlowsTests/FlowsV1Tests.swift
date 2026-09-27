@@ -15,8 +15,9 @@ import Testing
     ///   (such as a new optional section or `info` entry). Review the new bytes, then pin the new
     ///   digest.
     /// Trip parsing, binning and smoothing changes don't reach it: every cell is hand-set. The
-    /// format-0 draft (revision 1) froze unchanged, so this is the draft's digest.
-    static let payloadGolden = "0e64b0013d3ee4b2f8c75380960cf6ae488169f440dd69ad38f96d3f240fd983"
+    /// format-0 draft was already revision 1; the freeze re-pinned this digest once, when the
+    /// hand-built keys were replaced by made-up ones.
+    static let payloadGolden = "8e4a1a3b3f8399af6cd7eacd6b27d6e434bf1a5e64396d5a8ba751453a4a28e6"
 
     static let fixtureName = "flows.bin"
 
@@ -29,7 +30,8 @@ import Testing
         let file = try HandBuiltFlows.artifact(data, dataVersion: V1Fixtures.dataVersion)
         let payload = Data(try ArtifactHeader.decode(from: file).payload)
         #expect(payload == (try data.encodedPayload()))
-        #expect(try V1Fixtures.payloadSHA256(file) == Self.payloadGolden)
+        let digest = try V1Fixtures.payloadSHA256(file)
+        #expect(digest == Self.payloadGolden, "payload sha256 \(digest)")
         #expect(try V1Fixtures.payloadSHA256(HandBuiltFlows.artifact(data, dataVersion: "other")) == Self.payloadGolden)
         #expect(payload.count == 16 + 10 * 24 + 8 * 15 + 8 + 16 + 16 + 24 + 16 + 8 + 24 + 8 + 3 * FlowsFormat.cellsPerKey * 2)
         // The hand-built set is a valid v1 file.
@@ -76,9 +78,9 @@ import Testing
         #expect(flows.holidays == [ServiceDate(yyyymmdd: "20260703")])
 
         #expect(flows.count == 3)
-        #expect((0..<3).map(flows.key) == ["3576.1", "5329.08", "JC115"])
-        #expect(flows.row(forKey: "JC115") == 2 && flows.row(forKey: "5329.8") == nil)
-        #expect(flows.rowTable(forKeys: ["JC115", "none", "3576.1"]) == [2, 0xFFFF, 0])
+        #expect((0..<3).map(flows.key) == ["9901.1", "9902.08", "JC901"])
+        #expect(flows.row(forKey: "JC901") == 2 && flows.row(forKey: "9902.8") == nil)
+        #expect(flows.rowTable(forKeys: ["JC901", "none", "9901.1"]) == [2, 0xFFFF, 0])
         #expect((0..<3).map(flows.latE6) == [40_700_000, 40_701_000, 40_702_000])
         #expect((0..<3).map(flows.lonE6) == [-74_000_000, -74_002_000, -74_004_000])
         #expect((0..<3).map(flows.capacity) == [0, 10, 20])

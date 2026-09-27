@@ -53,20 +53,20 @@ import Testing
 
     @Test func joinsStationsByShortNameBytes() throws {
         let flows = try reader(try HandBuiltFlows.artifact())
-        #expect(flows.row(forKey: "5329.08") == 1 && flows.row(forKey: "3576.1") == 0 && flows.row(forKey: "JC115") == 2)
+        #expect(flows.row(forKey: "9902.08") == 1 && flows.row(forKey: "9901.1") == 0 && flows.row(forKey: "JC901") == 2)
         // Byte-exact: no pad-0 repair, no trimming, no case folding at read time.
-        for missing in ["5329.8", "3576.10", "jc115", "JC115 ", "", "0", "ZZZ"] {
+        for missing in ["9902.8", "9901.10", "jc901", "JC901 ", "", "0", "ZZZ"] {
             #expect(flows.row(forKey: missing) == nil, "\(missing)")
         }
-        #expect(flows.rowTable(forKeys: ["JC115", "nope", "3576.1", "5329.08", "5329.080"]) == [2, FlowsFormat.noRow, 0, 1, FlowsFormat.noRow])
+        #expect(flows.rowTable(forKeys: ["JC901", "nope", "9901.1", "9902.08", "9902.080"]) == [2, FlowsFormat.noRow, 0, 1, FlowsFormat.noRow])
         #expect(FlowsFormat.noRow == 0xFFFF)
     }
 
     @Test func writerRefusesAndReaderRejectsUnsortedOrDuplicateKeys() throws {
-        let unsorted = HandBuiltFlows.data(keys: ["5329.08", "3576.1", "JC115"])
+        let unsorted = HandBuiltFlows.data(keys: ["9902.08", "9901.1", "JC901"])
         #expect(throws: FlowsFormatError.keysNotSorted(row: 1)) { try unsorted.encodedPayload() }
         #expect(throws: FlowsFormatError.keysNotSorted(row: 1)) { try reader(unchecked(unsorted)) }
-        let duplicate = HandBuiltFlows.data(keys: ["3576.1", "3576.1", "JC115"])
+        let duplicate = HandBuiltFlows.data(keys: ["9901.1", "9901.1", "JC901"])
         #expect(throws: FlowsFormatError.keysNotSorted(row: 1)) { try reader(unchecked(duplicate)) }
         // Bytes, not String order: "Z" (0x5A) sorts before "a" (0x61), and "é" after both.
         _ = try reader(try HandBuiltFlows.artifact(HandBuiltFlows.data(keys: ["Z", "a", "é"])))
@@ -276,6 +276,6 @@ import Testing
         let url = scratch.file(MappedFlows.fileName)
         try HandBuiltFlows.artifact().write(to: url)
         let flows = try MappedFlows.load(fromDataDirectory: scratch.url)
-        #expect(flows.count == 3 && flows.key(1) == "5329.08")
+        #expect(flows.count == 3 && flows.key(1) == "9902.08")
     }
 }

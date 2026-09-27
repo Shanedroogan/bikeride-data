@@ -45,10 +45,10 @@ func sha256Hex(_ data: Data) throws -> String {
 /// A small `flows` file typed by hand: three keys, every parameter spelled out, and every cell a
 /// dyadic fraction that binary16 holds exactly, so no platform floating point reaches the bytes.
 /// Nothing is compiled from trip data or GBFS. The keys take the forms Citi Bike's short_names do
-/// (two of them are current ones); every coordinate, capacity, day count, flag and cell is made
-/// up. The payload golden and the committed v1 file (``FlowsV1Tests``) are made from it.
+/// but are made up (none is a station's short_name), as is every coordinate, capacity, day count,
+/// flag and cell. The payload golden and the committed v1 file (``FlowsV1Tests``) are made from it.
 enum HandBuiltFlows {
-    static let keys = ["3576.1", "5329.08", "JC115"]
+    static let keys = ["9901.1", "9902.08", "JC901"]
     static let window = FlowWindow(start: date("20260601"), dayCount: 92)
     static let smoothing = FlowSmoothingParameters(
         kappaCellMilli: 4_000, kappaHourMilli: 8_000, kappaDispersionMilli: 6_000, neighborCount: 8, neighborRadiusMeters: 1_000

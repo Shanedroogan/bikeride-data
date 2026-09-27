@@ -5,7 +5,7 @@ import Foundation
 
 /// A small config document with every key spelled out (no value comes from `Data/`), so the
 /// payload golden doesn't move when the reviewed sources do. The stop, route and station ids are
-/// made up. The payload golden and the committed v1 file (``ConfigV1Tests``) are made from it.
+/// made up; the bike-share region ids are the real GBFS ones. The payload golden and the committed v1 file (``ConfigV1Tests``) are made from it.
 enum HandBuiltConfig {
     static let document = ConfigDocument(
         minAppFormat: 1,
