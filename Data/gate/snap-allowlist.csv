@@ -1,0 +1,5 @@
+stop,rule,maxMeters,reason
+B:203592,snap,110,VETERANS RD EAST/ARTHUR KILL RD (Staten Island): its nearest walkable street is 105.8 m away in the 2026-09-26 build (M1 audit)
+B:552077,noStreetAccess,,RIKERS ISLAND RDWY/RIKERS ISLAND: no street entry or exit in the 2026-09-26 build (M1 audit)
+B:904251,noStreetAccess,,JFK AIRPORT/TERMINAL 8: no street entry or exit in the 2026-09-26 build (M1 audit)
+B:982174,noStreetAccess,,RIKERS ISLAND RDWY/RIKERS ISLAND (the other stop of the pair): no street entry or exit in the 2026-09-26 build (M1 audit)

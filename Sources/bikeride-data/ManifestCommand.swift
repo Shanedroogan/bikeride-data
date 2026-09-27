@@ -1,10 +1,82 @@
+import BRBuild
+import BRCore
 import Foundation
 
-/// `bikeride-data manifest …`: writes data/manifest.json for a built set, then data/heartbeat.json.
-///
-/// Not implemented yet (M1): says so and returns 64 (EX_USAGE), so neither a script nor `all` can
-/// mistake the stub for a successful step.
+let manifestUsage = """
+    USAGE: bikeride-data manifest [--data DIR] [--reports DIR] [--previous FILE] [--previous-heartbeat FILE]
+                                  [--today YYYYMMDD] [--now ISO8601] [--job NAME]
+                                  [--timetables-not-run | --timetables-unchanged]
+
+    Writes <data>/trip-counts.json, <data>/manifest.json and, last, <data>/heartbeat.json for the
+    set in --data. Requires <reports>/gate.json from a gate run that passed (or failed only soft) on
+    exactly these files, for the same build day and previous manifest.
+
+      --data DIR                 The set (default build/data)
+      --reports DIR              Where gate.json is (default <data>/../reports)
+      --previous FILE            The previous manifest: kinds missing from --data are carried forward
+      --previous-heartbeat FILE  Its heartbeat (default heartbeat.json beside --previous)
+      --today DATE               Build day (default today in New York)
+      --now ISO8601              generatedAt / checkedAt (default now)
+      --job NAME                 Recorded in the heartbeat (default all)
+      --timetables-not-run       This job did not build the timetables although tt-* files are in
+                                 --data: lastTimetableSuccessAt carries over from the previous heartbeat
+      --timetables-unchanged     This job checked the timetable sources, found them unchanged and
+                                 carried every tt-* forward: lastTimetableSuccessAt is now
+    Without either flag, lastTimetableSuccessAt is now when at least one tt-* is in --data (not
+    carried forward), else it carries over.
+
+    Exit status: 0 written, 3 no passing gate report for this set (nothing written), 1 error, 64 usage.
+    """
+
+/// `bikeride-data manifest …`. Returns the process exit status.
 func runManifestCommand(_ arguments: [String]) -> Int32 {
-    FileHandle.standardError.write(Data("bikeride-data manifest: not implemented yet (M1)\n".utf8))
-    return 64
+    if arguments.contains("--help") || arguments.contains("-h") {
+        print(manifestUsage)
+        return 0
+    }
+    do {
+        let options = try CommandOptions(
+            arguments, valued: ["--data", "--reports", "--previous", "--previous-heartbeat", "--today", "--now", "--job"],
+            flags: ["--timetables-not-run", "--timetables-unchanged"])
+        let notRun = options.flags.contains("--timetables-not-run"), unchanged = options.flags.contains("--timetables-unchanged")
+        guard !(notRun && unchanged) else {
+            throw CommandOptions.UsageError(description: "--timetables-not-run and --timetables-unchanged contradict each other")
+        }
+        let data = options.url("--data", default: "build/data")
+        let reports = options.values["--reports"].map(CommandOptions.absoluteURL) ?? data.deletingLastPathComponent().appendingPathComponent("reports")
+        let previous = options.values["--previous"].map(CommandOptions.absoluteURL)
+        let now = try publishNow(options) ?? Date()
+        let builder = SetManifestBuilder(dataDirectory: data, reportsDirectory: reports, previousManifest: previous,
+                                         today: try publishToday(options), now: now, runner: ProcessToolRunner())
+        let manifest: SetManifest
+        do {
+            manifest = try builder.write()
+        } catch let error as SetManifest.ManifestError {
+            switch error {
+            case .noGateReport, .gateFailed, .gateStale:
+                FileHandle.standardError.write(Data("bikeride-data manifest: \(error)\n".utf8))
+                return 3
+            default: throw error
+            }
+        }
+        let heartbeatURL = options.values["--previous-heartbeat"].map(CommandOptions.absoluteURL)
+            ?? previous.map { $0.deletingLastPathComponent().appendingPathComponent(SetHeartbeat.fileName) }
+        let previousHeartbeat = heartbeatURL.flatMap { try? SetHeartbeat.load($0) }
+        let heartbeat = SetHeartbeat.after(manifest, now: now, job: options.values["--job"] ?? "all",
+                                           timetablesSucceeded: SetHeartbeat.timetablesSucceeded(manifest, notRun: notRun, unchanged: unchanged),
+                                           previous: previousHeartbeat)
+        try heartbeat.write(to: data.appendingPathComponent(SetHeartbeat.fileName))
+        if heartbeat.lastTimetableSuccessAt == nil { logLine("manifest", "warning: no lastTimetableSuccessAt (no previous heartbeat)") }
+        let days = manifest.systems.keys.sorted().map { "\($0) \(manifest.systems[$0]!.days)" }.joined(separator: ", ")
+        print("manifest: set \(manifest.setId), \(manifest.artifacts.count) artifacts (\(manifest.carriedForward.count) carried forward), "
+            + "gate \(manifest.gate.status.rawValue); coverage days: \(days)")
+        print("manifest: \(builder.manifestURL.path), \(builder.tripCountsURL.path), \(data.appendingPathComponent(SetHeartbeat.fileName).path)")
+        return 0
+    } catch let error as CommandOptions.UsageError {
+        FileHandle.standardError.write(Data("bikeride-data manifest: \(error)\n\n\(manifestUsage)\n".utf8))
+        return 64
+    } catch {
+        FileHandle.standardError.write(Data("bikeride-data manifest: \(error)\n".utf8))
+        return 1
+    }
 }

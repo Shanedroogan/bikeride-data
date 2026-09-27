@@ -1,10 +1,72 @@
+import BRBuild
+import BRCore
 import Foundation
 
-/// `bikeride-data gate …`: runs the validation gate over a built set and writes reports/gate.json.
-///
-/// Not implemented yet (M1): says so and returns 64 (EX_USAGE), so neither a script nor `all` can
-/// mistake the stub for a successful step.
+let gateUsage = """
+    USAGE: bikeride-data gate [--data DIR] [--reports DIR] [--previous FILE] [--today YYYYMMDD]
+                              [--repo-data DIR] [--now ISO8601]
+
+    Runs the validation gate over the set in --data and writes <reports>/gate.json: every required
+    artifact present, opening and consistent with builtAgainst; xz blobs one stream / one block and
+    decoding to rawSha256; coverage (under 3 days fails soft: the system is marked noSchedule);
+    trip counts against the previous build; per-region street shares; stop snapping.
+
+      --data DIR       The set (default build/data)
+      --reports DIR    Build reports, and where gate.json goes (default <data>/../reports)
+      --previous FILE  The previous set's manifest.json (its trip-counts.json beside it): trip
+                       counts are compared with it, and kinds missing from --data are carried from it
+      --today DATE     Build day (default today in New York)
+      --repo-data DIR  The repository's Data/ (gate/thresholds.json, gate/snap-allowlist.csv,
+                       config/calendar/holidays.csv); default ./Data, ./Vendor/bikeride-data/Data,
+                       or the source tree this binary was built from
+      --now ISO8601    Timestamp for the report (default now)
+
+    Exit status: 0 pass or soft failure, 3 hard failure (publish nothing), 1 error, 64 usage.
+    """
+
+/// `bikeride-data gate …`. Returns the process exit status.
 func runGateCommand(_ arguments: [String]) -> Int32 {
-    FileHandle.standardError.write(Data("bikeride-data gate: not implemented yet (M1)\n".utf8))
-    return 64
+    if arguments.contains("--help") || arguments.contains("-h") {
+        print(gateUsage)
+        return 0
+    }
+    do {
+        let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now"], flags: [])
+        let data = options.url("--data", default: "build/data")
+        let reports = options.values["--reports"].map(CommandOptions.absoluteURL) ?? data.deletingLastPathComponent().appendingPathComponent("reports")
+        // No gate.json may survive a run that fails before writing its own (manifest would take it).
+        try Gate.removeReport(in: reports)
+        let today = try publishToday(options)
+        guard let repoData = options.values["--repo-data"].map(CommandOptions.absoluteURL) ?? GateConfiguration.defaultRepoData() else {
+            throw CommandOptions.UsageError(description: "no Data/ directory with gate/thresholds.json found; pass --repo-data")
+        }
+        logLine("gate", "configuration from \(repoData.path)")
+        var gate = Gate(dataDirectory: data, reportsDirectory: reports, previousManifest: options.values["--previous"].map(CommandOptions.absoluteURL),
+                        today: today, configuration: try GateConfiguration.load(repoData: repoData), runner: ProcessToolRunner())
+        if let now = try publishNow(options) { gate.now = now }
+        let started = Date()
+        let report = try gate.run { logLine("gate", $0) }
+        print("gate: \(report.status.rawValue) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; report \(gate.reportURL.path)")
+        return report.status == .fail ? 3 : 0
+    } catch let error as CommandOptions.UsageError {
+        FileHandle.standardError.write(Data("bikeride-data gate: \(error)\n\n\(gateUsage)\n".utf8))
+        return 64
+    } catch {
+        FileHandle.standardError.write(Data("bikeride-data gate: \(error)\n".utf8))
+        return 1
+    }
+}
+
+/// `--today YYYYMMDD`, default today in New York.
+func publishToday(_ options: CommandOptions) throws -> ServiceDate {
+    guard let text = options.values["--today"] else { return ServiceDate(containing: Date(), in: .nyc) }
+    guard let date = ServiceDate(yyyymmdd: text) else { throw CommandOptions.UsageError(description: "--today needs YYYYMMDD") }
+    return date
+}
+
+/// `--now` as ISO 8601 with a zone, or nil when absent.
+func publishNow(_ options: CommandOptions) throws -> Date? {
+    guard let text = options.values["--now"] else { return nil }
+    guard let date = ISO8601DateFormatter().date(from: text) else { throw CommandOptions.UsageError(description: "--now needs ISO 8601, e.g. 2026-09-26T16:30:00Z") }
+    return date
 }

@@ -19,8 +19,9 @@ it lists must be here; `../SOURCES.md`).
   runs on a holiday comes from its GTFS `calendar_dates.txt`, never from here.
 
 The validation gate's trip-count check does not read `profile`. It treats every listed date as a
-holiday: excluded from its weekday medians, and compared against the Sunday profile (M1 audit,
-gate rule (a)).
+holiday: excluded from its weekday medians and, when the previous build did not cover the date,
+compared with the nearest of its weekday, Saturday and Sunday profiles (M1 audit, gate rule (a);
+see `Data/gate/SOURCES.md`).
 
 Invariants (readers may assert them): every date is a Monday–Friday, dates are unique and
 strictly ascending, and `profile` is one of the two values above.
