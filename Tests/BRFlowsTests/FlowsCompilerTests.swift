@@ -38,13 +38,11 @@ private struct SyntheticTrips {
                 jc.append(TripFixture.row("electric_bike", "\(d) 09:00:00.000", "\(d) 09:12:00.000", from: "HB101", to: "HB101", quoted: true))
                 day = day.adding(days: 1)
             }
-            for (system, key, rows) in [("NYC", "\(month.yyyymm)-citibike-tripdata.zip", nyc), ("JC", "JC-\(month.yyyymm)-citibike-tripdata.csv.zip", jc)] {
-                let stage = scratch.file("stage-\(name)-\(system)-\(month.yyyymm)")
-                try scratch.write("stage-\(name)-\(system)-\(month.yyyymm)/\(key.replacingOccurrences(of: ".zip", with: "").replacingOccurrences(of: ".csv", with: ""))_1.csv",
-                                  rows.joined(separator: "\n") + "\n")
-                try FileManager.default.createDirectory(at: scratch.file(name), withIntermediateDirectories: true)
+            for key in ["\(month.yyyymm)-citibike-tripdata.zip", "JC-\(month.yyyymm)-citibike-tripdata.csv.zip"] {
+                let rows = key.hasPrefix("JC-") ? jc : nyc
+                let entry = key.replacingOccurrences(of: ".zip", with: "").replacingOccurrences(of: ".csv", with: "") + "_1.csv"
                 let zip = scratch.file(name).appendingPathComponent(key)
-                _ = try runner.run(executable: "sh", args: ["-c", "cd \"$0\" && zip -qr \"$1\" .", stage.path, zip.path])
+                try StoredZip.write([(entry, Data((rows.joined(separator: "\n") + "\n").utf8))], to: zip)
                 let size = try FileManager.default.attributesOfItem(atPath: zip.path)[.size] as! Int
                 objects.append(TripListingObject(key: key, etag: "etag-\(key)", size: size, lastModified: ""))
             }
@@ -78,13 +76,7 @@ private struct SyntheticTrips {
 }
 
 @Suite struct FlowsCompilerTests {
-    static var hasZip: Bool { ProcessToolRunner().locate("zip") != nil && ProcessToolRunner().locate("unzip") != nil }
-
-    @Test func buildsThenFailsSoftThenRebuildsIdentically() throws {
-        guard Self.hasZip else {
-            print("skipping: zip/unzip not installed")
-            return
-        }
+    @Test(.enabled(if: StoredZip.unzipInstalled)) func buildsThenFailsSoftThenRebuildsIdentically() throws {
         let fixture = try SyntheticTrips(scratch: try ScratchDirectory())
         let first = try fixture.run(fixture.configuration())
         #expect(first.outcome == .built && first.gate.passed && first.gate.failures.isEmpty)
@@ -127,11 +119,7 @@ private struct SyntheticTrips {
         #expect(bare.outcome == .keptPrevious && bare.reason?.contains("listing") == true)
     }
 
-    @Test func gateFailuresKeepTheFileInPlace() throws {
-        guard Self.hasZip else {
-            print("skipping: zip/unzip not installed")
-            return
-        }
+    @Test(.enabled(if: StoredZip.unzipInstalled)) func gateFailuresKeepTheFileInPlace() throws {
         let scratch = try ScratchDirectory()
         let fixture = try SyntheticTrips(scratch: scratch)
         let built = try fixture.run(fixture.configuration())

@@ -90,9 +90,8 @@ enum TripFixture {
     }
 
     /// NYC-style entries (unquoted, `_N` and `-partN`, each with its own header, and a
-    /// `__MACOSX` shadow that must never be read) and a quoted JC-style file.
-    func writeFixtureArchives(_ scratch: ScratchDirectory) throws -> (nyc: URL, jc: URL) {
-        let nycDirectory = scratch.file("nyc")
+    /// `__MACOSX` shadow that must never be read) and a quoted JC-style file, by archive and path.
+    func fixtureEntries() -> (nyc: [(name: String, text: String)], jc: [(name: String, text: String)]) {
         let rows1 = [
             TripFixture.row("classic_bike", "2026-08-03 08:05:00.000", "2026-08-03 08:20:00.000", from: "5343.10", to: "5343.1",
                             startName: "Allen St & Hester St", endName: "Allen St & Hester St"),
@@ -106,17 +105,25 @@ enum TripFixture {
             TripFixture.row("classic_bike", "2026-08-04 10:00:00.000", "2026-08-04 10:05:00.000", from: "9999.99", to: "66dc0e99-0aca-11e7-82f6-3863bb44ef7c"),
             TripFixture.row("classic_bike", "2026-08-04 17:00:00.000", "not a time", from: "Shop Morgan ", to: "5343.1", endName: "Other name"),
         ]
-        try scratch.write("nyc/202608-citibike-tripdata_1.csv", ([TripFixture.header] + rows1).joined(separator: "\n") + "\n")
-        try scratch.write("nyc/202608-citibike-tripdata-part2.csv", ([TripFixture.header] + rows2).joined(separator: "\r\n"))
-        try scratch.write("nyc/__MACOSX/._202608-citibike-tripdata_1.csv", "\u{0}\u{5}\u{16}\u{7}garbage")
         let jcHeader = TripFixture.header.split(separator: ",").map { "\"\($0)\"" }.joined(separator: ",")
-        try scratch.write("jc/JC-202608-citibike-tripdata.csv", [
-            jcHeader,
-            TripFixture.row("electric_bike", "2026-08-08 09:00:00.000", "2026-08-08 09:14:59.999", from: "HB101", to: "HB101", quoted: true),
-            TripFixture.row("classic_bike", "2026-08-08 09:30:00.000", "2026-08-08 09:40:00.000", from: "HB101", to: "5343.10", quoted: true),
-        ].joined(separator: "\n") + "\n")
-        try scratch.write("jc/__MACOSX/._JC-202608-citibike-tripdata.csv", "garbage")
-        return (nycDirectory, scratch.file("jc"))
+        return (
+            [("202608-citibike-tripdata_1.csv", ([TripFixture.header] + rows1).joined(separator: "\n") + "\n"),
+             ("202608-citibike-tripdata-part2.csv", ([TripFixture.header] + rows2).joined(separator: "\r\n")),
+             ("__MACOSX/._202608-citibike-tripdata_1.csv", "\u{0}\u{5}\u{16}\u{7}garbage")],
+            [("JC-202608-citibike-tripdata.csv", [
+                jcHeader,
+                TripFixture.row("electric_bike", "2026-08-08 09:00:00.000", "2026-08-08 09:14:59.999", from: "HB101", to: "HB101", quoted: true),
+                TripFixture.row("classic_bike", "2026-08-08 09:30:00.000", "2026-08-08 09:40:00.000", from: "HB101", to: "5343.10", quoted: true),
+             ].joined(separator: "\n") + "\n"),
+             ("__MACOSX/._JC-202608-citibike-tripdata.csv", "garbage")]
+        )
+    }
+
+    func writeFixtureArchives(_ scratch: ScratchDirectory) throws -> (nyc: URL, jc: URL) {
+        let (nyc, jc) = fixtureEntries()
+        for entry in nyc { try scratch.write("nyc/\(entry.name)", entry.text) }
+        for entry in jc { try scratch.write("jc/\(entry.name)", entry.text) }
+        return (scratch.file("nyc"), scratch.file("jc"))
     }
 
     func checkCounts(_ result: FlowBinner.Result) throws {
@@ -163,19 +170,21 @@ enum TripFixture {
         }
     }
 
-    @Test func countsZipArchives() throws {
+    @Test(.enabled(if: StoredZip.unzipInstalled)) func countsZipArchives() throws {
         let runner = ProcessToolRunner()
-        guard runner.locate("zip") != nil, runner.locate("unzip") != nil else {
-            print("skipping: zip/unzip not installed")
-            return
-        }
         let scratch = try ScratchDirectory()
-        let (nyc, jc) = try writeFixtureArchives(scratch)
-        for directory in [nyc, jc] {
-            _ = try runner.run(executable: "sh", args: ["-c", "cd \"$0\" && zip -qr ../\"$(basename \"$0\")\".zip .", directory.path])
+        let (nyc, jc) = fixtureEntries()
+        for (name, entries) in [("nyc.zip", nyc), ("jc.zip", jc)] {
+            try StoredZip.write(entries.map { ($0.name, Data($0.text.utf8)) }, to: scratch.file(name))
         }
         let august = TripMonth(year: 2026, month: 8)
         let nycZip = ZipTripArchive(archive: scratch.file("nyc.zip"), runner: runner)
+        // The writer's CRC-32 (the standard check value) and archives `unzip -t` accepts.
+        #expect(StoredZip.crc32(Data("123456789".utf8)) == 0xCBF4_3926)
+        _ = try runner.run(executable: "unzip", args: ["-tq", scratch.file("nyc.zip").path])
+        // Every member is listed (the __MACOSX shadow too); only the trip CSVs are read.
+        let members = String(decoding: try runner.run(executable: "unzip", args: ["-Z1", scratch.file("nyc.zip").path]), as: UTF8.self)
+        #expect(members.split(separator: "\n").contains("__MACOSX/._202608-citibike-tripdata_1.csv"))
         #expect(try nycZip.csvEntries() == ["202608-citibike-tripdata-part2.csv", "202608-citibike-tripdata_1.csv"])
         let inputs = [TripInput(system: .nyc, month: august, archive: nycZip),
                       TripInput(system: .jc, month: august, archive: ZipTripArchive(archive: scratch.file("jc.zip"), runner: runner))]

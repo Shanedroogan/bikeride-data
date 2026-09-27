@@ -106,3 +106,59 @@ extension Data {
         return copy
     }
 }
+
+/// Writes zips of stored (uncompressed) entries, so the zip tests need `unzip` (which CI installs)
+/// but not `zip` (which it does not): local headers, a central directory and the end record, a
+/// fixed 1980-01-01 timestamp, no data descriptors.
+enum StoredZip {
+    static var unzipInstalled: Bool { ProcessToolRunner().locate("unzip") != nil }
+
+    static func write(_ entries: [(name: String, data: Data)], to url: URL) throws {
+        var out = Data()
+        var central = Data()
+        func u16(_ value: Int, _ data: inout Data) { Swift.withUnsafeBytes(of: UInt16(value).littleEndian) { data.append(contentsOf: $0) } }
+        func u32(_ value: UInt32, _ data: inout Data) { Swift.withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        let dosTime = 0, dosDate = 1 << 5 | 1 // 1980-01-01 00:00
+        for entry in entries {
+            let name = Data(entry.name.utf8)
+            let crc = crc32(entry.data), size = UInt32(entry.data.count), offset = UInt32(out.count)
+            u32(0x0403_4B50, &out)
+            u16(20, &out); u16(0, &out); u16(0, &out); u16(dosTime, &out); u16(dosDate, &out)
+            u32(crc, &out); u32(size, &out); u32(size, &out)
+            u16(name.count, &out); u16(0, &out)
+            out.append(name)
+            out.append(entry.data)
+
+            u32(0x0201_4B50, &central)
+            u16(20, &central); u16(20, &central); u16(0, &central); u16(0, &central); u16(dosTime, &central); u16(dosDate, &central)
+            u32(crc, &central); u32(size, &central); u32(size, &central)
+            u16(name.count, &central); u16(0, &central); u16(0, &central) // name, extra, comment lengths
+            u16(0, &central); u16(0, &central); u32(0, &central)          // disk, internal and external attributes
+            u32(offset, &central)
+            central.append(name)
+        }
+        let centralOffset = UInt32(out.count)
+        out.append(central)
+        u32(0x0605_4B50, &out)
+        u16(0, &out); u16(0, &out); u16(entries.count, &out); u16(entries.count, &out)
+        u32(UInt32(central.count), &out); u32(centralOffset, &out)
+        u16(0, &out)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try out.write(to: url)
+    }
+
+    /// CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320).
+    static func crc32(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            crc = table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+        }
+        return crc ^ 0xFFFF_FFFF
+    }
+
+    private static let table: [UInt32] = (0..<256).map { index in
+        var value = UInt32(index)
+        for _ in 0..<8 { value = value & 1 == 1 ? 0xEDB8_8320 ^ (value >> 1) : value >> 1 }
+        return value
+    }
+}
