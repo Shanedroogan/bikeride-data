@@ -874,8 +874,11 @@ Exit status 0 built, 3 gate failure, 4 nothing new: the newest common month is t
 `flows.bin` ends with and every trip pin and the `holidays` and `depots` shas are unchanged, or it
 is older than the month `flows.bin` ends with (never step back), or `--offline` lacks the saved
 listing, a zip or GBFS. A `flows.bin` whose `dataVersion` has no trip pins never stops a build.
-Both 3 and 4 leave `flows.bin` in place. `reports/flows.json` holds the per-file,
-per-month and per-system resolution counts, the unmatched ids, the gate and the smoothing stats.
+Both 3 and 4 leave `flows.bin` in place. `reports/flows.json` always describes the `flows.bin`
+in place (0 replaces it; 3 and 4 leave it): the per-file, per-month and per-system resolution
+counts, the unmatched ids, the gate and the smoothing stats. A build whose gate fails (3) writes
+its report to `reports/flows-failed.json` instead, which the next passing build removes; the
+publish gate shows it as a warning (`docs/publish.md`).
 
 Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.51 MB xz (without `varianceAny`: 7.82 MB raw,
 4.06 MB xz; the three-month window has far fewer empty cells than one month).

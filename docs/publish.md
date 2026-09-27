@@ -14,29 +14,43 @@ changes `systems.<s>.status`; the heartbeat is written last.
 
 `--skip LIST` takes any of the nine names and reuses what is in `--out`. Skipping `manifest` also
 skips `heartbeat` (the heartbeat names the manifest this run writes); skipping `timetables` passes
-`--timetables-not-run`, so `lastTimetableSuccessAt` carries over. With `--no-xz` there are no blobs
-to publish, so `gate`, `manifest` and `heartbeat` are skipped. `--today` and `--now` go to every
-step that takes them (the manifest and heartbeat share one timestamp); `--previous FILE` goes to
-`gate` and `manifest`; `--trips` and `--months` to `flows`; `--config-sources` to `config`, which
-`all` always runs with `--require-references`.
+`--timetables-not-run`, so `lastTimetableSuccessAt` carries over from the heartbeat beside
+`--previous` or, without `--previous`, from the last one in `--out`. With `--no-xz` there are no
+blobs to publish, so `gate`, `manifest` and `heartbeat` are skipped. To build without publishing
+(a fixture built around pinned artifacts: a pinned `streets.bin` has no `reports/streets.json` to
+vouch for it, so the gate fails), skip `gate,manifest`; `--skip gate` alone leaves the manifest
+without a gate report for these files (exit 3). `--today` and `--now` go to every step that takes
+them (the manifest and heartbeat share one timestamp); `--previous FILE` goes to `gate` and
+`manifest`; `--trips` and `--months` to `flows`; `--config-sources` to `config`, which `all` always
+runs with `--require-references`.
+
+Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
+`--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that
+was there, not the files this run writes, so a run that stops (a gate hard failure, a config
+failure) leaves no published documents beside artifacts they do not describe; a run that publishes
+writes new ones. `--previous` may be `<out>/manifest.json`, the set in place: it is read where it
+was moved. Any other file in `--out` cannot be `--previous` (its sidecar would move from under it;
+exit 64).
 
 | Step | Exit status | `all` |
 |---|---|---|
 | `streets` | 2: a sanity route failed | warning; go on (the artifact is written, the gate checks the set) |
 | `config` | 3: a reference check failed (no config.bin); 1: a source or build error | stop: links cannot be built |
 | `flows` | 4: nothing new, or offline without the listing, a zip or GBFS | warning; go on with the flows.bin in place, if any |
-| `flows` | 3: the flows build's own gate failed (flows.bin kept) | warning; go on: the gate's `flows` check decides (below) |
+| `flows` | 3: the flows build's own gate failed (flows.bin and `reports/flows.json` kept, the failed build's report in `reports/flows-failed.json`) | warning; go on: the gate's `flows` check decides (below) |
+| `flows` | 1: an error (a download, GBFS, the holiday calendar; nothing written) | warning; go on as for 3. With `--require-flows`: stop with 1 |
 | `gate` | 3: a hard failure | stop with 3: no manifest and no heartbeat, so the previous set stays current |
 | `manifest` | 3: no passing gate report for these bytes | stop with 3 |
 | any | any other failure | stop with that status |
 
-Flows is optional: without trip data (`flows` exit 4 and no flows.bin) the set publishes without
-it, with a warning in the gate's `flows` check. A failed flows build stays failed for the gate
-until it is fixed: `reports/flows.json` keeps the gate-failed report (exit 4 and `--skip flows`
-leave it as it is), so an older flows.bin the previous set did not publish keeps failing. Rerun
-flows until it builds, or remove `flows.bin`, `flows.bin.xz` and `reports/flows.json` to publish
-without flows. `--require-flows` (on `all`, `gate` and
-`manifest`) makes a set without flows.bin fail the `artifacts` check and the manifest refuse it.
+Flows is optional and fails soft: without trip data (`flows` exit 4 and no flows.bin) the set
+publishes without it, with a warning in the gate's `flows` check. A flows build whose own gate
+fails keeps the older flows.bin and its `reports/flows.json`, and writes its own report to
+`reports/flows-failed.json` (`FlowsReport.record(at:)`); a build that passes replaces the report and
+removes that file. The gate then checks the older flows.bin against its report, as on the day it
+was built, and lets it go out again with the failed build as a warning, every run until a build
+passes. `--require-flows` (on `all`, `gate` and `manifest`) makes a set without flows.bin fail the
+`artifacts` check and the manifest refuse it, and makes a flows error stop `all`.
 
 `manifest` itself refuses (exit 3) unless `reports/gate.json` passed, or failed only soft, on
 exactly the raw files and `.xz` blobs in the data directory, for the same build day and previous
@@ -61,8 +75,8 @@ Checks, in order:
 | `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without `--previous`; with `--previous`, a manifest that does not read or a sidecar that is missing or does not match fails (an unreadable manifest fails `artifacts` too) | hard |
 | `streets` | each region's `keptShare` in `reports/streets.json` (which must describe this `streets.bin`) ≥ its minimum; a region with no street length at all fails (the report gives it 100 %); skipped when streets is carried forward | hard |
 | `snapping` | every routable stop inside the service area has street entry and exit, and every access point snaps within `maxSnapMeters` (100 m), except as `snap-allowlist.csv` allows; no routable stop, or none inside the service area, fails; a `links.bin` in the data directory needs its `streets.bin` there too (else fail), and a carried-forward `tt-*` leaves that system's stops unchecked with a warning; skipped only when links is carried forward | hard |
-| `configReferences` | `ReferenceChecks` over the set's `config.bin`, `tt-*` and `stations` (`ConfigReferencesCheck`): every LIRR stop with service has a fare zone and every NYC terminal is served (`lirrZones`); the MTA out-of-system and in-system pairs name subway stations and no in-system pair is in `transfers.txt` (`mtaStationPairs`); the SIR routes and fare stations exist (`statenIslandRailway`); every fixed transfer resolves (`fixedTransfers`); every valet station is in `stations.bin` within 50 m of its listed coordinate (`valetStations`); every station's region is configured (`stationRegions`). Run on every build, because `tt-*` change twice a day and config only with `Data/`. A config carried forward cannot be read: if any `tt-*` or `stations` is new the check fails (a job that rebuilds them keeps `config.bin` in its data directory), otherwise it is skipped. A check whose input is carried forward is skipped with a warning | hard |
-| `flows` | the flows statistics (`FlowsStatisticsCheck`): a flows.bin in the data directory must be the one `reports/flows.json` describes (outcome `built`, same rawSha256), and the report must pass `FlowsGate` again (unmatched trip ends under 2 % in the newest month and 5 % over the window, per system and side; dropped ends, empty days, saturated counters, month rows). A flows.bin no report vouches for fails, unless it is the previous set's, unchanged: then skipped, with a failed flows build since as a warning. So `flows` exit 3 (older file kept) blocks the set unless that file was already published. Without flows.bin: carried forward, skipped; absent, skipped with a warning | hard |
+| `configReferences` | `ReferenceChecks` over the set's `config.bin`, `tt-*` and `stations` (`ConfigReferencesCheck`): every LIRR stop with service has a fare zone and every NYC terminal is served (`lirrZones`); the MTA out-of-system and in-system pairs name subway stations and no in-system pair is in `transfers.txt` (`mtaStationPairs`); the SIR routes and fare stations exist (`statenIslandRailway`); every fixed transfer resolves (`fixedTransfers`); every valet station is in `stations.bin` within 50 m of its listed coordinate (`valetStations`); every station's region is configured (`stationRegions`). Run on every build, because `tt-*` change twice a day and config only with `Data/`. A config carried forward cannot be read: if any `tt-*` or `stations` is new the check fails (a job that rebuilds them keeps `config.bin` and `config.bin.xz` in its data directory; a raw file without its blob fails `xz` and the manifest), otherwise it is skipped. A check whose input is carried forward is skipped with a warning | hard |
+| `flows` | the flows statistics (`FlowsStatisticsCheck`): a flows.bin in the data directory must be the one `reports/flows.json` describes (outcome `built`, same rawSha256), and the report must pass `FlowsGate` again (unmatched trip ends under 2 % in the newest month and 5 % over the window, per system and side; dropped ends, empty days, saturated counters, month rows). A flows.bin no report vouches for fails, unless it is the previous set's, unchanged: then skipped. After `flows` exit 3 the older file is still the one `reports/flows.json` describes, so it passes, with `reports/flows-failed.json` as a warning (a `flows.json` that is itself gate-failed, from a builder before that file, vouches for nothing). Without flows.bin: carried forward, skipped; absent, skipped with a warning | hard |
 
 `configReferences` and `flows` join through the `GateCheck` protocol (`Gate.publishHooks`), which
 `bikeride-data gate` and `all` always pass; `Gate` itself runs only the built-in six, so a test set
