@@ -324,7 +324,7 @@ import Testing
         let subway = try TransitFixture.compile(.subway, Self.railFeed(), scratch: scratch).timetable
         let city = try SyntheticCity.build()
         let timetables: [TransitSystem: Timetable] = [.subway: subway]
-        let network = LinkNetwork.make(timetables: timetables, graph: city.graph, options: LinksOptions()).network
+        let network = LinkNetwork.make(timetables: timetables, graph: city.graph, options: LinksOptions.standard).network
         let parents = RailParents.make(timetables: timetables, network: network)
         func parent(_ id: String) -> Int { network.global(.subway, id, in: timetables) }
         let x = parent("X"), y = parent("Y"), z = parent("Z"), w = parent("W")
@@ -432,7 +432,7 @@ import Testing
         let (hops, stats) = HopBuilder.build(empty, options: HopOptions(), threads: 4)
         #expect(hops.start == [0] && hops.count == 0 && stats.hops == 0 && stats.candidatePairs == 0)
         let links = CompiledLinks(network: network, footpaths: FootpathTable(start: [0], target: [], seconds: []),
-                                  stationLinks: .empty(stops: 0, stations: 2), stationCount: 2, options: LinksOptions(), hops: hops)
+                                  stationLinks: .empty(stops: 0, stations: 2), stationCount: 2, options: LinksOptions.standard, hops: hops)
         let file = LinksArtifactWriter.artifact(links, dataVersion: "empty", builtAgainst: ["stations": "s"])
         let opened = try open(file)
         #expect(opened.stopCount == 0 && opened.stationCount == 2 && opened.hops?.count == 0)

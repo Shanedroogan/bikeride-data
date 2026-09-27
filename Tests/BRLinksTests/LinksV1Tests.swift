@@ -15,7 +15,7 @@ import Testing
 /// platform); bus 3 (routable), 4 (not); LIRR 5; ferry 6; PATH 7, 8. Stations 0–2.
 enum HandBuiltLinks {
     static let options: LinksOptions = {
-        var options = LinksOptions()
+        var options = LinksOptions.standard
         options.walk = WalkProfile(speedMetersPerSecond: 1.5, stairsMultiplier: 2)
         options.maxFootpathWalkSeconds = 480
         options.minTransferSeconds = 30

@@ -8,15 +8,19 @@ let linksUsage = """
     USAGE: bikeride-data links [--data DIR] [--out DIR] [--report FILE] [--threads N]
                                [--max-walk-seconds S] [--no-check] [--no-xz]
 
-    Builds the links artifact from streets.bin, stations.bin and tt-*.bin: each stop's street
-    access points, transitively closed footpaths (station access once per street↔platform
-    transition, in-station transfers from transfers.txt), and stop↔station walk links.
+    Builds the links artifact from config.bin, streets.bin, stations.bin and tt-*.bin: each
+    stop's street access points, transitively closed footpaths (station access once per
+    street↔platform transition, in-station transfers from transfers.txt, the configured fixed
+    transfers), stop↔station walk links, and the rail bike hops. The build parameters come from
+    config.bin (transit.links; build it first with `bikeride-data config`), which the header's
+    builtAgainst names. A fixed transfer that doesn't resolve fails the build.
 
       --data DIR                 Input artifacts (default build/data)
       --out DIR                  Raw artifact and .xz (default: the data directory)
       --report FILE              Build report JSON (default <out>/../reports/links.json)
       --threads N                Parallel searches (default: every core)
-      --max-walk-seconds S       Footpath walk bound; station access at both ends comes on top (default 480)
+      --max-walk-seconds S       Replace the config's footpath walk bound (station access at both
+                                 ends comes on top), for experiments; the report warns
       --no-check                 Skip the exhaustive triangle-inequality check
       --no-xz                    Skip compression
     """
@@ -36,10 +40,10 @@ func runLinksCommand(_ arguments: [String]) -> Int32 {
         var configuration = LinksCompiler.Configuration(dataDirectory: data, outputDirectory: out)
         configuration.compress = !options.flags.contains("--no-xz")
         configuration.checkFootpaths = !options.flags.contains("--no-check")
-        if let threads = try options.int("--threads") { configuration.options.threads = threads }
+        if let threads = try options.int("--threads") { configuration.threads = threads }
         if let bound = try options.int("--max-walk-seconds") {
             guard bound <= 3600 else { throw CommandOptions.UsageError(description: "--max-walk-seconds must be at most 3600") }
-            configuration.options.maxFootpathWalkSeconds = UInt32(bound)
+            configuration.maxFootpathWalkSeconds = UInt32(bound)
         }
         let reportURL = options.values["--report"].map(CommandOptions.absoluteURL)
             ?? out.deletingLastPathComponent().appendingPathComponent("reports/links.json")

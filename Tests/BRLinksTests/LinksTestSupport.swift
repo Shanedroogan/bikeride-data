@@ -422,7 +422,7 @@ struct RandomLinkWorld {
                               segmentKey: UInt64(pair[0]) << 32 | UInt64(pair[1]))
         }
 
-        var options = LinksOptions()
+        var options = LinksOptions.standard
         options.maxFootpathWalkSeconds = UInt32(150 + rng.nextInt(below: 250))
         options.stationLinkMaxWalkMeters = Double(150 + rng.nextInt(below: 300))
         options.accessSeconds = [.subway: 120, .bus: 30, .lirr: 240, .ferry: 60, .path: 90]

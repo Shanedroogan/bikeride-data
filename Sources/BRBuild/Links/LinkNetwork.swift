@@ -4,39 +4,56 @@ import BRStreetCore
 import BRTimetable
 import Foundation
 
-/// Tunables of the links compiler. Defaults are the plan of record (`docs/formats.md`, "links").
+/// Tunables of the links compiler. The shipping build takes every value but ``hops`` and
+/// ``threads`` from the config artifact's `transit.links` (``init(config:)``, in
+/// `Config/LinksOptions+Config.swift`), so there are no defaults here: the plan of record lives in
+/// `Data/config` (`docs/formats.md`, "links" and "config").
 public struct LinksOptions: Sendable {
-    public var walk = WalkProfile.standard
+    public var walk: WalkProfile
     /// A footpath p → q is listed when it takes at most this long plus the station access charged
     /// at its two ends (``accessSeconds`` of p's and of q's system), i.e. at most this much walking
     /// (8 min at 3.5 mph is about 750 m) between the two platforms' street access.
-    public var maxFootpathWalkSeconds: UInt32 = 480
+    public var maxFootpathWalkSeconds: UInt32
     /// In-station transfers (`transfers.txt`) quicker than this are raised to it, so changing
     /// platforms is never quicker than the same-stop subway change time. MTA lists 0 s for about
     /// 60 cross-platform and same-station rows.
-    public var minTransferSeconds: UInt32 = 30
+    public var minTransferSeconds: UInt32
     /// Station links are listed when the walk between the station and a stop's access point
     /// (snap legs included, station access excluded) is at most this far at walking speed.
-    public var stationLinkMaxWalkMeters = 350.0
+    public var stationLinkMaxWalkMeters: Double
     /// Station access charged once at every street↔platform transition.
-    public var accessSeconds: [TransitSystem: UInt32] = [.subway: 120, .lirr: 240, .bus: 30, .ferry: 120, .path: 120]
+    public var accessSeconds: [TransitSystem: UInt32]
     /// How far an access point may lie from the walk graph. LIRR stops with nothing within
-    /// 150 m are ride-through only.
-    public var maxSnapMeters: [TransitSystem: Double] = [.subway: 150, .bus: 150, .lirr: 150, .ferry: 250, .path: 150]
+    /// reach are ride-through only.
+    public var maxSnapMeters: [TransitSystem: Double]
     /// Systems whose access points outside the service area (the streets graph's regions) get no
     /// street access, whatever lies nearby: PATH's Newark and Harrison stations are ride-through
     /// only (trains still run through them to Journal Square). Other systems' stops just past the
     /// city line (e.g. buses in Nassau or Yonkers) keep their access when a street is in reach.
-    public var streetAccessOnlyInsideServiceArea: Set<TransitSystem> = [.path]
+    public var streetAccessOnlyInsideServiceArea: Set<TransitSystem>
     /// Indoor or very short walks between stations of different systems, added as
     /// platform-to-platform transfers (no station access) between every routable platform of
     /// each end, both ways. The street walk still wins where it is quicker.
-    public var fixedTransfers: [FixedTransfer] = FixedTransfer.pathSubway
+    public var fixedTransfers: [FixedTransfer]
     /// The rail bike hops, built when `stations.bin` is present.
-    public var hops = HopOptions()
-    public var threads = ProcessInfo.processInfo.activeProcessorCount
+    public var hops: HopOptions
+    public var threads: Int
 
-    public init() {}
+    public init(walk: WalkProfile, maxFootpathWalkSeconds: UInt32, minTransferSeconds: UInt32, stationLinkMaxWalkMeters: Double,
+                accessSeconds: [TransitSystem: UInt32], maxSnapMeters: [TransitSystem: Double],
+                streetAccessOnlyInsideServiceArea: Set<TransitSystem>, fixedTransfers: [FixedTransfer],
+                hops: HopOptions = HopOptions(), threads: Int = ProcessInfo.processInfo.activeProcessorCount) {
+        self.walk = walk
+        self.maxFootpathWalkSeconds = maxFootpathWalkSeconds
+        self.minTransferSeconds = minTransferSeconds
+        self.stationLinkMaxWalkMeters = stationLinkMaxWalkMeters
+        self.accessSeconds = accessSeconds
+        self.maxSnapMeters = maxSnapMeters
+        self.streetAccessOnlyInsideServiceArea = streetAccessOnlyInsideServiceArea
+        self.fixedTransfers = fixedTransfers
+        self.hops = hops
+        self.threads = threads
+    }
 
     func access(_ system: TransitSystem) -> UInt32 { accessSeconds[system] ?? 0 }
     func snapLimit(_ system: TransitSystem) -> Double { maxSnapMeters[system] ?? 150 }
@@ -114,7 +131,8 @@ public struct StreetAccessPoint: Sendable, Equatable {
 }
 
 /// A configured walk between two stations (or stops) of any systems, e.g. PATH ↔ subway
-/// through the Oculus. Both ends are qualified ids (`P:place_WTC`, `S:E01`).
+/// through the Oculus. Both ends are qualified ids (`P:place_WTC`, `S:E01`). The shipping list is
+/// the config's `transit.links.fixedTransfers` (`Data/config/fixed-transfers.csv`).
 public struct FixedTransfer: Sendable, Hashable, Codable {
     public var from: StopID
     public var to: StopID
@@ -125,18 +143,6 @@ public struct FixedTransfer: Sendable, Hashable, Codable {
         self.to = to
         self.seconds = seconds
     }
-
-    /// The plan's PATH↔subway minimums: WTC → 1 (WTC Cortlandt) about 4 min and → E (World
-    /// Trade Center) about 6 min via the Oculus; 14th and 23rd St → the F/M about 3 min each;
-    /// 33rd St → 34 St-Herald Sq (B D F M and N Q R W) about 4 min.
-    public static let pathSubway: [FixedTransfer] = [
-        FixedTransfer(from: "P:place_WTC", to: "S:138", seconds: 240),
-        FixedTransfer(from: "P:place_WTC", to: "S:E01", seconds: 360),
-        FixedTransfer(from: "P:place_14S", to: "S:D19", seconds: 180),
-        FixedTransfer(from: "P:place_23S", to: "S:D18", seconds: 180),
-        FixedTransfer(from: "P:place_33S", to: "S:D17", seconds: 240),
-        FixedTransfer(from: "P:place_33S", to: "S:R17", seconds: 240),
-    ]
 }
 
 /// A platform-to-platform walk inside a station complex, from `transfers.txt`.

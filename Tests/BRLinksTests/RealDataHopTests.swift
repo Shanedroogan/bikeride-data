@@ -1,4 +1,5 @@
 import BRBuild
+import BRConfig
 import BRCore
 import BRData
 import BRStreetCore
@@ -8,7 +9,8 @@ import Testing
 
 /// The rail bike hops of a built data directory: a rebuild from its own inputs equals the stored
 /// block, and known pairs are kept or dropped for the documented reasons. Runs only when
-/// `BR_DATA_DIR` names a data directory whose `links.bin` has hops, e.g.
+/// `BR_DATA_DIR` names a data directory whose `links.bin` has hops (and the `config.bin` it was
+/// built from), e.g.
 ///
 ///     BR_DATA_DIR=build/data swift test -c release -Xswiftc -enable-testing --filter RealDataHopTests
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["BR_DATA_DIR"] != nil))
@@ -39,7 +41,8 @@ struct RealDataHopTests {
         stationLinks.stopStation = Array(raw.stopStationStation)
         stationLinks.stopEnter = Array(raw.stopStationEnter)
         stationLinks.stopExit = Array(raw.stopStationExit)
-        var options = HopOptions()
+        // The hop options links was built with: the config's holidays and change after the bike.
+        var options = LinksOptions(config: try MappedConfig.load(fromDataDirectory: directory).document).hops
         #expect(stored.parameters == options.parameters)
         options.parameters = stored.parameters
         let parents = RailParents.make(timetables: timetables, network: network)

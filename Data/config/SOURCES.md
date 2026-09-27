@@ -62,7 +62,8 @@ flag (301 of 2,089 v1 trips carry the peak flag; flagged trips follow the flag).
 minimums: WTC → WTC Cortlandt (1) about 4 min and → World Trade Center (E) about 6 min via the
 Oculus; 14th and 23rd St → the F/M about 3 min; 33rd St → 34 St-Herald Sq about 4 min. Each row
 applies both ways between every routable platform of each end, so an unordered pair appears
-once. The compiler checks every end resolves to a routable stop in the `tt-*` artifacts.
+once. The compiler checks every end resolves to a routable stop in the `tt-*` artifacts, and the
+links build fails on one that doesn't.
 
 ## alerts/path-keywords.csv
 

@@ -1,3 +1,4 @@
+import BRConfig
 import BRCore
 import BRData
 import BRGeo
@@ -5,20 +6,26 @@ import BRStreetCore
 import BRTimetable
 import Foundation
 
-/// Builds the `links` artifact from the `streets`, `stations` and `tt-*` artifacts in a data
-/// directory: access points, transitively closed footpaths, stop↔station walk links, and (with
-/// stations) the rail bike hops (``HopBuilder``: parent station A → the 2 best pickups near A ×
-/// the 2 best docks near parent station B, rides of 5–25 min, dropped when a one-seat ride beats
-/// the bike); then writes the raw artifact and its `.xz` blob, re-opens it, checks the footpath
-/// invariants and reports.
+/// Builds the `links` artifact from the `config`, `streets`, `stations` and `tt-*` artifacts in a
+/// data directory: access points, transitively closed footpaths, stop↔station walk links, and
+/// (with stations) the rail bike hops (``HopBuilder``: parent station A → the 2 best pickups near
+/// A × the 2 best docks near parent station B, rides of 5–25 min, dropped when a one-seat ride
+/// beats the bike); then writes the raw artifact and its `.xz` blob, re-opens it, checks the
+/// footpath invariants and reports. Every build parameter but the hop tunables and the thread
+/// count comes from `config.bin` (``LinksOptions/init(config:)-(ConfigDocument)``), which is
+/// required and named in `builtAgainst` like the other inputs.
 public struct LinksCompiler: Sendable {
     public struct Configuration: Sendable {
-        /// Where `streets.bin`, `stations.bin` and `tt-*.bin` are read from.
+        /// Where `config.bin`, `streets.bin`, `stations.bin` and `tt-*.bin` are read from.
         public var dataDirectory: URL
         /// Where `links.bin` (and `.xz`) are written.
         public var outputDirectory: URL
         public var compress = true
-        public var options = LinksOptions()
+        /// Parallel searches.
+        public var threads = ProcessInfo.processInfo.activeProcessorCount
+        /// Replaces the config's `transit.links.maxFootpathWalkSeconds`, for experiments: the
+        /// artifact then disagrees with the config its `builtAgainst` names, and the report warns.
+        public var maxFootpathWalkSeconds: UInt32?
         /// Run ``FootpathCheck`` over the result (a few seconds on the city).
         public var checkFootpaths = true
 
@@ -56,14 +63,24 @@ public struct LinksCompiler: Sendable {
         public var peakRSSBytes: Int
     }
 
-    public enum LinksError: Error, CustomStringConvertible {
+    public enum LinksError: Error, CustomStringConvertible, Equatable {
         case missingInput(String)
+        /// `config.bin` is missing: links is built from the config artifact.
+        case missingConfig(String)
+        /// Fixed transfers (`from→to`) with an end that is not a routable stop, or a station with
+        /// routable platforms, of its system's timetable. A transfer whose system has no
+        /// timetable in the data directory is skipped with a warning instead.
+        case unresolvedFixedTransfers([String])
         /// A stored hop pickup (dock) some platform of its station has no exit (enter) link to.
         case hopWithoutPlatformLink(missing: Int, examples: [String])
 
         public var description: String {
             switch self {
             case .missingInput(let path): "\(path) is missing; build it first"
+            case .missingConfig(let path): "\(path) is missing; links is built from the config artifact: build it first (bikeride-data config)"
+            case .unresolvedFixedTransfers(let transfers):
+                "fixed transfers \(transfers.joined(separator: ", ")) do not resolve: an end is not a routable stop (or a station with "
+                    + "routable platforms) of its timetable; fix transit.links.fixedTransfers (Data/config/fixed-transfers.csv)"
             case .hopWithoutPlatformLink(let missing, let examples):
                 "\(missing) hop (platform, station) pairs lack a station link, e.g. \(examples.prefix(3))"
             }
@@ -80,7 +97,6 @@ public struct LinksCompiler: Sendable {
 
     public func run(log: (String) -> Void = { _ in }) throws -> Report {
         let config = configuration
-        let options = config.options
         var seconds: [String: Double] = [:]
         func timed<T>(_ phase: String, _ body: () throws -> T) rethrows -> T {
             let start = Date()
@@ -96,7 +112,18 @@ public struct LinksCompiler: Sendable {
                                              dataVersion: header.dataVersion)
         }
 
-        // 1. Inputs.
+        // 1. Inputs. The config first: every build parameter comes from it.
+        let configURL = config.dataDirectory.appendingPathComponent(MappedConfig.fileName)
+        guard fileManager.fileExists(atPath: configURL.path) else { throw LinksError.missingConfig(configURL.path) }
+        let mappedConfig = try timed("load") { try MappedConfig(contentsOf: configURL) }
+        try timed("hash") { try input(.config, configURL, mappedConfig.header) }
+        var options = LinksOptions(config: mappedConfig.document)
+        options.threads = config.threads
+        if let bound = config.maxFootpathWalkSeconds, bound != options.maxFootpathWalkSeconds {
+            warnings.append("maxFootpathWalkSeconds \(bound) replaces the config's \(options.maxFootpathWalkSeconds): "
+                + "links disagrees with the config it was built against")
+            options.maxFootpathWalkSeconds = bound
+        }
         let streetsURL = config.dataDirectory.appendingPathComponent(MappedStreetGraph.fileName)
         guard fileManager.fileExists(atPath: streetsURL.path) else { throw LinksError.missingInput(streetsURL.path) }
         let graph = try timed("load") { try MappedStreetGraph(contentsOf: streetsURL, validate: true) }
@@ -124,14 +151,23 @@ public struct LinksCompiler: Sendable {
         } else {
             warnings.append("stations.bin missing; no station links")
         }
+        // A fixed transfer to a system with no timetable here can't apply (none of its stops is
+        // linked); it is skipped, as the config's reference check skips it. Any other must resolve.
+        func linked(_ id: StopID) -> Bool { id.system.map { timetables[$0] != nil } ?? true }
+        let notLinked = options.fixedTransfers.filter { !linked($0.from) || !linked($0.to) }
+        if !notLinked.isEmpty {
+            let missing = Set(notLinked.flatMap { [$0.from, $0.to] }.compactMap(\.system).filter { timetables[$0] == nil })
+            warnings.append("\(notLinked.count) fixed transfers skipped (" + missing.map(TimetableBuild.artifactFileName).sorted().joined(separator: ", ")
+                + " missing): " + notLinked.map { "\($0.from)→\($0.to)" }.joined(separator: ", "))
+            options.fixedTransfers.removeAll { !linked($0.from) || !linked($0.to) }
+        }
         for warning in warnings { log("warning: \(warning)") }
 
         // 2. Network, footpaths, station links.
         let (network, networkStats) = timed("network") { LinkNetwork.make(timetables: timetables, graph: graph, options: options) }
         log("network: \(network.stopCount) stops, \(network.routable.filter { $0 }.count) routable, \(network.accessPoints.count) access points, \(network.transfers.count) transfer pairs")
-        for unresolved in networkStats.fixedTransfersUnresolved where timetables.count == LinksFormat.systems.count {
-            warnings.append("fixed transfer \(unresolved) not applied: stop not found or not routable")
-            log("warning: \(warnings.last!)")
+        guard networkStats.fixedTransfersUnresolved.isEmpty else {
+            throw LinksError.unresolvedFixedTransfers(networkStats.fixedTransfersUnresolved)
         }
         let anchors: [LinkAnchor?] = stations.map { stations in
             (0..<stations.count).map { index in

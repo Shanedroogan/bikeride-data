@@ -522,7 +522,8 @@ public struct ConfigAccessSlack: Sendable, Equatable, Codable {
     }
 }
 
-/// The change time after a bike leg: `max(minSeconds, ride × ridePercent / 100)`.
+/// The change time after a bike leg: `max(minSeconds, ride × ridePercent / 100)`. `links` builds
+/// its hops' one-seat rule with it too.
 public struct ConfigAfterBikeChange: Sendable, Equatable, Codable {
     public var minSeconds: Int
     public var ridePercent: Int
@@ -548,8 +549,8 @@ public struct ConfigExtraLeg: Sendable, Equatable, Codable {
     }
 }
 
-/// The `links` build parameters. `links` bakes these in, and its header's `builtAgainst` will
-/// name the config it was built from.
+/// The `links` build parameters. `links` bakes these in, and its header's `builtAgainst` names
+/// the config it was built from.
 public struct ConfigLinks: Sendable, Equatable, Codable {
     /// Station access charged once at every street↔platform transition. At most 65,534.
     public var stationAccessSeconds: ConfigSystemValues

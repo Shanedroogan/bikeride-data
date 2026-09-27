@@ -1,7 +1,6 @@
 import BRBuild
 import BRConfig
 import BRCore
-import BRStreetCore
 import Foundation
 import Testing
 
@@ -97,22 +96,8 @@ import Testing
         #expect(transit.originSnapMeters == 250)
     }
 
-    /// bikeride-data `LinkNetwork.swift:13-34, 130-137`: the options `links` is built with today.
-    @Test func linksOptionsFromConfigEqualTheBuilderDefaults() {
-        let fromConfig = LinksOptions(config: document.transit.links), literal = LinksOptions()
-        #expect(fromConfig.walk.speedMetersPerSecond == literal.walk.speedMetersPerSecond)
-        #expect(fromConfig.walk.speedMetersPerSecond == WalkProfile.standard.speedMetersPerSecond)
-        #expect(fromConfig.walk.stairsMultiplier == literal.walk.stairsMultiplier)
-        #expect(fromConfig.maxFootpathWalkSeconds == literal.maxFootpathWalkSeconds)
-        #expect(fromConfig.minTransferSeconds == literal.minTransferSeconds)
-        #expect(fromConfig.stationLinkMaxWalkMeters == literal.stationLinkMaxWalkMeters)
-        #expect(fromConfig.accessSeconds == literal.accessSeconds)
-        #expect(fromConfig.maxSnapMeters == literal.maxSnapMeters)
-        #expect(fromConfig.streetAccessOnlyInsideServiceArea == literal.streetAccessOnlyInsideServiceArea)
-        // Order doesn't reach the links bytes (each pair keeps its minimum), so compare as sets.
-        #expect(Set(fromConfig.fixedTransfers) == Set(literal.fixedTransfers))
-        #expect(fromConfig.fixedTransfers.count == FixedTransfer.pathSubway.count)
-    }
+    // The links parameters against the literals they replaced (bikeride-data `LinkNetwork.swift`
+    // at the move) are checked where those literals now live: BRLinksTests `LinksConfigTests`.
 
     @Test func bikeShareAlertsCalendarAndAppEqualTheLiterals() {
         // BRBikeShare/StationFilter.swift:26-33 and BikeType.swift:17.

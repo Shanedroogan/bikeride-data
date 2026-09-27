@@ -10,7 +10,7 @@ import Testing
     let world: TransitFixture.World
     let network: LinkNetwork
     let stats: LinkNetworkStats
-    let options = LinksOptions()
+    let options = LinksOptions.standard
 
     init() throws {
         world = try TransitFixture.world()
@@ -66,7 +66,7 @@ import Testing
 
     @Test func systemsLimitedToTheServiceAreaAreRideThroughOutsideIt() {
         // As PATH's Newark and Harrison stations are: B4 and L2 lie outside the fixture's region.
-        var limited = LinksOptions()
+        var limited = LinksOptions.standard
         limited.streetAccessOnlyInsideServiceArea = [.bus, .lirr]
         let (network, stats) = LinkNetwork.make(timetables: world.timetables, graph: world.city.graph, options: limited)
         #expect(!world.city.graph.serviceArea.contains(world.timetables[.bus]!.stopCoordinate(world.timetables[.bus]!.stop(gtfsID: "B4")!)))
@@ -95,7 +95,7 @@ import Testing
     }
 
     @Test func addsConfiguredCrossSystemTransfersBothWays() {
-        var custom = LinksOptions()
+        var custom = LinksOptions.standard
         custom.fixedTransfers = [
             FixedTransfer(from: "S:S1", to: "B:B2", seconds: 45),   // station → both platforms
             FixedTransfer(from: "S:S4N", to: "B:B2", seconds: 200),

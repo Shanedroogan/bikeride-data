@@ -40,7 +40,7 @@ let package = Package(
         .testTarget(name: "BRTimetableTests", dependencies: ["BRTimetable", "BRBuild", "BRData", "BRGeo", "BRCore"]),
         .testTarget(name: "BRStreetsTests", dependencies: ["BRBuild", "BRStreetCore", "BRData", "BRGeo", "BRCore"]),
         .testTarget(name: "BRStationsTests", dependencies: ["BRBuild", "BRStreetCore", "BRData", "BRGeo", "BRCore"]),
-        .testTarget(name: "BRLinksTests", dependencies: ["BRBuild", "BRStreetCore", "BRTimetable", "BRData", "BRGeo", "BRCore"]),
+        .testTarget(name: "BRLinksTests", dependencies: ["BRBuild", "BRConfig", "BRStreetCore", "BRTimetable", "BRData", "BRGeo", "BRCore"]),
         .testTarget(
             name: "BRConfigTests",
             dependencies: ["BRConfig", "BRBuild", "BRTimetable", "BRStreetCore", "BRData", "BRGeo", "BRCore"]

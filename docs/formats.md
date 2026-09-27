@@ -482,7 +482,13 @@ the profile values are finite and positive; the tail. Undefined flag bits are no
 Footpaths between transit stops, each stop's street access points, and walk links between stops
 and Citi Bike stations. Writer: `LinksArtifactWriter`, filled by `LinksCompiler` /
 `LinksBuilder` (BRBuild). Reader: `MappedLinks` (BRTimetable). `builtAgainst` names the
-`streets`, `stations` and `tt-*` artifacts it was built from.
+`config`, `streets`, `stations` and `tt-*` artifacts it was built from (`dataVersion` lists the
+same inputs, each as `name=` + the first 12 hex digits of its rawSha256). Every build parameter
+below (station access, snap limits, the walk speed and bounds, the service-area rule, the fixed
+transfers, and the one-seat rule's holidays and change after the bike) comes from the config's
+`transit.links`, `transit.afterBikeChange` and `calendar.holidays`; the values quoted are
+`Data/config`'s. Only the hop tunables (`HopOptions`, below) are the builder's own. `config.bin`
+is required: links does not build without it.
 
 **Global stop index.** One index over every stop of the five timetables, in the order subway,
 bus, LIRR, ferry, PATH (draft revision 2 added PATH): stop `local` of system s is `base(s) + local`, where `base` is the running sum
@@ -498,7 +504,7 @@ snaps above. LIRR stops with nothing within 150 m (all of
 Long Island) have no access point: they are ride-through only. PATH stations inside the service
 area (Journal Square, Grove Street, Exchange Place, Newport, Hoboken) snap to the Jersey City and
 Hoboken streets like any other stop; those outside it (Newark Penn, Harrison) are not snapped,
-by rule (`LinksOptions.streetAccessOnlyInsideServiceArea`, PATH by default), so they are
+by rule (`streetAccessOnlyInsideServiceArea`: PATH), so they are
 ride-through only: trains still run through them to Journal Square. The build report lists them
 under `rideThroughOutsideServiceArea` and counts their access points as
 `accessPointsOutsideServiceArea`, not as unsnapped. Station access is charged once at
@@ -516,11 +522,14 @@ point allows exit, respectively entry); and platform → platform transfers. Tra
 every pair of routable child platforms (a station's row to itself links its own platforms), at
 `min_transfer_time` raised to at least `minTransferSeconds` (MTA lists 0 s for about 60
 cross-platform rows), or the straight-line walking time when the row gives none. Configured
-*fixed transfers* (`LinksOptions.fixedTransfers`) add indoor or very short walks between
+*fixed transfers* (`transit.links.fixedTransfers`) add indoor or very short walks between
 stations of different systems the same way, both ways between every routable platform of each
 end: PATH↔subway WTC → WTC Cortlandt (1) 240 s and → World Trade Center (E) 360 s via the Oculus,
 14th St → 14 St (F M) and 23rd St → 23 St (F M) 180 s, 33rd St → 34 St-Herald Sq (B D F M and
-N Q R W) 240 s. The street walk still wins where it is quicker.
+N Q R W) 240 s. The street walk still wins where it is quicker. Each end must resolve to a
+routable stop of its timetable, or a station with routable platforms; one that doesn't fails the
+build. A transfer to a system whose timetable is absent from the data directory is skipped with
+a warning (none of that system's stops is linked).
 
 p → q is listed when its cost is at most `maxFootpathWalkSeconds` + access(p) + access(q)
 (each end's system access), i.e. at most 8 min of walking (about 750 m) between the two stops'
@@ -626,15 +635,16 @@ every tuple at the rider's own speed.
 bike, judged at midday on a reference day: per rail system, the first Tuesday, Wednesday or
 Thursday its timetable covers that is not a holiday (else its first covered weekday that is not
 one, else its first covered date), so the result depends only on the artifacts and the holiday
-list, never on the build machine's clock. The holidays are `HopOptions.holidays`, empty until
-links is built from the config's holiday calendar. Over that day's trips that board at a
+list, never on the build machine's clock. The holidays are the config's `calendar.holidays`
+(`HopOptions.holidays`). Over that day's trips that board at a
 platform of A between 10:00 and 16:00 and later alight at a platform of B (pickup and drop-off
 allowed), with `trips` their number (each trip counted once) and `inVehicle` the least arrival −
 departure among them, the pair is dropped when
 `inVehicle + ⌊⌊21,600 ÷ trips⌋ ÷ 2⌋ ≤ bike` (half the midday headway), where `bike` is the least
 door-to-door time over the stored tuples at the *fastest* pace:
 `exit + unlock + ⌈decameters × 10,000 ÷ maxSpeed⌉ + dock + enter + max(60, ⌊ride ÷ 10⌋)` seconds
-(the last term is the change after the bike). With the default paces a stored tuple that rides
+(the last term is the change after the bike: the config's `transit.afterBikeChange`, 60 s and
+10%). With the default paces a stored tuple that rides
 less far than the best lowers `bike` by at most 2 s of rounding, and not at all when it rides
 over 200 m less: ranking at a pace 15% slower than the fastest costs it more extra walking than
 the faster ride saves, net of the change after the bike (at most 10% of the ride). So spare
@@ -812,14 +822,14 @@ to the zone fare.
 | `guaranteedTransferSeconds` | int | A guaranteed (`transfer_type` 1) trip pair |
 | `minimumPlatformChangeSeconds` | int | Floor on `transfers.txt` platform-to-platform times |
 | `accessSlack` | {`baseSeconds`, `walkPercent`} | Slack after walking to the first stop: base + walk × percent / 100 (integer division) |
-| `afterBikeChange` | {`minSeconds`, `ridePercent`} | Change time after a bike leg: max(min, ride × percent / 100) |
+| `afterBikeChange` | {`minSeconds`, `ridePercent`} | Change time after a bike leg: max(min, ride × percent / 100). `links` builds its hops' one-seat rule with it too |
 | `extraLeg` | {`pruneRound`, `minSavingSeconds`} | A journey of exactly `pruneRound` transit legs (its last leg boards in round `pruneRound`; round 0 is access only) must arrive more than `minSavingSeconds` before the best journey with fewer legs. Journeys with more legs are not held to it; the engine searches at most 4 legs (a limit that is not in config), so `pruneRound` 4 covers the last round |
 | `maxJourneySeconds` | int | No label later than departure + this |
 | `accessWalkLimitSeconds`, `directWalkLimitSeconds` | int | Walk-tree reach; the direct walk |
 | `originSnapMeters` | int | How far an origin or destination may lie from the walk graph |
 | `links` | object | Below |
 
-`transit.links`, the parameters `links` is built with (its `builtAgainst` will name this config):
+`transit.links`, the parameters `links` is built with (its `builtAgainst` names this config):
 
 | Key | Type | Meaning |
 |---|---|---|
