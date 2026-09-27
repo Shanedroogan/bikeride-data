@@ -1,8 +1,10 @@
-// Publish: what runs after the artifacts are built, M1.
+// Publish: what runs after the artifacts are built (M1).
 //
-// Will hold the validation gate (`bikeride-data gate`, reports/gate.json), the set manifest
-// (data/manifest.json, `bikeride-data manifest`) and the heartbeat (data/heartbeat.json, written
-// last). The gate's xz check reuses `XZCheck`; its holiday list is
-// Data/config/calendar/holidays.csv.
-//
-// Empty until then; this file keeps the directory in place.
+// - `Gate` (`bikeride-data gate`): the validation gate over a built set, writing
+//   `reports/gate.json` (`GateReport`). Its rules are functions of plain inputs in `GateChecks`;
+//   its thresholds, snapping allowlist and holiday list come from the repository's `Data/`
+//   (`GateConfiguration`). Other checks join through the `GateCheck` protocol.
+// - `SetManifestBuilder` (`bikeride-data manifest`): `data/manifest.json` (`SetManifest`) and the
+//   trip-count sidecar the next build's gate reads (`TripCountSidecar`), for a set the gate passed.
+// - `SetHeartbeat`: `data/heartbeat.json`, written last.
+// - `SetArtifacts`, `SetSystems`: reading a set's files; the system names and date form a set uses.

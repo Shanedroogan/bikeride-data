@@ -16,8 +16,8 @@ let usage = """
       all         Run streets → timetables → stations → links (see: all --help)
       config      Build the config artifact from Data/config and Data/fares (M1, not implemented yet)
       flows       Build the Citi Bike flows artifact from trip data (M1, not implemented yet)
-      gate        Run the validation gate over a built set (M1, not implemented yet)
-      manifest    Write the set manifest and heartbeat (M1, not implemented yet)
+      gate        Run the validation gate over a built set (see: gate --help)
+      manifest    Write the set manifest and heartbeat (see: manifest --help)
       help        Show this help
     """
 

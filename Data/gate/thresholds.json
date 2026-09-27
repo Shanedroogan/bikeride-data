@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "notes": [
+    "Validation-gate thresholds (pipeline only; not shipped in the config artifact). See SOURCES.md.",
+    "streets.regions: each region's kept share (street length surviving the component filter) must stay at or above this percent. Set 2026-09-27 at 3 points under the static-20260926 build's value, rounded down: Hoboken 92.15, Manhattan 94.97, Jersey City 96.91, Queens 97.75, Bronx 98.11, Staten Island 98.93, Brooklyn 99.24 (overall 97.64)."
+  ],
+  "tripCounts": { "maxChangePercent": 35, "holidayProfiles": ["weekday", "saturday", "sunday"] },
+  "coverage": { "minDays": 3 },
+  "snapping": { "maxSnapMeters": 100 },
+  "streets": {
+    "minKeptSharePercent": 90,
+    "regions": {
+      "Bronx": 95,
+      "Brooklyn": 96,
+      "Hoboken": 89,
+      "Jersey City": 93,
+      "Manhattan": 91,
+      "Queens": 94,
+      "Staten Island": 95
+    }
+  }
+}
