@@ -585,9 +585,178 @@ closure, sorting, no self-loops) and records the result in its report.
 
 <!-- Placeholder: the rail bike-hop block of `links` is documented here in M1. -->
 
-### flows (kind 8, draft)
+### `flows` (kind 8, format 0, draft revision 1)
 
-<!-- Placeholder: the `flows` payload layout and invariants are documented here in M1. -->
+Per Citi Bike station, 15-minute bin, day type, direction and bike type: the mean and variance of
+the number of trips, from the newest three months of Citi Bike's public trip data. Writer:
+`FlowsData` (BRFlows), filled by `FlowsCompiler` (BRBuild, `Sources/BRBuild/Flows/`). Reader:
+`MappedFlows` (BRFlows), which views every section in place and checks every value at open (about
+4.8 M cells; `validate: false` skips the per-cell checks). The trip data and anything built from
+it stay out of every repository: the zips are cached in `build/trips`, never committed.
+
+**Header.** `builtAgainst` is empty: flows is built from trip files and GBFS, never from another
+artifact (stations rebuilds weekly and its indices move, so flows never stores them).
+`dataVersion` pins every input:
+`trips=<first>-<last> <pin> …;gbfs=<last_updated>;holidays=<sha12>;depots=<sha12>`, with one
+pin per trip zip, `<system><YYYYMM>:<ETag>:<bytes>` (ETag unquoted), in month then system order,
+e.g. `NYC202608:d5f2a3ec3831ad8ef2de3da12102e550-60:1024034405`. The pins are how a build knows
+whether it has anything new (see *Build*).
+
+**Keys.** One row per GBFS `short_name`, the id the trip data's `start_station_id` and
+`end_station_id` hold, byte for byte, rows strictly ascending by those bytes. The key universe
+is the whole `station_information` feed at build time, capacity 0 included (unlike `stations`,
+which keeps only stations with docks), minus the test regions 189 and 190 and entries without a
+`short_name`; a repeated `station_id` keeps its first entry. Two stations with one `short_name`
+fail the build. A device joins once per data set: binary search of each `stations.bin` short name
+(`MappedFlows.rowTable(forKeys:)`), `0xFFFF` for a station without flows. At most 65,534 keys.
+
+**Trip ends.** A monthly file holds the trips that *ended* in its month; a trip is in exactly one
+of the NYC and JC series, so a month needs both. Each row's two station ids resolve in this
+order: the exact bytes of a key; else, when the id is one digit after a dot (`^[0-9]+\.[0-9]$`),
+is no key, and the id plus `0` is a key, that key (the trip data drops a trailing zero from about
+1.4% of NYC end ids: `5343.1` for `5343.10`; a GBFS key `X` next to a key `X0` fails the build,
+since the repair would be ambiguous); else an empty id is *dockless*; else an id in
+`Data/flows/depots.csv` (exact or prefix) is a *depot*; else it is *unmatched*. Dockless, depot
+and unmatched ends are not counted. `rideable_type` `classic_bike` (and older files'
+`docked_bike`) is classic, `electric_bike` e-bike; a row of any other type is counted in the
+report and left out. A departure is binned by `started_at`, an arrival by `ended_at`: the local
+New York wall-clock time the data holds (no UTC offset), bin = minute of day ÷ 15. The fall-back
+day's two 01:00–01:59 hours therefore share bins 4–7, and the spring-forward day has no trips in
+bins 8–11. Ends dated outside the window are dropped (the first month's file holds a few trips
+that started the day before the window).
+
+**Windows and day types.** Both windows are the calendar days of the three months (the departure
+and arrival windows are stored apart so a later build can shift one without a format change). A
+day is a *weekend* day when it is a Saturday or Sunday, or a holiday with the `weekend` profile in
+`Data/config/calendar/holidays.csv` (the pipeline's only holiday list, read directly so that
+`builtAgainst` stays empty; a window the file does not cover fails the build); every other day,
+weekday-profile holidays included, is a *weekday*. The `holidays` section lists the
+weekend-profile holidays inside the windows (2026-06…08: `2026-07-03`). Day types follow the
+calendar date of the bin, not a service day.
+
+**Active days.** Per key, the days from its first to its last day with a counted trip end
+(either direction, either bike type), counted per day type: the denominator *n* of its means. A
+station that opened or closed inside the window is averaged over the days it existed. The same
+span serves both directions today; the per-direction slots let a later build drop days a station
+could not serve one direction (empty or full) without a format change. A key with no counted
+trip end has 0.
+
+**Smoothing.** Empirical Bayes in pseudo-days, per (key, day type, direction, series), where the
+series are classic, e-bike and *any* (the per-day sum of the two). With `S_b` and `Q_b` the sum
+and the sum of squares of the daily counts in bin b over the window's days of that type, and n
+the active days:
+
+- *Raw* mean `m_b = S_b / n`, and the station's daily total `T = Σ_b m_b` (0 when n = 0).
+- *Neighbors*: the `neighborCount` (8) nearest other keys with at least one counted trip end,
+  within `neighborRadiusMeters` (1,000 m), nearest first, ties to the lower row. Distances are
+  integers: `(Δlat_E6 · 1024)² + (Δlon_E6 · 776)²` against `(radius · 1024 · 10⁶ / 111,195)²`
+  (776 = round(1024 · cos 40.73°); 111,195 m per degree), so no trigonometry runs anywhere.
+- *Neighborhood prior*: the neighbors' raw means (those with n > 0 for this day type) summed per
+  bin into a shape `P_b`, then scaled to the station's own daily total:
+  `prior_b = P_b / Σ P · T`, or to the neighbors' mean total `Σ P / J` (J neighbors with days)
+  when the station has n = 0. With no neighbor shape, the prior is flat at the station's own rate
+  `T / 96`.
+- *Station-hour* (hour h = bins 4h … 4h + 3):
+  `m̂_h = (Σ_{b∈h} S_b + κh · Σ_{b∈h} prior_b) / (4 · (n + κh))`.
+- *Cell mean*: `m̂_b = (S_b + κc · m̂_h) / (n + κc)` (the station-hour value when n + κc = 0).
+- *Dispersion* (n ≥ 2; else 1): the sample variance `v_b = (n · Q_b − S_b²) / (n · (n − 1))`, the
+  hour's ratio `φ_h = Σ_{b∈h} v_b / Σ_{b∈h} m_b` (1 when the hour's raw mean is 0), the cell's
+  `φ_b = v_b / m_b` (φ_h when m_b = 0), and
+  `φ̂_b = max(1, (n · φ_b + κφ · φ_h) / (n + κφ))`. The floor at 1 is the Poisson floor: a stored
+  variance is never below its mean (in August 2026, 26.5% of cells with a mean of at least 1 had
+  a sample variance below it, per the M1 audit).
+- *Stored*: `meanClassic = m̂`, `varianceClassic = m̂ · φ̂` from the classic series, the same for
+  e-bikes, and `varianceAny = (m̂_classic + m̂_ebike) · φ̂_any` with φ̂ from the any series (the
+  types covary: var(any) ≈ 1.13 × the sum of the typed variances on 2026 data). The any-type
+  mean is not stored: it is `meanClassic + meanEbike`.
+
+κc = 4, κh = 8, κφ = 6 pseudo-days (M1 starting values, to be tuned in the M6 backtest), stored in
+`info` in thousandths. Everything is integer input, `+ − × ÷` and comparisons on `f64` in a fixed
+order, and binary16 rounding by bit operations (`HalfFloat`): no libm, so a Mac and a Linux build
+write the same bytes (checked for 2026-06…08: identical `flows.bin` and `.xz` from macOS arm64
+and `swift:6.4-noble` aarch64).
+
+**Cells.** IEEE 754 binary16, stored as `u16` bit patterns, rounded to nearest (ties to even) from
+the `f64` values; readers decode them by bit operations (every half is exactly a `Float`). Each
+typed variance is rounded on its own, which keeps it at or above its rounded mean; `varianceAny`
+is raised one binary16 step at a time, when needed, until it covers the exact sum of the two
+rounded means (17% of the any-type cells for 2026-06…08, where φ̂ = 1 makes the unrounded
+variance equal that sum).
+
+**Payload.** ASCII `FLOW`, `u32` payloadRevision (draft revision 1; readers require exactly it),
+`u32` section count, `u32` 0, then that many 24-byte table-of-contents entries (`u32` section id,
+`u32` element size, `u64` byte offset from the payload start, `u64` element count), then the
+sections. As in `tt-*`: each section is one array of one scalar type, 8-aligned and zero padded to
+8; ids are permanent; a reader rejects a missing, repeated, misaligned, out-of-bounds or
+overlapping section, one with the wrong element size, and any non-zero byte outside the sections,
+and ignores ids it does not know. Sections are written in id order. K keys:
+
+| Id | Section | Type | Count | Notes |
+|---|---|---|---|---|
+| 1 | `info` | `i64` | ≥ 15 | Below; readers ignore entries past the ones they know |
+| 2 | `holidays` | `i32` | H | Days since 1970-01-01, strictly ascending, inside the windows |
+| 3 | `keyOffsets` | `u32` | K + 1 | Key k is `keyBytes[keyOffsets[k] ..< keyOffsets[k + 1]]`; starts at 0, never decreases, ends at the byte count |
+| 4 | `keyBytes` | `u8` | | UTF-8 short names, concatenated; each non-empty, strictly ascending by bytes |
+| 5 | `stationLatE6` | `i32` | K | GBFS `lat`, microdegrees (rounded as in `stations`) |
+| 6 | `stationLonE6` | `i32` | K | GBFS `lon` |
+| 7 | `stationCapacity` | `u16` | K | GBFS `capacity` at build; 0 allowed |
+| 8 | `stationActiveDays` | `u16` | K × 2 × 2 | `[key][dayType][direction]`; at most the window's days of that type |
+| 9 | `stationFlags` | `u8` | K | Below |
+| 10 | `cells` | `u16` | K × 1,920 | Binary16, `[key][dayType][direction][slot][bin]`: 5 slots × 96 bins per (key, day type, direction), 3,840 bytes per key |
+
+Day types: 0 weekday, 1 weekend. Directions: 0 departures, 1 arrivals. Slots: 0 `meanClassic`,
+1 `varianceClassic`, 2 `meanEbike`, 3 `varianceEbike`, 4 `varianceAny`. Bin b covers minutes
+15b … 15b + 14 of the local day. Every value is per bin (a rate over τ minutes sums the covering
+bins' means and variances).
+
+`info` entries, in order: 0 `departureWindowStartDay`, 1 `departureWindowDayCount`,
+2 `arrivalWindowStartDay`, 3 `arrivalWindowDayCount` (days since 1970-01-01, and 1 … 400 days);
+4 `binMinutes` = 15, 5 `binsPerDay` = 96, 6 `dayTypes` = 2, 7 `bikeTypes` = 2,
+8 `slotsPerSeries` = 5 (layout constants: readers require exactly these values, and a change is a
+new formatVersion); 9 `flags` (bit 0 *customer trips only*: the public data has no rebalancing,
+valet or staff moves, so flows undercount turnover; flows are also censored when a station is
+empty or full; undefined bits ignored); 10 `kappaCellMilli`, 11 `kappaHourMilli`,
+12 `kappaDispersionMilli` (κ × 1000), 13 `neighborCount`, 14 `neighborRadiusMeters` (all ≥ 0).
+
+`stationFlags` (hints; undefined bits are written 0 and ignored): bit 0 *in GBFS at build* (every
+key today), bit 1 *low data* (fewer counted trip ends than active days, or none), bit 2
+*neighborhood-dominated* (for some day type, fewer active days than κc, so the prior outweighs
+the station's own counts in every cell).
+
+Invariants, checked by `MappedFlows` at every open: the layout constants; windows of 1 to 400
+days; κs and neighbor parameters non-negative; key offsets consistent, keys non-empty UTF-8 and
+strictly ascending by bytes, K ≤ 65,534; every per-key section of length K (× 4, × 1,920);
+holidays strictly ascending and inside the windows; active days within the window's days of
+their type; every cell finite and non-negative (sign bit clear, exponent not all ones); each
+typed variance ≥ its mean (compared as bit patterns, which order like the values for
+non-negative halves) and `varianceAny ≥ meanClassic + meanEbike` (exact sums).
+
+**Build.** `bikeride-data flows` lists the public bucket (`s3.amazonaws.com/tripdata`,
+ListObjectsV2, every page), recognizes `YYYYMM-citibike-tripdata.zip` and
+`JC-YYYYMM-citibike-tripdata[.csv].zip` (and two older JC spellings), and takes the newest month
+published for both NYC and JC and the two before it; one month under two keys, or a hole in either
+series, fails the build. Zips are fetched into the cache with a conditional GET (a re-run gets
+304) and must match the listed ETag and size; every `*.csv` entry of a zip (outside `__MACOSX/`)
+is streamed through `unzip -p`, entries in parallel. `flows.bin` and its blob are replaced only
+when the gate passes:
+
+- unmatched ÷ (exact + repaired + unmatched) trip ends below 2%, per system and per side, in the
+  window's newest month. That month's stations are today's GBFS, so a broken join shows there;
+  earlier months also hold trips at stations GBFS has dropped since (JC, June 2026: 3.8%, nearly
+  all at `HB106`, removed in July), which is reported but not gated;
+- every window day has at least one counted departure and one counted arrival; no counter
+  saturates;
+- per system, a month the last passing build also used keeps at least 90% of its rows, and a new
+  month has at least 50% of the rows of that build's newest month (skipped without a previous
+  report; a failed build never becomes the reference).
+
+Exit status 0 built, 3 gate failure, 4 nothing new (the newest common month is the one
+`flows.bin` ends with and every pin is unchanged, or `--offline` without the saved listing or a
+zip); both 3 and 4 leave `flows.bin` in place. `reports/flows.json` holds the per-file,
+per-month and per-system resolution counts, the unmatched ids, the gate and the smoothing stats.
+
+Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.46 MB xz (the four typed slots alone: 3.87 MB; the
+three-month window has far fewer empty cells than one month).
 
 ### config (kind 9, draft)
 
