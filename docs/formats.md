@@ -85,11 +85,11 @@ builds that can't update in step with the pipeline, and because an in-progress t
   (`ArtifactKind.supportedFormatVersions`: for now exactly 1, and a draft only its own 0) and
   rejects the rest with `unsupportedFormatVersion`. A later reader keeps accepting format 1 while
   pinned sets can still hold it.
-- **Fixed-layout payloads (`streets`, `stations`) end in an extension tail.** After the last fixed
-  array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes, ids strictly ascending,
-  and nothing after the tail (`ExtensionTable` in `Sources/BRData/ExtensionTail.swift`). Readers
-  skip ids they don't know. Each kind's section lists its ids, and what a reader assumes when one
-  is absent. Writers of format 1 write an empty tail (`count = 0`) until an id is defined.
+- **Fixed-layout payloads (`streets`, `stations`, `links`) end in an extension tail.** After the
+  last fixed array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes, ids strictly
+  ascending, and nothing after the tail (`ExtensionTable` in `Sources/BRData/ExtensionTail.swift`).
+  Readers skip ids they don't know. Each kind's section lists its ids, and what a reader assumes
+  when one is absent. Writers of format 1 write an empty tail (`count = 0`) until an id is defined.
 - **Sectioned payloads (`tt-*`) grow by sections.** Readers ignore section ids they don't know. A
   section added within a format is optional, with its default when absent documented next to it.
   The `info` array may gain entries at its end; readers ignore entries past the ones they know.
@@ -126,12 +126,13 @@ builds that can't update in step with the pipeline, and because an in-progress t
 - Blobs are compressed with `xz -6 -T1 --check=crc32`: exactly one stream with one block.
 - Apple's LZMA decoder stops after the first xz stream and reports success, so a blob with
   concatenated streams would silently decode short. `AppleLZMACodec` rejects any input after the
-  first stream and, given `rawBytes`, any size mismatch. The publish gate also checks
-  `xz --list` for one stream and one block.
+  first stream and, given `rawBytes`, any size mismatch. Every compiler checks `xz --robot --list`
+  for exactly one stream and one block right after compressing (`XZCheck` in BRBuild), and fails
+  the build otherwise; the publish gate checks it again.
 
 ## Payload layouts
 
-<!-- TODO(M1): flows, config; rail bike-hop pairs in links. -->
+<!-- M1: rail bike hops in links, flows and config are placeholders at the end of this section. -->
 
 Each payload layout is documented here. A draft (format `0`) may change without a version bump;
 the payload revision (a draft's revision number) tells readers which draft they hold. From format
@@ -579,3 +580,15 @@ stop, access point and station index is in range; each footpath is within its bo
 + both ends' access); flags hold only known bits; fractions lie in [0, 1]. `LinksCompiler` also
 runs `FootpathCheck` over the whole table (every row and two-step chain: triangle inequality,
 closure, sorting, no self-loops) and records the result in its report.
+
+### links: rail bike hops (M1)
+
+<!-- Placeholder: the rail bike-hop block of `links` is documented here in M1. -->
+
+### flows (kind 8, draft)
+
+<!-- Placeholder: the `flows` payload layout and invariants are documented here in M1. -->
+
+### config (kind 9, draft)
+
+<!-- Placeholder: the `config` envelope, JSON schema and compatibility rules are documented here in M1. -->

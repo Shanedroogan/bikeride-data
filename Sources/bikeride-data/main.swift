@@ -14,6 +14,10 @@ let usage = """
       links       Build footpaths, access points and station links (see: links --help)
       links-show  Print one stop's access points, footpaths and station links
       all         Run streets → timetables → stations → links (see: all --help)
+      config      Build the config artifact from Data/config and Data/fares (M1, not implemented yet)
+      flows       Build the Citi Bike flows artifact from trip data (M1, not implemented yet)
+      gate        Run the validation gate over a built set (M1, not implemented yet)
+      manifest    Write the set manifest and heartbeat (M1, not implemented yet)
       help        Show this help
     """
 
@@ -44,6 +48,10 @@ if command == "stations" { exit(runStationsCommand(Array(arguments.dropFirst()))
 if command == "links" { exit(runLinksCommand(Array(arguments.dropFirst()))) }
 if command == "links-show" { exit(runLinksShowCommand(Array(arguments.dropFirst()))) }
 if command == "all" { exit(runAllCommand(Array(arguments.dropFirst()))) }
+if command == "config" { exit(runConfigCommand(Array(arguments.dropFirst()))) }
+if command == "flows" { exit(runFlowsCommand(Array(arguments.dropFirst()))) }
+if command == "gate" { exit(runGateCommand(Array(arguments.dropFirst()))) }
+if command == "manifest" { exit(runManifestCommand(Array(arguments.dropFirst()))) }
 guard arguments.count == 1 else { fail("'\(command)' takes no arguments") }
 
 switch command {

@@ -108,7 +108,7 @@ public struct TimetableBuild: Sendable {
                 compressSeconds = Date().timeIntervalSince(compressStart)
                 artifact.xzFile = xzURL.lastPathComponent
                 artifact.xzBytes = (try FileManager.default.attributesOfItem(atPath: xzURL.path)[.size] as? Int) ?? 0
-                let listing = try XZ.list(xzURL, runner: runner)
+                let listing = try XZCheck.verify(xzURL, runner: runner)
                 artifact.xzStreams = listing.streams
                 artifact.xzBlocks = listing.blocks
             }
@@ -311,6 +311,7 @@ final class ParallelResults<Value: Sendable>: @unchecked Sendable {
 }
 
 /// `xz` through a ``ToolRunner``: one stream, one block, CRC32, single-threaded (deterministic).
+/// ``XZCheck`` verifies the result.
 public enum XZ {
     public static func compress(_ source: URL, to destination: URL, runner: any ToolRunner) throws {
         let partial = destination.appendingPathExtension("partial")
@@ -330,18 +331,6 @@ public enum XZ {
         }
         if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
         try FileManager.default.moveItem(at: partial, to: destination)
-    }
-
-    /// Stream and block counts from `xz --robot --list`.
-    public static func list(_ file: URL, runner: any ToolRunner) throws -> (streams: Int, blocks: Int) {
-        let text = String(decoding: try runner.run(executable: "xz", args: ["--robot", "--list", "--", file.path]), as: UTF8.self)
-        for line in text.split(whereSeparator: \.isNewline) {
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-            if fields.first == "totals", fields.count > 2, let streams = Int(fields[1]), let blocks = Int(fields[2]) {
-                return (streams, blocks)
-            }
-        }
-        return (0, 0)
     }
 }
 

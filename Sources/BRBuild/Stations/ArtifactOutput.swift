@@ -20,7 +20,8 @@ public struct BuiltArtifactInfo: Codable, Sendable, Equatable {
 /// Writing a raw artifact and its one-stream `.xz` blob.
 enum ArtifactOutput {
     /// Writes `bytes` atomically to `url`, hashes it, and with `compress` runs
-    /// `xz -6 -T1 --check=crc32` and records the stream and block counts.
+    /// `xz -6 -T1 --check=crc32`, checks the blob is one stream with one block (``XZCheck``) and
+    /// records the counts.
     static func write(
         _ bytes: Data, to url: URL, compress: Bool, runner: any ToolRunner,
         formatVersion: UInt16, payloadRevision: UInt32, dataVersion: String, builtAgainst: [String: String],
@@ -42,7 +43,7 @@ enum ArtifactOutput {
             try timed("xz") {
                 let xzURL = url.appendingPathExtension("xz")
                 try XZ.compress(url, to: xzURL, runner: runner)
-                let listing = try XZ.list(xzURL, runner: runner)
+                let listing = try XZCheck.verify(xzURL, runner: runner)
                 info.xzPath = xzURL.path
                 info.xzBytes = (try FileManager.default.attributesOfItem(atPath: xzURL.path)[.size] as? NSNumber)?.intValue
                 info.xzStreams = listing.streams

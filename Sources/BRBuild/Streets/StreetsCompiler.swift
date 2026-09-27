@@ -204,17 +204,11 @@ public struct StreetsCompiler: Sendable {
                 let xzURL = URL(fileURLWithPath: artifactURL.path + ".xz")
                 log("xz -6 -T1 --check=crc32")
                 _ = try runner.run(executable: "xz", args: ["-6", "-T1", "--check=crc32", "--keep", "--force", artifactURL.path])
-                let list = String(decoding: try runner.run(executable: "xz", args: ["--robot", "--list", xzURL.path]), as: UTF8.self)
+                let listing = try XZCheck.verify(xzURL, runner: runner)
                 artifact.xzPath = xzURL.path
                 artifact.xzBytes = ((try? fileManager.attributesOfItem(atPath: xzURL.path))?[.size] as? NSNumber)?.intValue
-                // `totals <streams> <blocks> <compressed> <uncompressed> …`
-                if let totals = list.split(separator: "\n").first(where: { $0.hasPrefix("totals") }) {
-                    let fields = totals.split(separator: "\t")
-                    if fields.count > 2 {
-                        artifact.xzStreams = Int(fields[1])
-                        artifact.xzBlocks = Int(fields[2])
-                    }
-                }
+                artifact.xzStreams = listing.streams
+                artifact.xzBlocks = listing.blocks
             }
         }
 
