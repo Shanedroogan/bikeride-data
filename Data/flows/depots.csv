@@ -1,0 +1,4 @@
+id,match,name,note
+1234.56,exact,Morgan HCT Charging,a charging location in the trip data; not a GBFS station
+SYS,prefix,Lyft system locations,SYS016 Morgan Bike Mechanics; SYS033 Pier 40 X2; SYS038 Morgan Loading Docks
+"Shop ",prefix,Repair shops,Shop Morgan (the id has a trailing space: 'Shop Morgan ')
