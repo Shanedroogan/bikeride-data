@@ -31,7 +31,11 @@ step that takes them (the manifest and heartbeat share one timestamp); `--previo
 | any | any other failure | stop with that status |
 
 Flows is optional: without trip data (`flows` exit 4 and no flows.bin) the set publishes without
-it, with a warning in the gate's `flows` check. `--require-flows` (on `all`, `gate` and
+it, with a warning in the gate's `flows` check. A failed flows build stays failed for the gate
+until it is fixed: `reports/flows.json` keeps the gate-failed report (exit 4 and `--skip flows`
+leave it as it is), so an older flows.bin the previous set did not publish keeps failing. Rerun
+flows until it builds, or remove `flows.bin`, `flows.bin.xz` and `reports/flows.json` to publish
+without flows. `--require-flows` (on `all`, `gate` and
 `manifest`) makes a set without flows.bin fail the `artifacts` check and the manifest refuse it.
 
 `manifest` itself refuses (exit 3) unless `reports/gate.json` passed, or failed only soft, on
