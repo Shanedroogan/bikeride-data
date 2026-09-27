@@ -434,6 +434,13 @@ import Testing
         var gap = CompiledHops(parameters: three, stops: f.fixture.network.stopCount, hops: f.hops)
         gap.pickups.swapAt(1, 2)
         expectViolation("hopPickupsPaddingNotTrailing", f.file(gap))
+        // The same for docks, on row 2 (L1 → S1, docks 3 and 4): [3, -, 4].
+        var threeDocks = HopFile.parameters
+        threeDocks.docksPerHop = 3
+        var dockGap = CompiledHops(parameters: threeDocks, stops: f.fixture.network.stopCount, hops: f.hops)
+        #expect(Array(dockGap.docks[6..<9]) == [3, 4, LinksFormat.noStation])
+        dockGap.docks.swapAt(7, 8)
+        expectViolation("hopDocksPaddingNotTrailing", f.file(dockGap))
         expectViolation("hopDocksEmpty", mutated { $0.docks[0] = LinksFormat.noStation })
         expectViolation("hopWithoutBound", mutated { $0.minDecameters[2] = 0xFFFF })
         expectViolation("hopWithoutBound", mutated { $0.minWalkSeconds[1] = LinksFormat.noSeconds })
