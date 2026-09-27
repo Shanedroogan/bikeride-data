@@ -164,10 +164,12 @@ enum ReferenceFixtures {
         return document
     }
 
-    /// Citi Bike's live `system_pricing_plans` as fetched on 2026-09-27 (price as a string).
+    /// A synthetic GBFS 2.3 `system_pricing_plans` document in the feed's shape (price as a
+    /// string). Only what the check reads is real: the plan id it compares, and Citi Bike's
+    /// published non-member e-bike prices (Data/fares/citibike.json).
     static let pricingPlans = """
-        {"data":{"plans":[{"plan_id":"EBIKE_SINGLE_RIDE","name":"EBIKE SINGLE RIDE","currency":"USD","price":"4.99",
-        "is_taxable":true,"description":"$4.99 unlock fee, $0.41 per minute.",
-        "per_min_pricing":[{"start":0,"rate":0.41,"interval":1}]}]},"last_updated":1790481886,"ttl":60,"version":"2.3"}
+        {"data":{"plans":[{"plan_id":"EBIKE_SINGLE_RIDE","name":"Synthetic e-bike plan","currency":"USD","price":"4.99",
+        "is_taxable":true,"description":"Synthetic test plan.",
+        "per_min_pricing":[{"start":0,"rate":0.41,"interval":1}]}]},"last_updated":1700000000,"ttl":60,"version":"2.3"}
         """
 }

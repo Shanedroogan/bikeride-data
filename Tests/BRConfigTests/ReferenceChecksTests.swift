@@ -148,7 +148,7 @@ import Testing
 
         let renamed = ReferenceFixtures.pricingPlans.replacingOccurrences(of: "EBIKE_SINGLE_RIDE", with: "EBIKE_DAY")
         #expect(ReferenceChecks.citiBikePricing(fares, pricingPlans: Data(renamed.utf8)).warnings == [
-            "GBFS plan EBIKE_DAY (EBIKE SINGLE RIDE) is not compared with any config plan",
+            "GBFS plan EBIKE_DAY (Synthetic e-bike plan) is not compared with any config plan",
             "GBFS system_pricing_plans lists no EBIKE_SINGLE_RIDE plan; nothing compared",
         ])
         let garbage = ReferenceChecks.citiBikePricing(fares, pricingPlans: Data("<html>".utf8))
