@@ -129,7 +129,9 @@ public struct SourceFetcher: Sendable {
     static func lastResponseHeaders(at url: URL) -> [String: String] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
         var fields: [String: String] = [:]
-        for rawLine in text.components(separatedBy: "\n") {
+        // Split on newline Characters, not "\n": Swift treats "\r\n" as one Character, and on Linux
+        // `components(separatedBy: "\n")` then never splits curl's CRLF header dump (every ETag lost).
+        for rawLine in text.split(whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             if line.hasPrefix("HTTP/") {
                 fields = [:]

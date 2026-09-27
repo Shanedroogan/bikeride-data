@@ -216,3 +216,17 @@ private final class FakeCurl: ToolRunner, @unchecked Sendable {
     }
 }
 #endif
+
+@Suite struct ResponseHeaderTests {
+    /// curl writes CRLF header dumps; a redirect adds a second block, and the last one wins.
+    @Test func parsesCRLFDumpsAndKeepsTheFinalResponse() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("headers-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let dump = "HTTP/1.1 301 Moved\r\nLocation: https://x/y\r\nETag: \"old\"\r\n\r\nHTTP/1.1 200 OK\r\nETag: \"9a86\"\r\nLast-Modified: Tue, 01 Sep 2026 00:00:00 GMT\r\n\r\n"
+        try Data(dump.utf8).write(to: url)
+        let fields = SourceFetcher.lastResponseHeaders(at: url)
+        #expect(fields["etag"] == "\"9a86\"")
+        #expect(fields["last-modified"] == "Tue, 01 Sep 2026 00:00:00 GMT")
+        #expect(fields["location"] == nil)
+    }
+}
