@@ -476,7 +476,7 @@ is present exactly when its snapped flag is set, and fractions lie in [0, 1]; th
 the profile values are finite and positive; the tail. Undefined flag bits are not rejected;
 `MappedStations.flags(_:)` masks them off.
 
-### `links` (kind 7, format 0, draft revision 2)
+### `links` (kind 7, format 0, payload revision 3)
 
 Footpaths between transit stops, each stop's street access points, and walk links between stops
 and Citi Bike stations. Writer: `LinksArtifactWriter`, filled by `LinksCompiler` /
@@ -544,14 +544,14 @@ L station links.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `LNKS` |
-| draftRevision | `u32` | `2`. Readers reject any other |
+| payloadRevision | `u32` | `3`. Readers reject any other. Format-0 draft history: revision 2 added PATH; revision 3 added the extension tail and made readers ignore undefined flag bits. The format-1 freeze sets it to `1` |
 | maxFootpathWalkSeconds | `u32` | 480. At most 3,600 |
 | minTransferSeconds | `u32` | 30 |
 | walkSpeed | `f64` | m/s (3.5 mph) |
 | stationLinkMaxWalkMeters | `f64` | 350 |
 | systemStopCounts | `array<u32>`, 5 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path (0 when not linked); T is their sum |
 | systemAccessSeconds | `array<u32>`, 5 | Station access per system, same order |
-| stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it |
+| stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it. Bits 3–7 are undefined: written 0, ignored by readers |
 | footpathStart | `array<u32>`, T + 1 | Footpaths of stop p: `[start[p], start[p + 1])` |
 | footpathTarget | `array<u32>`, F | Global stop, never p itself |
 | footpathSeconds | `array<u16>`, F | Whole seconds, station access included |
@@ -561,7 +561,7 @@ L station links.
 | accessPointFraction | `array<f32>`, A | In [0, 1], from the segment's A node |
 | accessPointSnapDecimeters | `array<u16>`, A | Snap distance |
 | accessPointAccessSeconds | `array<u16>`, A | Access at this transition |
-| accessPointFlags | `array<u8>`, A | Bit 0 entry, 1 exit, 2 synthetic |
+| accessPointFlags | `array<u8>`, A | Bit 0 entry, 1 exit, 2 synthetic. Bits 3–7 are undefined: written 0, ignored by readers |
 | stopAccessStart | `array<u32>`, T + 1 | Access points of stop p: `stopAccessPoint[start[p] ..< start[p + 1]]` |
 | stopAccessPoint | `array<u32>`, K | Access point indices (only snapped points are stored) |
 | stationStopStart | `array<u32>`, S + 1 | S is the `stations` artifact's count |
@@ -570,16 +570,28 @@ L station links.
 | stopStationStart | `array<u32>`, T + 1 | |
 | stopStationStation | `array<u32>`, L | Station index |
 | stopStationEnter, stopStationExit | `array<u16>`, L each | The same links, indexed by stop |
+| extensions | extension tail | See Compatibility. No ids are defined yet: writers write an empty tail (`count = 0`); readers skip every id |
 
-Nothing follows the last array. Rail bike-hop pairs (pickups near parent station A × docks near
-B, rides of 5–25 min) join this artifact in M1.
+Nothing follows the tail.
 
-Invariants, checked by `MappedLinks` at open: the parameters are in range; lengths match T, A, L
-and S; every offset array starts at 0, never decreases and ends at its target's count; every
-stop, access point and station index is in range; each footpath is within its bound (walk bound
-+ both ends' access); flags hold only known bits; fractions lie in [0, 1]. `LinksCompiler` also
-runs `FootpathCheck` over the whole table (every row and two-step chain: triangle inequality,
-closure, sorting, no self-loops) and records the result in its report.
+Invariants, checked by `MappedLinks` at open. Always, because the in-place views depend on them:
+the magic and payload revision; the parameters are in range; lengths match T, A, L and S; every
+offset array starts at 0, never decreases and ends at its target's count; every stop, access
+point and station index is in range; the extension tail (ids strictly ascending, nothing after
+it). Unless the caller opens with `validate: false` (for bytes already verified against a
+manifest's rawSha256):
+- a file with stations (S > 0) names `stations` in its header's `builtAgainst`;
+- a stop without the routable bit has no footpaths, access points or station links, and every
+  footpath leads to a routable stop within its bound (walk bound + both ends' access);
+- every access point's fraction lies in [0, 1] and its access seconds equal its system's
+  `systemAccessSeconds` (the system of its source stop);
+- each station's links are strictly ascending by (enter, stop), each stop's by (exit, station),
+  no row names a stop (station) twice, and no link is `0xFFFF` in both directions;
+- the two directions hold the same links: every stop-side link appears in its station's row with
+  the same enter and exit seconds.
+Undefined flag bits are not rejected; `MappedLinks.stopFlags(_:)` and `accessPoint(_:)` mask them
+off. `LinksCompiler` also runs `FootpathCheck` over the whole table (every row and two-step chain:
+triangle inequality, closure, sorting, no self-loops) and records the result in its report.
 
 ### links: rail bike hops (M1)
 

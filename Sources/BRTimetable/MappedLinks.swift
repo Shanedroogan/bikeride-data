@@ -25,6 +25,10 @@ import Foundation
 ///   lies within ``stationLinkMaxWalkMeters`` of walking from a station, with seconds including
 ///   station access, in each direction.
 ///
+/// The payload ends in an extension tail (``extensions``); ids this reader doesn't know are
+/// skipped. Flag bits it doesn't define are ignored (``stopFlags(_:)`` and ``accessPoint(_:)``
+/// mask them off; ``raw`` keeps the stored bytes).
+///
 /// ## Thread safety
 /// `@unchecked Sendable` is sound because every stored property is immutable after `init`, and
 /// the buffer pointers view bytes this object keeps alive (the mapping, or a private aligned copy
@@ -45,8 +49,11 @@ public final class MappedLinks: @unchecked Sendable {
     public let walkSpeedMetersPerSecond: Double
     /// The walk bound for station links (excluding station access), as meters at walking speed.
     public let stationLinkMaxWalkMeters: Double
-    /// Zero-copy views of every array, for hot loops.
+    /// Zero-copy views of every array, for hot loops. Flag bytes are as stored: test single
+    /// bits, or mask with ``LinkStopFlags/known``.
     public let raw: LinksBuffers
+    /// The payload's extension tail, as slices of the payload that the table keeps alive.
+    public let extensions: ExtensionTable
 
     private let storage: Data
     private let ownedCopy: UnsafeMutableRawBufferPointer?
@@ -55,15 +62,20 @@ public final class MappedLinks: @unchecked Sendable {
     private let systemAccess: [Int]
 
     /// Maps `links.bin` from a data directory, e.g. `build/data`.
-    public static func load(fromDataDirectory directory: URL) throws -> MappedLinks {
-        try MappedLinks(contentsOf: directory.appendingPathComponent(fileName))
+    public static func load(fromDataDirectory directory: URL, validate: Bool = true) throws -> MappedLinks {
+        try MappedLinks(contentsOf: directory.appendingPathComponent(fileName), validate: validate)
     }
 
-    public convenience init(contentsOf url: URL) throws {
-        try self.init(artifact: MappedArtifact(contentsOf: url, expecting: .links))
+    public convenience init(contentsOf url: URL, validate: Bool = true) throws {
+        try self.init(artifact: MappedArtifact(contentsOf: url, expecting: .links), validate: validate)
     }
 
-    public init(artifact: MappedArtifact) throws {
+    /// Views the payload in place. The structure every view relies on (lengths, offsets, indices
+    /// in range, the extension tail) is always checked. With `validate` (the default) the
+    /// documented invariants are checked too (`docs/formats.md`, "links", Invariants): pass
+    /// `false` only for a file whose bytes were already verified (e.g. against a manifest's
+    /// rawSha256), to save the O(footpaths + links) pass.
+    public init(artifact: MappedArtifact, validate: Bool = true) throws {
         guard artifact.kind == .links else { throw DataFormatError.kindMismatch(expected: .links, found: artifact.kind) }
         guard ArtifactKind.links.supportedFormatVersions.contains(artifact.header.formatVersion) else {
             throw LinksFormatError.unsupportedFormatVersion(artifact.header.formatVersion)
@@ -90,8 +102,14 @@ public final class MappedLinks: @unchecked Sendable {
         }
         ownedCopy = copy
         do {
-            let layout = try Layout(base: base, length: length)
+            let layout = try Layout(base: base, length: length, builtAgainst: artifact.header.builtAgainst, validate: validate)
             raw = layout.raw
+            // The layout's slices view `base`, which may be the private copy freed in `deinit`;
+            // re-slice from `storage` (same offsets), which the table then keeps alive on its own.
+            let storage = self.storage
+            extensions = ExtensionTable(sections: layout.extensions.sections.mapValues { section in
+                storage[storage.startIndex + section.startIndex..<storage.startIndex + section.endIndex]
+            })
             stopCount = layout.stopCount
             stationCount = layout.stationCount
             maxFootpathWalkSeconds = layout.maxFootpathWalkSeconds
@@ -143,7 +161,8 @@ public final class MappedLinks: @unchecked Sendable {
         stop - stopBase(system: system(ofGlobalStop: stop))
     }
 
-    public func stopFlags(_ stop: Int) -> LinkStopFlags { LinkStopFlags(rawValue: raw.stopFlags[stop]) }
+    /// The stop's flags; bits this reader doesn't define are dropped.
+    public func stopFlags(_ stop: Int) -> LinkStopFlags { LinkStopFlags(rawValue: raw.stopFlags[stop]).intersection(.known) }
 
     /// Station access charged at `system`'s street↔platform transitions.
     public func accessSeconds(system: TransitSystem) -> Int { systemAccess[Self.slot(system)] }
@@ -193,7 +212,7 @@ public final class MappedLinks: @unchecked Sendable {
             fraction: raw.accessPointFraction[index],
             snapDecimeters: raw.accessPointSnapDecimeters[index],
             accessSeconds: Int(raw.accessPointAccessSeconds[index]),
-            flags: LinkAccessPointFlags(rawValue: raw.accessPointFlags[index])
+            flags: LinkAccessPointFlags(rawValue: raw.accessPointFlags[index]).intersection(.known)
         )
     }
 
@@ -232,6 +251,7 @@ public final class MappedLinks: @unchecked Sendable {
 
     private struct Layout {
         var raw: LinksBuffers
+        var extensions: ExtensionTable
         var stopCount: Int
         var stationCount: Int
         var maxFootpathWalkSeconds: Int
@@ -241,12 +261,12 @@ public final class MappedLinks: @unchecked Sendable {
         var stationLinkMaxWalkMeters: Double
         var systemCounts: [Int]
 
-        init(base: UnsafeRawPointer, length: Int) throws {
+        init(base: UnsafeRawPointer, length: Int, builtAgainst: [String: String], validate: Bool) throws {
             let bytes = UnsafeRawBufferPointer(start: base, count: length)
             var reader = BinaryReader(Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: base), count: length, deallocator: .none))
             guard try reader.readBytes(count: 4).elementsEqual(LinksFormat.payloadMagic) else { throw LinksFormatError.badPayloadMagic }
             let revision = try reader.read(UInt32.self)
-            guard revision == LinksFormat.draftRevision else { throw LinksFormatError.unsupportedDraftRevision(revision) }
+            guard revision == LinksFormat.payloadRevision else { throw LinksFormatError.unsupportedPayloadRevision(revision) }
             let walkSeconds = try reader.read(UInt32.self)
             let transferSeconds = try reader.read(UInt32.self)
             walkSpeed = try reader.read(Double.self)
@@ -290,7 +310,8 @@ public final class MappedLinks: @unchecked Sendable {
             let stopAccessPoint = try array(UInt32.self, "stopAccessPoint", count: nil)
             let stationStopStart = try array(UInt32.self, "stationStopStart", count: nil)
             guard stationStopStart.count >= 1 else { throw LinksFormatError.countMismatch(section: "stationStopStart", expected: 1, actual: 0) }
-            stationCount = stationStopStart.count - 1
+            let s = stationStopStart.count - 1
+            stationCount = s
             let stationStopStop = try array(UInt32.self, "stationStopStop", count: nil)
             let l = stationStopStop.count
             let stationStopEnter = try array(UInt16.self, "stationStopEnter", count: l)
@@ -299,8 +320,10 @@ public final class MappedLinks: @unchecked Sendable {
             let stopStationStation = try array(UInt32.self, "stopStationStation", count: l)
             let stopStationEnter = try array(UInt16.self, "stopStationEnter", count: l)
             let stopStationExit = try array(UInt16.self, "stopStationExit", count: l)
-            guard reader.isAtEnd else { throw LinksFormatError.trailingBytes(reader.remaining) }
+            // Tail errors (ids out of order, bytes after it) surface as `DataFormatError`.
+            extensions = try reader.readExtensions()
 
+            // Structure the in-place views rely on: always checked.
             func offsets(_ values: UnsafeBufferPointer<UInt32>, total: Int, _ section: String) throws {
                 guard values.first == 0, Int(values[values.count - 1]) == total else {
                     throw LinksFormatError.countMismatch(section: section, expected: total, actual: Int(values.last ?? 0))
@@ -318,26 +341,7 @@ public final class MappedLinks: @unchecked Sendable {
             try indices(apSource, below: t, "accessPointSourceStop")
             try indices(stopAccessPoint, below: a, "stopAccessPoint")
             try indices(stationStopStop, below: t, "stationStopStop")
-            try indices(stopStationStation, below: stationCount, "stopStationStation")
-            // Every footpath within its bound: walk + access at each end.
-            var stopAccess: [Int] = []
-            stopAccess.reserveCapacity(t)
-            for (slot, count) in systemCounts.enumerated() { stopAccess += repeatElement(systemAccess[slot], count: count) }
-            for p in 0..<t {
-                for slot in Int(footpathStart[p])..<Int(footpathStart[p + 1])
-                where Int(footpathSeconds[slot]) > maxFootpathWalkSeconds + stopAccess[p] + stopAccess[Int(footpathTarget[slot])] {
-                    throw LinksFormatError.valueOutOfRange(section: "footpathSeconds", index: slot)
-                }
-            }
-            if let bad = stopFlags.firstIndex(where: { !LinkStopFlags.known.contains(LinkStopFlags(rawValue: $0)) }) {
-                throw LinksFormatError.valueOutOfRange(section: "stopFlags", index: bad)
-            }
-            if let bad = apFlags.firstIndex(where: { !LinkAccessPointFlags.known.contains(LinkAccessPointFlags(rawValue: $0)) }) {
-                throw LinksFormatError.valueOutOfRange(section: "accessPointFlags", index: bad)
-            }
-            if let bad = apFraction.firstIndex(where: { !$0.isFinite || $0 < 0 || $0 > 1 }) {
-                throw LinksFormatError.valueOutOfRange(section: "accessPointFraction", index: bad)
-            }
+            try indices(stopStationStation, below: s, "stopStationStation")
 
             raw = LinksBuffers(
                 stopFlags: stopFlags, footpathStart: footpathStart, footpathTarget: footpathTarget, footpathSeconds: footpathSeconds,
@@ -348,6 +352,80 @@ public final class MappedLinks: @unchecked Sendable {
                 stationStopExit: stationStopExit, stopStationStart: stopStationStart, stopStationStation: stopStationStation,
                 stopStationEnter: stopStationEnter, stopStationExit: stopStationExit
             )
+            if validate { try Self.checkInvariants(raw, systemCounts: systemCounts, systemAccess: systemAccess, walkSeconds: maxFootpathWalkSeconds, builtAgainst: builtAgainst) }
+        }
+
+        /// The documented invariants beyond structure (`docs/formats.md`, "links"). Linear in the
+        /// arrays, apart from one scan of a station's row per stop-side link.
+        static func checkInvariants(_ raw: LinksBuffers, systemCounts: [Int], systemAccess: [Int], walkSeconds: Int,
+                                    builtAgainst: [String: String]) throws {
+            let t = raw.stopFlags.count, s = raw.stationStopStart.count - 1
+            func violated(_ rule: String, _ index: Int) -> LinksFormatError { .invariantViolated(rule: rule, index: index) }
+            if s > 0, builtAgainst[ArtifactKind.stations.name] == nil { throw violated("stationsInBuiltAgainst", 0) }
+            var stopAccess: [Int] = []
+            stopAccess.reserveCapacity(t)
+            for (slot, count) in systemCounts.enumerated() { stopAccess += repeatElement(systemAccess[slot], count: count) }
+            func routable(_ stop: Int) -> Bool { raw.stopFlags[stop] & LinkStopFlags.routable.rawValue != 0 }
+
+            // Footpaths: only between routable stops, each within its bound (walk + access at each end).
+            for p in 0..<t {
+                let row = Int(raw.footpathStart[p])..<Int(raw.footpathStart[p + 1])
+                if !routable(p) {
+                    if !row.isEmpty { throw violated("nonRoutableStopHasFootpaths", p) }
+                    if raw.stopAccessStart[p] != raw.stopAccessStart[p + 1] { throw violated("nonRoutableStopHasAccessPoints", p) }
+                    if raw.stopStationStart[p] != raw.stopStationStart[p + 1] { throw violated("nonRoutableStopHasStationLinks", p) }
+                    continue
+                }
+                for slot in row {
+                    let q = Int(raw.footpathTarget[slot])
+                    if !routable(q) { throw violated("footpathToNonRoutableStop", slot) }
+                    if Int(raw.footpathSeconds[slot]) > walkSeconds + stopAccess[p] + stopAccess[q] {
+                        throw LinksFormatError.valueOutOfRange(section: "footpathSeconds", index: slot)
+                    }
+                }
+            }
+            // Access points: fractions in [0, 1]; access seconds are their system's.
+            for index in 0..<raw.accessPointSourceStop.count {
+                let fraction = raw.accessPointFraction[index]
+                if !fraction.isFinite || fraction < 0 || fraction > 1 { throw LinksFormatError.valueOutOfRange(section: "accessPointFraction", index: index) }
+                if Int(raw.accessPointAccessSeconds[index]) != stopAccess[Int(raw.accessPointSourceStop[index])] {
+                    throw violated("accessPointAccessSeconds", index)
+                }
+            }
+            // Station links. Station rows strictly ascending by (enter, stop), stop rows by (exit,
+            // station), no key twice in a row, never 0xFFFF both ways; the stop-side rows list
+            // exactly the station-side links (both hold L links, and each stop-side one is found).
+            var seen = [Int32](repeating: -1, count: max(t, s))
+            for station in 0..<s {
+                let row = Int(raw.stationStopStart[station])..<Int(raw.stationStopStart[station + 1])
+                var previous: (UInt16, UInt32)?
+                for slot in row {
+                    let key = (raw.stationStopEnter[slot], raw.stationStopStop[slot])
+                    if let previous, previous >= key { throw violated("stationRowOrder", slot) }
+                    previous = key
+                    let stop = Int(key.1)
+                    if seen[stop] == Int32(station) { throw violated("stationRowRepeatsStop", slot) }
+                    seen[stop] = Int32(station)
+                    if key.0 == LinksFormat.noSeconds && raw.stationStopExit[slot] == LinksFormat.noSeconds { throw violated("stationLinkWithoutDirection", slot) }
+                }
+            }
+            for i in seen.indices { seen[i] = -1 }
+            for stop in 0..<t {
+                let row = Int(raw.stopStationStart[stop])..<Int(raw.stopStationStart[stop + 1])
+                var previous: (UInt16, UInt32)?
+                for slot in row {
+                    let key = (raw.stopStationExit[slot], raw.stopStationStation[slot])
+                    if let previous, previous >= key { throw violated("stopRowOrder", slot) }
+                    previous = key
+                    let station = Int(key.1)
+                    if seen[station] == Int32(stop) { throw violated("stopRowRepeatsStation", slot) }
+                    seen[station] = Int32(stop)
+                    let stationRow = Int(raw.stationStopStart[station])..<Int(raw.stationStopStart[station + 1])
+                    guard let match = stationRow.first(where: { Int(raw.stationStopStop[$0]) == stop }),
+                          raw.stationStopEnter[match] == raw.stopStationEnter[slot], raw.stationStopExit[match] == key.0
+                    else { throw violated("stationLinkDirectionsDiffer", slot) }
+                }
+            }
         }
     }
 }

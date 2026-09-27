@@ -21,7 +21,8 @@ struct LinksFixture {
         let graph = world.city.graph
         let options = LinksOptions()
         network = LinkNetwork.make(timetables: world.timetables, graph: graph, options: options).network
-        let places: [(String, Double, Double)] = [("k1", 2.0, 2.3), ("k2", 9.8, 0.2), ("k3", 9, 8.9), ("k4", 5, 5)]
+        // k1 and k5 both lie near S1 and S2, so those stops' rows hold two links.
+        let places: [(String, Double, Double)] = [("k1", 2.0, 2.3), ("k2", 9.8, 0.2), ("k3", 9, 8.9), ("k4", 5, 5), ("k5", 2.3, 1.7)]
         var (selected, _) = StationsBuilder.select(places.map { id, x, y in
             let c = SyntheticCity.coordinate(x, y)
             return GBFSStation(stationID: id, name: id.uppercased(), lat: c.lat, lon: c.lon, regionID: "71", capacity: 10)
@@ -42,8 +43,10 @@ struct LinksFixture {
             .write(to: data.appendingPathComponent(MappedStations.fileName))
     }
 
+    static let builtAgainst = ["streets": "x", "stations": "y"]
+
     func artifact(_ links: CompiledLinks? = nil) -> Data {
-        LinksArtifactWriter.artifact(links ?? compiled, dataVersion: "fixture", builtAgainst: ["streets": "x"])
+        LinksArtifactWriter.artifact(links ?? compiled, dataVersion: "fixture", builtAgainst: Self.builtAgainst)
     }
 }
 
@@ -61,7 +64,8 @@ struct LinksFixture {
     @Test func roundTripsEverySection() throws {
         let links = try reader(fixture.artifact())
         let network = fixture.network, compiled = fixture.compiled
-        #expect(links.header.kind == .links && links.header.builtAgainst == ["streets": "x"])
+        #expect(links.header.kind == .links && links.header.builtAgainst == LinksFixture.builtAgainst)
+        #expect(links.extensions == .empty)
         #expect(links.stopCount == network.stopCount && links.stationCount == fixture.stations.count)
         #expect(links.maxFootpathWalkSeconds == 480 && links.minTransferSeconds == 30)
         #expect(links.walkSpeedMetersPerSecond == WalkProfile.standard.speedMetersPerSecond && links.stationLinkMaxWalkMeters == 350)
@@ -117,7 +121,7 @@ struct LinksFixture {
             return copy
         }
         #expect(throws: LinksFormatError.badPayloadMagic) { try reader(corrupt(at: 1, 0)) }
-        #expect(throws: LinksFormatError.unsupportedDraftRevision(7)) { try reader(corrupt(at: 4, 7)) }
+        #expect(throws: LinksFormatError.unsupportedPayloadRevision(7)) { try reader(corrupt(at: 4, 7)) }
         #expect(throws: (any Error).self) { try reader(bytes.dropLast(1)) }
         #expect(throws: DataFormatError.kindMismatch(expected: .links, found: .streets)) {
             try MappedLinks(artifact: MappedArtifact(fileBytes: fixture.world.city.bytes))

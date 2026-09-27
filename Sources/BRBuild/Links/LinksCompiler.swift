@@ -148,7 +148,7 @@ public struct LinksCompiler: Sendable {
         let bytes = timed("encode") { LinksArtifactWriter.artifact(compiled, dataVersion: dataVersion, builtAgainst: builtAgainst) }
         let artifact = try ArtifactOutput.write(
             bytes, to: config.artifactFile, compress: config.compress, runner: runner,
-            formatVersion: ArtifactKind.links.currentFormatVersion, payloadRevision: LinksFormat.draftRevision,
+            formatVersion: ArtifactKind.links.currentFormatVersion, payloadRevision: LinksFormat.payloadRevision,
             dataVersion: dataVersion, builtAgainst: builtAgainst, seconds: &seconds
         )
         let openStart = Date()

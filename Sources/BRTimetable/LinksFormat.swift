@@ -5,10 +5,11 @@ import BRCore
 public enum LinksFormat {
     /// The first four payload bytes, `LNKS`.
     public static let payloadMagic: [UInt8] = Array("LNKS".utf8)
-    /// Revision of the draft payload layout, bumped on every change while the artifact's
-    /// formatVersion is still 0. Readers reject any other revision. 2: PATH added as the fifth
-    /// system (``systems``).
-    public static let draftRevision: UInt32 = 2
+    /// The payload revision (`docs/formats.md`, "Compatibility"). While the artifact's
+    /// formatVersion is still 0 it is bumped on every layout change, and readers reject any other
+    /// value. Draft history: 2 added PATH as the fifth system (``systems``); 3 added the
+    /// extension tail and flag masking. The format-1 freeze sets it to 1.
+    public static let payloadRevision: UInt32 = 3
     /// "No value" in a `u16` seconds field (e.g. a station link that cannot be walked in that
     /// direction).
     public static let noSeconds: UInt16 = .max
@@ -33,7 +34,9 @@ public struct LinkStopFlags: OptionSet, Sendable, Hashable {
     /// At least one access point lets riders out to the street.
     public static let streetExit = LinkStopFlags(rawValue: 1 << 2)
 
-    static let known: LinkStopFlags = [.routable, .streetEntry, .streetExit]
+    /// The bits this reader defines; ``MappedLinks/stopFlags(_:)`` drops the rest (a later
+    /// writer may define them as hints).
+    public static let known: LinkStopFlags = [.routable, .streetEntry, .streetExit]
 }
 
 /// Per-access-point bits.
@@ -51,16 +54,20 @@ public struct LinkAccessPointFlags: OptionSet, Sendable, Hashable {
     /// No entrance is known for the station, so its own coordinate stands in for one.
     public static let synthetic = LinkAccessPointFlags(rawValue: 1 << 2)
 
-    static let known: LinkAccessPointFlags = [.entry, .exit, .synthetic]
+    /// The bits this reader defines; ``MappedLinks/accessPoint(_:)`` drops the rest.
+    public static let known: LinkAccessPointFlags = [.entry, .exit, .synthetic]
 }
 
 /// A malformed or incompatible `links` payload.
 public enum LinksFormatError: Error, Equatable, Sendable {
     case badPayloadMagic
-    case unsupportedDraftRevision(UInt32)
+    case unsupportedPayloadRevision(UInt32)
     case unsupportedFormatVersion(UInt16)
     case countMismatch(section: String, expected: Int, actual: Int)
     case valueOutOfRange(section: String, index: Int)
     case notMonotonic(section: String, index: Int)
     case trailingBytes(Int)
+    /// A structurally valid payload that breaks a documented invariant (`docs/formats.md`,
+    /// "links", Invariants): `rule` names it, `index` is the first offending element.
+    case invariantViolated(rule: String, index: Int)
 }

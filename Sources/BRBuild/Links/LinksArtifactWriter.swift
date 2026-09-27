@@ -44,7 +44,7 @@ public enum LinksArtifactWriter {
         let footpaths = links.footpaths, stations = links.stationLinks
         var writer = BinaryWriter(reservingCapacity: 1024 + footpaths.count * 6 + stored.count * 32 + stations.count * 16 + t * 16)
         writer.append(bytes: LinksFormat.payloadMagic)
-        writer.append(LinksFormat.draftRevision)
+        writer.append(LinksFormat.payloadRevision)
         writer.append(links.options.maxFootpathWalkSeconds)
         writer.append(links.options.minTransferSeconds)
         writer.append(links.options.walk.speedMetersPerSecond)
@@ -79,6 +79,7 @@ public enum LinksArtifactWriter {
         writer.append(array: stations.stopStation)
         writer.append(array: stations.stopEnter)
         writer.append(array: stations.stopExit)
+        writer.appendExtensions([])
         return writer.data
     }
 }

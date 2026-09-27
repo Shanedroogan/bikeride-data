@@ -541,7 +541,10 @@ public enum LinksBuilder {
             running += network.systemStopCounts[slot]
             bounds.append((running, system))
         }
-        return { stop in bounds.first { stop < $0.0 }?.1 ?? .ferry }
+        return { stop in
+            guard let system = bounds.first(where: { stop < $0.0 })?.1 else { preconditionFailure("stop \(stop) is past the global index") }
+            return system
+        }
     }
 
     static func bucket(_ count: Int) -> String {
