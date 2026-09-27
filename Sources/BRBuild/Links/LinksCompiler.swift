@@ -142,16 +142,11 @@ public struct LinksCompiler: Sendable {
         log("footpaths: \(compiled.footpaths.count); station links: \(compiled.stationLinks.count)")
         var hopStats: HopStats?
         if let stations, options.hops.enabled {
-            let parents = RailParents.make(timetables: timetables, network: network)
-            let oneSeat = timed("oneSeat") { OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: options.hops) }
-            let inputs = HopBuilder.Inputs(systemStopCounts: network.systemStopCounts, parents: parents, stationLinks: compiled.stationLinks,
-                                           stationCount: stations.count, distances: stations, oneSeat: oneSeat)
-            var (hops, stats) = timed("hops") { HopBuilder.build(inputs, options: options.hops, threads: options.threads) }
-            HopBuilder.checkPlatformLinks(hops, parents: parents, stationLinks: compiled.stationLinks, stats: &stats)
+            let (hops, stats) = try Self.railHops(timetables: timetables, network: network, stationLinks: compiled.stationLinks,
+                                                  stationCount: stations.count, distances: stations, options: options.hops,
+                                                  threads: options.threads, seconds: &seconds)
             log("hops: \(hops.count) over \(stats.origins) origins (\(stats.candidatePairs) candidates; dropped \(stats.droppedBelowWindow) short, "
                 + "\(stats.droppedAboveWindow) long, \(stats.droppedByOneSeat) by a one-seat ride)")
-            let missing = stats.platformPickupLinksMissing + stats.platformDockLinksMissing
-            guard missing == 0 else { throw LinksError.hopWithoutPlatformLink(missing: missing, examples: stats.missingLinkExamples) }
             compiled.hops = hops
             hopStats = stats
         }
@@ -204,6 +199,31 @@ public struct LinksCompiler: Sendable {
             seconds: seconds,
             peakRSSBytes: TimetableBuild.peakRSSBytes()
         )
+    }
+
+    /// The rail bike hops of links built with stations: the one-seat table, ``HopBuilder`` over
+    /// the stop-side station links, then ``HopBuilder/checkPlatformLinks(_:parents:stationLinks:stats:)``.
+    /// Adds the `oneSeat` and `hops` phases to `seconds`.
+    ///
+    /// - Throws: ``LinksError/hopWithoutPlatformLink(missing:examples:)`` unless every routable
+    ///   platform of each hop's origin has an exit link to every stored pickup, and every one of
+    ///   its target an enter link from every stored dock.
+    public static func railHops(timetables: [TransitSystem: Timetable], network: LinkNetwork, stationLinks: StationLinkTable,
+                                stationCount: Int, distances: any HopDistances, options: HopOptions, threads: Int,
+                                seconds: inout [String: Double]) throws -> (hops: CompiledHops, stats: HopStats) {
+        let parents = RailParents.make(timetables: timetables, network: network)
+        var start = Date()
+        let oneSeat = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: options)
+        seconds["oneSeat", default: 0] += Date().timeIntervalSince(start)
+        start = Date()
+        let inputs = HopBuilder.Inputs(systemStopCounts: network.systemStopCounts, parents: parents, stationLinks: stationLinks,
+                                       stationCount: stationCount, distances: distances, oneSeat: oneSeat)
+        var (hops, stats) = HopBuilder.build(inputs, options: options, threads: threads)
+        seconds["hops", default: 0] += Date().timeIntervalSince(start)
+        HopBuilder.checkPlatformLinks(hops, parents: parents, stationLinks: stationLinks, stats: &stats)
+        let missing = stats.platformPickupLinksMissing + stats.platformDockLinksMissing
+        guard missing == 0 else { throw LinksError.hopWithoutPlatformLink(missing: missing, examples: stats.missingLinkExamples) }
+        return (hops, stats)
     }
 
     /// The hop tunables as report parameters (`hops.…`).
