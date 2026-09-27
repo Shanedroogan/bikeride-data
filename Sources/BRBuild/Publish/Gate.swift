@@ -232,8 +232,9 @@ public final class GateContext {
     public let artifacts: [ArtifactKind: SetArtifactFile]
     public let previous: SetManifest?
     public let previousTripCounts: TripCountSidecar?
-    /// Problems reading the previous manifest or its trip counts (treated as absent).
-    public internal(set) var loadWarnings: [String] = []
+    /// Why the `--previous` manifest or its trip counts cannot be used; nil when they loaded (or
+    /// no previous manifest was given). The gate fails on it.
+    public internal(set) var previousProblem: String?
 
     private var timetables: [TransitSystem: Timetable] = [:]
     private var streetGraph: MappedStreetGraph?
@@ -332,12 +333,11 @@ public struct Gate {
     @discardableResult
     public func run(log: (String) -> Void = { _ in }) throws -> GateReport {
         let artifacts = try SetArtifacts.scan(dataDirectory, runner: runner)
-        var warnings: [String] = []
-        let (previous, previousCounts) = Self.loadPrevious(previousManifest, runner: runner, warnings: &warnings)
+        let (previous, previousCounts, previousProblem) = Self.loadPrevious(previousManifest, runner: runner)
         let context = GateContext(dataDirectory: dataDirectory, reportsDirectory: reportsDirectory, today: today,
                                   configuration: configuration, runner: runner, artifacts: artifacts,
                                   previous: previous, previousTripCounts: previousCounts)
-        context.loadWarnings = warnings
+        context.previousProblem = previousProblem
         var systems: [String: GateSystem] = [:]
         var checks: [GateCheckResult] = []
         func timed(_ name: String, _ body: () throws -> GateCheckResult) {
@@ -363,12 +363,16 @@ public struct Gate {
             return result
         }
         timed("tripCounts") {
-            var result = GateChecks.tripCounts(
+            // A previous build was named but cannot be compared with: failing is the only safe
+            // reading (a missing or altered sidecar must not switch the check off).
+            if let problem = context.previousProblem {
+                return GateCheckResult(name: "tripCounts", status: .fail, summary: "the previous build's trip counts cannot be used",
+                                       failures: [problem])
+            }
+            return GateChecks.tripCounts(
                 current: try currentTripCounts(context), previous: previousTripCounts(context), holidays: configuration.holidays,
                 maxChangePercent: configuration.thresholds.tripCounts.maxChangePercent,
                 holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles)
-            result.warnings = context.loadWarnings + result.warnings
-            return result
         }
         timed("streets") { try streetsCheck(context) }
         timed("snapping") { try snappingCheck(context) }
@@ -385,22 +389,21 @@ public struct Gate {
         return report
     }
 
-    /// The previous manifest and, when its sidecar is present and matches, its trip counts. A
-    /// manifest that does not read is an error; a missing or mismatched sidecar is a warning.
-    static func loadPrevious(_ url: URL?, runner: any ToolRunner, warnings: inout [String]) -> (SetManifest?, TripCountSidecar?) {
-        guard let url else { return (nil, nil) }
+    /// The previous manifest and its trip-count sidecar, or why they cannot be used: a manifest
+    /// that does not read, or a sidecar that is missing or does not match the manifest's record
+    /// or set. The gate fails and `manifest` refuses on any such problem.
+    static func loadPrevious(_ url: URL?, runner: any ToolRunner) -> (SetManifest?, TripCountSidecar?, problem: String?) {
+        guard let url else { return (nil, nil, nil) }
         let manifest: SetManifest
         do {
             manifest = try SetManifest.load(url)
         } catch {
-            warnings.append("previous manifest \(url.path) unreadable (\(error)); treated as absent")
-            return (nil, nil)
+            return (nil, nil, "previous manifest \(url.path) unreadable (\(error))")
         }
         do {
-            return (manifest, try manifest.loadTripCounts(nextTo: url, runner: runner))
+            return (manifest, try manifest.loadTripCounts(nextTo: url, runner: runner), nil)
         } catch {
-            warnings.append("previous trip counts unusable (\(error)); trip counts not compared")
-            return (manifest, nil)
+            return (manifest, nil, "previous trip counts unusable (\(error))")
         }
     }
 
@@ -408,6 +411,9 @@ public struct Gate {
 
     func artifactsCheck(_ context: GateContext) throws -> GateCheckResult {
         var failures: [String] = [], notes: [String] = []
+        if previousManifest != nil, context.previous == nil, let problem = context.previousProblem {
+            failures.append(problem)   // nothing can be carried forward from it
+        }
         for kind in requiredKinds where context.setRawSha256(kind) == nil {
             failures.append("\(kind.name): not in \(dataDirectory.path) and not in the previous manifest")
         }

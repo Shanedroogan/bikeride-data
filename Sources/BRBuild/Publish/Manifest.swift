@@ -219,9 +219,10 @@ public struct SetManifestBuilder {
     public func build() throws -> (manifest: SetManifest, tripCounts: TripCountSidecar, tripCountsBytes: Data) {
         let local = try SetArtifacts.scan(dataDirectory, runner: runner)
         let gate = try verifiedGate(local)
-        var warnings: [String] = []
-        let (previous, previousCounts) = Gate.loadPrevious(previousManifest, runner: runner, warnings: &warnings)
-        if let previousManifest, previous == nil { throw SetManifest.ManifestError.inconsistent(warnings.first ?? "\(previousManifest.path) unreadable") }
+        let (previous, previousCounts, previousProblem) = Gate.loadPrevious(previousManifest, runner: runner)
+        // The next build compares with this set's sidecar, which carries the previous counts of
+        // every system not rebuilt: without them it could not.
+        if let previousProblem { throw SetManifest.ManifestError.inconsistent(previousProblem) }
         guard gate.previousSetId == previous?.setId else {
             throw SetManifest.ManifestError.gateStale("the gate compared against set \(gate.previousSetId ?? "none"), this manifest against \(previous?.setId ?? "none")")
         }
@@ -267,7 +268,10 @@ public struct SetManifestBuilder {
             } else if let previous, previous.artifacts[kind.name] != nil {
                 dates = (previous.coverage[name] ?? []).compactMap(SetSystems.serviceDate(isoDay:))
                 sources[kind.name] = previous.sources[kind.name] ?? []
-                if let before = previousCounts?.systems[name] { counts[name] = before }
+                guard let before = previousCounts?.systems[name] else {
+                    throw SetManifest.ManifestError.inconsistent("\(kind.name) is carried forward but the previous trip counts have no \(name)")
+                }
+                counts[name] = before
             } else {
                 continue
             }

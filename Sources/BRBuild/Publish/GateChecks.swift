@@ -79,7 +79,8 @@ public enum GateChecks {
     /// the previous build covered it; otherwise that build's median for the date's weekday
     /// (holidays excluded from every median), and for a date in `holidays` the nearest of the
     /// `holidayProfiles` medians (its weekday, Saturday, Sunday). A change beyond
-    /// `maxChangePercent` either way fails. Without previous counts for a system it is skipped
+    /// `maxChangePercent` either way fails. Without a previous build (`previous` nil: no
+    /// `--previous`) the check is skipped; a system the previous build did not have is left out
     /// with a warning.
     ///
     /// The same-date rule first is what makes most holidays pass: bus service on Thanksgiving,
@@ -92,7 +93,7 @@ public enum GateChecks {
         -> GateCheckResult {
         guard let previous else {
             return GateCheckResult(name: "tripCounts", status: .skipped, summary: "no previous build to compare with",
-                                   warnings: ["no previous manifest or trip counts: trip counts not compared"])
+                                   warnings: ["no previous build (no --previous): trip counts not compared"])
         }
         var failures: [String] = [], warnings: [String] = [], notes: [String] = [], metrics: [String: Double] = [:]
         var compared = 0

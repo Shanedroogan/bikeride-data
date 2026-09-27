@@ -157,11 +157,39 @@ struct PublishSetTests {
         #expect(passing.check("tripCounts")?.metrics["bus.sameDate"] == 21 && passing.check("tripCounts")?.metrics["bus.worstChangePercent"] == 0)
         #expect(passing.previousSetId == manifest.setId)
 
-        // A sidecar that does not match the manifest's record is not trusted: skipped, with a warning.
-        try Data("{}".utf8).write(to: set.scratch.url.appendingPathComponent("prev-same/trip-counts.json"))
+        // With --previous given, a sidecar that cannot be used fails the check rather than turning it
+        // off, and the manifest refuses: altered (a third of the bus trips), or missing.
+        var divided = sidecar
+        divided.systems["bus"] = sidecar.systems["bus"]!.mapValues { $0 / 3 }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let sidecarURL = set.scratch.url.appendingPathComponent("prev-same/trip-counts.json")
+        let original = try Data(contentsOf: sidecarURL)
+        try encoder.encode(divided).write(to: sidecarURL)
         let tampered = try set.gate(previous: same)
-        #expect(tampered.check("tripCounts")?.status == .skipped)
-        #expect(tampered.check("tripCounts")?.warnings.first?.hasPrefix("previous trip counts unusable") == true)
+        #expect(tampered.status == .fail)
+        #expect(tampered.check("tripCounts")?.status == .fail)
+        #expect(tampered.check("tripCounts")?.failures.first?.hasPrefix("previous trip counts unusable") == true)
+        #expect(tampered.check("artifacts")?.status == .pass)
+        try FileManager.default.removeItem(at: sidecarURL)
+        let missing = try set.gate(previous: same)
+        #expect(missing.status == .fail && missing.check("tripCounts")?.status == .fail)
+        try original.write(to: sidecarURL)
+        _ = try set.gate(previous: same)
+        try FileManager.default.removeItem(at: sidecarURL)
+        #expect(throws: SetManifest.ManifestError.self) { try set.manifestBuilder(previous: same).build() }
+        try original.write(to: sidecarURL)
+        #expect(throws: Never.self) { try set.manifestBuilder(previous: same).build() }
+
+        // A previous manifest that does not read fails the carry-forward and the comparison alike.
+        let garbled = set.scratch.url.appendingPathComponent("prev-garbled/manifest.json")
+        try FileManager.default.createDirectory(at: garbled.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{\"schema\": 1".utf8).write(to: garbled)
+        let unreadable = try set.gate(previous: garbled)
+        #expect(unreadable.status == .fail)
+        #expect(unreadable.check("artifacts")?.failures.first?.hasPrefix("previous manifest ") == true)
+        #expect(unreadable.check("tripCounts")?.failures.first?.hasPrefix("previous manifest ") == true)
+        #expect(throws: SetManifest.ManifestError.self) { try set.manifestBuilder(previous: garbled).build() }
     }
 
     // MARK: Soft failure

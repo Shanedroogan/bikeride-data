@@ -26,7 +26,7 @@ Checks, in order:
 | `artifacts` | every core kind (streets, stations, the five `tt-*`, links) is in the data directory or carried forward; each file opens with its reader; every `builtAgainst` entry, of fresh and carried artifacts alike, equals the set's rawSha256 of that input | hard |
 | `xz` | each blob is 1 stream / 1 block (`XZCheck`) and `xz -dc` gives the raw size and rawSha256 | hard |
 | `coverage` | consecutive covered days from the build day ≥ `coverage.minDays` (3) | soft: `noSchedule`, real dates kept |
-| `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without a previous build | hard |
+| `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without `--previous`; with `--previous`, a manifest that does not read or a sidecar that is missing or does not match fails (an unreadable manifest fails `artifacts` too) | hard |
 | `streets` | each region's `keptShare` in `reports/streets.json` (which must describe this `streets.bin`) ≥ its minimum; a region with no street length at all fails (the report gives it 100 %); skipped when streets is carried forward | hard |
 | `snapping` | every routable stop inside the service area has street entry and exit, and every access point snaps within `maxSnapMeters` (100 m), except as `snap-allowlist.csv` allows; no routable stop, or none inside the service area, fails; a `links.bin` in the data directory needs its `streets.bin` there too (else fail), and a carried-forward `tt-*` leaves that system's stops unchecked with a warning; skipped only when links is carried forward | hard |
 | hooks | `GateCheck` implementations passed in (config reference checks, flows statistics: M1 P2b) | as they report |
@@ -69,8 +69,10 @@ Compact JSON, keys sorted. The app fetches it through the relay every 60 s; the 
 
 `{schema: 1, setId, buildDay, systems: {"<system>": {"YYYY-MM-DD": activeTrips}}}`, next to the
 manifest, which records its SHA-256. Only the next build's gate reads it (as `--previous`'s
-sidecar); it stays out of the manifest the app polls. A sidecar that does not match its manifest's
-record or `setId` is ignored with a warning.
+sidecar); it stays out of the manifest the app polls. A sidecar that is missing or does not match
+its manifest's record or `setId` fails the next gate and makes `manifest --previous` refuse: a
+check that quietly turned itself off, and a sidecar without the counts of the carried-forward
+systems, would leave the build after that with nothing to compare either.
 
 ## `data/heartbeat.json` (`SetHeartbeat`)
 
