@@ -20,17 +20,18 @@ gate's denominator), and the report lists how many there were.
 - `match`: `exact` (the whole id) or `prefix` (any id starting with it).
 - `name`, `note`: documentation only.
 
-Sources: every id in the June–August 2026 NYC and JC trip files (`202606`–`202608`, 15.95 M trips)
-that is not a GBFS `short_name` (after the pad-0 repair) was listed with its trip-data station
-name, on 2026-09-27. These are the non-station ones:
+Sources: every id in the June–August 2026 NYC and JC trip files (`202606`–`202608`) that is not a
+GBFS `short_name` (after the pad-0 repair) was listed with its trip-data station name, on
+2026-09-27. These are the non-station ones (no counts here: figures derived from the trip data stay
+out of this public repository while the licensing question is open; the build report has them):
 
-| id | trip-data name | trip ends, Jun–Aug 2026 |
-|---|---|---|
-| `1234.56` | Morgan HCT Charging | 2,317 |
-| `SYS038` | Morgan Loading Docks | 1,110 |
-| `SYS016` | Morgan Bike Mechanics | 611 |
-| `Shop Morgan ` | Shop Morgan | 222 |
-| `SYS033` | Pier 40 X2 | 213 |
+| id | trip-data name |
+|---|---|
+| `1234.56` | Morgan HCT Charging |
+| `SYS038` | Morgan Loading Docks |
+| `SYS016` | Morgan Bike Mechanics |
+| `Shop Morgan ` | Shop Morgan |
+| `SYS033` | Pier 40 X2 |
 
 The other unmatched ids of that scan are stations that have left GBFS since (for example
 `5329.08` Murray St & West St, `5256.06` Vesey St & West St, `HB106` River St & Newark St) or old

@@ -609,6 +609,8 @@ which keeps only stations with docks), minus the test regions 189 and 190 and en
 `short_name`; a repeated `station_id` keeps its first entry. Two stations with one `short_name`
 fail the build. A device joins once per data set: binary search of each `stations.bin` short name
 (`MappedFlows.rowTable(forKeys:)`), `0xFFFF` for a station without flows. At most 65,534 keys.
+`MappedFlows`' row accessors stop the process on a row outside `0 ..< K` (`0xFFFF` included) rather
+than read past a section.
 
 **Trip ends.** A monthly file holds the trips that *ended* in its month; a trip is in exactly one
 of the NYC and JC series, so a month needs both. Each row's two station ids resolve in this
@@ -622,22 +624,28 @@ and unmatched ends are not counted. `rideable_type` `classic_bike` (and older fi
 report and left out. A departure is binned by `started_at`, an arrival by `ended_at`: the local
 New York wall-clock time the data holds (no UTC offset), bin = minute of day ÷ 15. The fall-back
 day's two 01:00–01:59 hours therefore share bins 4–7, and the spring-forward day has no trips in
-bins 8–11. Ends dated outside the window are dropped (the first month's file holds a few trips
-that started the day before the window).
+bins 8–11. Ends dated outside the build's days are dropped (the first month's file holds a few
+trips that started the day before the window); departures on the last day are left out on purpose
+(*Windows*) and reported apart (`outsideDirectionWindow`), never as dropped.
 
-**Windows and day types.** Both windows are the calendar days of the three months (the departure
-and arrival windows are stored apart so a later build can shift one without a format change). A
+**Windows and day types.** The arrival window is the calendar days of the three months; the
+departure window stops one day earlier. A monthly file holds the trips that ended in its month, so
+the last day's departures that end the next day are in next month's file, which is not read (in
+August 2026, Aug 31's departures minus arrivals was −228, against +160 to +700 on the other
+Mondays). The two windows are stored apart for that, and so a later build can move either without
+a format change. A
 day is a *weekend* day when it is a Saturday or Sunday, or a holiday with the `weekend` profile in
 `Data/config/calendar/holidays.csv` (the pipeline's only holiday list, read directly so that
 `builtAgainst` stays empty; a window the file does not cover fails the build); every other day,
 weekday-profile holidays included, is a *weekday*. The `holidays` section lists the
 weekend-profile holidays inside the windows (2026-06…08: `2026-07-03`). Day types follow the
-calendar date of the bin, not a service day.
+calendar date of the bin, not a service day. Each direction's means are over its own window's days.
 
 **Active days.** Per key, the days from its first to its last day with a counted trip end
-(either direction, either bike type), counted per day type: the denominator *n* of its means. A
-station that opened or closed inside the window is averaged over the days it existed. The same
-span serves both directions today; the per-direction slots let a later build drop days a station
+(either direction, either bike type), clipped to each direction's window and counted per day
+type: the denominator *n* of its means. A station that opened or closed inside the window is
+averaged over the days it existed. The same span serves both directions today (up to the
+departure window's shorter end); the per-direction slots let a later build drop days a station
 could not serve one direction (empty or full) without a format change. A key with no counted
 trip end has 0.
 
@@ -673,8 +681,10 @@ the active days:
 κc = 4, κh = 8, κφ = 6 pseudo-days (M1 starting values, to be tuned in the M6 backtest), stored in
 `info` in thousandths. Everything is integer input, `+ − × ÷` and comparisons on `f64` in a fixed
 order, and binary16 rounding by bit operations (`HalfFloat`): no libm, so a Mac and a Linux build
-write the same bytes (checked for 2026-06…08: identical `flows.bin` and `.xz` from macOS arm64
-and `swift:6.4-noble` aarch64).
+write the same bytes: for 2026-06…08, macOS arm64 and `swift:6.4-noble` aarch64 wrote identical
+`flows.bin` and `.xz` (checked 2026-09-27). `FlowSmoothingTests` pins the payload of a
+pseudo-random 48-station month by its SHA-256 (taken on macOS arm64, matched on aarch64 Linux), so
+every CI run, on Linux x86_64, checks the same bytes.
 
 **Cells.** IEEE 754 binary16, stored as `u16` bit patterns, rounded to nearest (ties to even) from
 the `f64` values; readers decode them by bit operations (every half is exactly a `Float`). Each
@@ -734,8 +744,8 @@ non-negative halves) and `varianceAny ≥ meanClassic + meanEbike` (exact sums).
 **Build.** `bikeride-data flows` lists the public bucket (`s3.amazonaws.com/tripdata`,
 ListObjectsV2, every page), recognizes `YYYYMM-citibike-tripdata.zip` and
 `JC-YYYYMM-citibike-tripdata[.csv].zip` (and two older JC spellings), and takes the newest month
-published for both NYC and JC and the two before it; one month under two keys, or a hole in either
-series, fails the build. Zips are fetched into the cache with a conditional GET (a re-run gets
+published for both NYC and JC and the two before it; a window month under two keys, or a hole in
+either series, fails the build (a month outside the window under two keys is ignored). Zips are fetched into the cache with a conditional GET (a re-run gets
 304) and must match the listed ETag and size; every `*.csv` entry of a zip (outside `__MACOSX/`)
 is streamed through `unzip -p`, entries in parallel. `flows.bin` and its blob are replaced only
 when the gate passes:
@@ -743,20 +753,30 @@ when the gate passes:
 - unmatched ÷ (exact + repaired + unmatched) trip ends below 2%, per system and per side, in the
   window's newest month. That month's stations are today's GBFS, so a broken join shows there;
   earlier months also hold trips at stations GBFS has dropped since (JC, June 2026: 3.8%, nearly
-  all at `HB106`, removed in July), which is reported but not gated;
-- every window day has at least one counted departure and one counted arrival; no counter
-  saturates;
-- per system, a month the last passing build also used keeps at least 90% of its rows, and a new
-  month has at least 50% of the rows of that build's newest month (skipped without a previous
-  report; a failed build never becomes the reference).
+  all at `HB106`, removed in July), so over the whole window the limit is 5% (JC 2026-06…08:
+  2.4% start, 2.5% end);
+- trip ends at keys dropped for their row (an unknown `rideable_type`, a time that does not
+  parse, a date outside the build's days) ÷ trip ends at keys below 1%, per file and per side
+  (2026-06…08: at most 0.012%): a renamed bike type or a changed timestamp format fails here,
+  where the row counts and unmatched shares would not notice;
+- every day of the departure window has a counted departure and every day of the arrival window a
+  counted arrival; no counter saturates;
+- per system, a month the last passing build also used keeps at least 90% of its rows, and any
+  other month has at least 50% of the rows of the month before it (that build's count, else this
+  build's own; never across a season to the reference's newest month, so a failed or skipped build
+  does not block the winter). The previous report is read for its row counts alone; without one,
+  months are compared only with the month before them in the same build. A failed build never
+  becomes the reference.
 
-Exit status 0 built, 3 gate failure, 4 nothing new (the newest common month is the one
-`flows.bin` ends with and every pin is unchanged, or `--offline` without the saved listing or a
-zip); both 3 and 4 leave `flows.bin` in place. `reports/flows.json` holds the per-file,
+Exit status 0 built, 3 gate failure, 4 nothing new: the newest common month is the one
+`flows.bin` ends with and every trip pin and the `holidays` and `depots` shas are unchanged, or it
+is older than the month `flows.bin` ends with (never step back), or `--offline` lacks the saved
+listing, a zip or GBFS. A `flows.bin` whose `dataVersion` has no trip pins never stops a build.
+Both 3 and 4 leave `flows.bin` in place. `reports/flows.json` holds the per-file,
 per-month and per-system resolution counts, the unmatched ids, the gate and the smoothing stats.
 
-Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.46 MB xz (the four typed slots alone: 3.87 MB; the
-three-month window has far fewer empty cells than one month).
+Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.51 MB xz (without `varianceAny`: 7.82 MB raw,
+4.06 MB xz; the three-month window has far fewer empty cells than one month).
 
 ### config (kind 9, draft)
 
