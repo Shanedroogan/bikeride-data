@@ -24,8 +24,10 @@ let flowsUsage = """
       --offline       Use the saved listing and the cached zips and GBFS
       --no-xz         Skip compression
 
-    EXIT STATUS: 0 built; 3 gate failure (flows.bin kept); 4 nothing new, or offline without the
-    inputs (flows.bin kept; the report is left as it was); 1 any other error; 64 usage.
+    EXIT STATUS: 0 built; 3 gate failure (flows.bin kept); 4 nothing new (flows.bin already ends with
+    the newest month published for NYC and JC, from the same inputs, or with a later one), or offline
+    without the inputs (listing, a zip or GBFS) (flows.bin kept; the report is left as it was);
+    1 any other error; 64 usage.
     """
 
 /// This package's `Data/` directory, found from this source file's path at build time.
@@ -78,9 +80,9 @@ func runFlowsCommand(_ arguments: [String]) -> Int32 {
     }
 
     do {
-        var previous: FlowsReport?
+        var previous: FlowsReport.Previous?
         if let data = try? Data(contentsOf: reportURL) {
-            previous = try? JSONDecoder().decode(FlowsReport.self, from: data)
+            previous = try? JSONDecoder().decode(FlowsReport.Previous.self, from: data)
             if previous == nil { logLine("flows", "warning: \(reportURL.path) is not a flows report; month row counts will not be compared") }
         }
         let report = try FlowsCompiler(runner: ProcessToolRunner(), configuration: configuration).run(previous: previous) { logLine("flows", $0) }

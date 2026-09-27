@@ -27,7 +27,8 @@ import Testing
         let nycZip = Self.trips!.appendingPathComponent("202608-citibike-tripdata.zip")
         let hasNYC = FileManager.default.fileExists(atPath: nycZip.path)
         if hasNYC { inputs.append(TripInput(system: .nyc, month: august, archive: ZipTripArchive(archive: nycZip, runner: runner))) }
-        let result = try FlowBinner.count(inputs, universe: universe, depots: depots, window: FlowWindow(start: august.firstDay, dayCount: 31),
+        let days = FlowWindow(start: august.firstDay, dayCount: 31)
+        let result = try FlowBinner.count(inputs, universe: universe, depots: depots, windows: FlowWindows(departures: days, arrivals: days),
                                           threads: ProcessInfo.processInfo.activeProcessorCount)
         let jc = result.files[0]
         #expect(jc.rows == 111_227 && jc.entries == ["JC-202608-citibike-tripdata.csv"])

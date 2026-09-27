@@ -218,18 +218,34 @@ public enum TripSources {
         return (system, month)
     }
 
-    /// Every monthly file in the listing, by system and month. Throws when one month of one
-    /// system is listed under two keys (which one to use is a question for a human).
-    public static func monthlyFiles(_ objects: [TripListingObject]) throws -> [TripSystem: [TripMonth: TripSourceFile]] {
+    /// Every monthly file in the listing, by system and month. A month listed under two keys keeps
+    /// the first here; ``requireOneKey(for:in:)`` fails the build when the window uses such a month.
+    public static func monthlyFiles(_ objects: [TripListingObject]) -> [TripSystem: [TripMonth: TripSourceFile]] {
         var files: [TripSystem: [TripMonth: TripSourceFile]] = [:]
         for object in objects {
-            guard let (system, month) = recognize(object.key) else { continue }
-            if let existing = files[system]?[month] {
-                throw ListingError.duplicateMonth(system: system, month: month, keys: [existing.object.key, object.key].sorted())
-            }
+            guard let (system, month) = recognize(object.key), files[system]?[month] == nil else { continue }
             files[system, default: [:]][month] = TripSourceFile(system: system, month: month, object: object)
         }
         return files
+    }
+
+    /// Throws when a month of `months` is listed under two keys for one system (which one to use is
+    /// a question for a human). Months outside the window may be: an old month re-uploaded under a
+    /// corrected name must not stop every later build.
+    public static func requireOneKey(for months: [TripMonth], in objects: [TripListingObject]) throws {
+        let window = Set(months)
+        var keys: [TripSystem: [TripMonth: [String]]] = [:]
+        for object in objects {
+            guard let (system, month) = recognize(object.key), window.contains(month) else { continue }
+            keys[system, default: [:]][month, default: []].append(object.key)
+        }
+        for system in TripSystem.allCases.sorted() {
+            for month in months {
+                if let found = keys[system]?[month], found.count > 1 {
+                    throw ListingError.duplicateMonth(system: system, month: month, keys: found.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) })
+                }
+            }
+        }
     }
 
     /// The months a build uses.
@@ -239,6 +255,9 @@ public enum TripSources {
         /// The newest month published for every system is the one the current flows already ends
         /// with, and its inputs are unchanged: nothing new to build (fail soft, keep the file).
         case nothingNew(newest: TripMonth)
+        /// The newest month published for every system is older than the one the current flows
+        /// ends with (a month withdrawn from the bucket): never step back (fail soft, keep the file).
+        case olderThanInPlace(newest: TripMonth, inPlace: TripMonth)
         /// Some system lacks a month the window needs (a hole in the middle of the series).
         case missing([String])
         /// Some system has no monthly file at all.
@@ -248,10 +267,13 @@ public enum TripSources {
     /// The newest `count` consecutive months published for every system: the window ends at the
     /// newest month present for both NYC and JC (a month only one has published yet is not used).
     /// `previousEnd` and `previousPins` describe the flows file in place (its last month, and the
-    /// ``TripSourceFile/pin``s of its window); without them the window is always built.
+    /// ``TripSourceFile/pin``s of its window); without both (no file, or a `dataVersion` this
+    /// builder did not write) the window is always built. `previousBuildInputsMatch` is false when
+    /// the file in place was built from another `holidays.csv` or `depots.csv`: then the same
+    /// window is rebuilt.
     public static func choose(
         _ files: [TripSystem: [TripMonth: TripSourceFile]], count: Int = 3, previousEnd: TripMonth? = nil,
-        previousPins: [String]? = nil
+        previousPins: [String]? = nil, previousBuildInputsMatch: Bool = true
     ) -> Choice {
         var common: Set<TripMonth>?
         for system in TripSystem.allCases {
@@ -264,11 +286,11 @@ public enum TripSources {
             months.filter { files[system]?[$0] == nil }.map { "\(system.rawValue) \($0)" }
         }
         guard missing.isEmpty else { return .missing(missing) }
-        if let previousEnd {
+        if let previousEnd, let previousPins {
             // Never step back to an older window; rebuild the same one only when an input was
-            // re-published (its ETag or size changed).
-            if newest < previousEnd { return .nothingNew(newest: newest) }
-            if newest == previousEnd, previousPins == nil || previousPins == pins(of: months, in: files) {
+            // re-published (its ETag or size changed) or a build-only input changed.
+            if newest < previousEnd { return .olderThanInPlace(newest: newest, inPlace: previousEnd) }
+            if newest == previousEnd, previousBuildInputsMatch, previousPins == pins(of: months, in: files) {
                 return .nothingNew(newest: newest)
             }
         }

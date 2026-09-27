@@ -75,7 +75,7 @@ private enum Listing {
     @Test func choosesTheNewestMonthsPublishedForBothSystems() throws {
         var objects = try TripSources.parseListing(Listing.first).objects + TripSources.parseListing(Listing.second).objects
         objects.append(TripListingObject(key: "202609-citibike-tripdata.zip", etag: "new", size: 1, lastModified: ""))
-        let files = try TripSources.monthlyFiles(objects)
+        let files = TripSources.monthlyFiles(objects)
         let months = (6...8).map { TripMonth(year: 2026, month: $0) }
         // NYC has 202609, JC not yet: the window still ends with 202608.
         #expect(TripSources.choose(files) == .window(months))
@@ -88,27 +88,39 @@ private enum Listing {
         #expect(pins[5] == "NYC202608:d5f2a3ec3831ad8ef2de3da12102e550-60:1024034405")
         // Fail soft: the flows in place already ends with 202608 from the same inputs.
         let august = TripMonth(year: 2026, month: 8)
+        let september = TripMonth(year: 2026, month: 9)
         #expect(TripSources.choose(files, previousEnd: august, previousPins: pins) == .nothingNew(newest: august))
-        #expect(TripSources.choose(files, previousEnd: august) == .nothingNew(newest: august))
-        #expect(TripSources.choose(files, previousEnd: TripMonth(year: 2026, month: 9)) == .nothingNew(newest: august))
+        // Never step back to an older window.
+        #expect(TripSources.choose(files, previousEnd: september, previousPins: pins) == .olderThanInPlace(newest: august, inPlace: september))
+        // A file without pins (a dataVersion this builder did not write) never blocks a build.
+        #expect(TripSources.choose(files, previousEnd: august) == .window(months))
+        #expect(TripSources.choose(files, previousEnd: september) == .window(months))
+        // Another holidays.csv or depots.csv: the same window again.
+        #expect(TripSources.choose(files, previousEnd: august, previousPins: pins, previousBuildInputsMatch: false) == .window(months))
         // A re-published month (new ETag) is new input.
         var republished = pins
         republished[1] = "NYC202606:other:1"
         #expect(TripSources.choose(files, previousEnd: august, previousPins: republished) == .window(months))
-        #expect(TripSources.choose(files, previousEnd: TripMonth(year: 2026, month: 7)) == .window(months))
+        #expect(TripSources.choose(files, previousEnd: TripMonth(year: 2026, month: 7), previousPins: pins) == .window(months))
         // A hole in one system's series, and a system with nothing.
-        let holey = try TripSources.monthlyFiles(objects.filter { $0.key != "JC-202607-citibike-tripdata.csv.zip" })
+        let holey = TripSources.monthlyFiles(objects.filter { $0.key != "JC-202607-citibike-tripdata.csv.zip" })
         #expect(TripSources.choose(holey) == .missing(["JC 202607"]))
-        let nycOnly = try TripSources.monthlyFiles(objects.filter { !$0.key.hasPrefix("JC-") })
+        let nycOnly = TripSources.monthlyFiles(objects.filter { !$0.key.hasPrefix("JC-") })
         #expect(TripSources.choose(nycOnly) == .noCommonMonth)
-        // One month under two keys is for a human to sort out.
-        #expect(throws: TripSources.ListingError.self) {
-            try TripSources.monthlyFiles(objects + [TripListingObject(key: "JC-202608-citibike-tripdata.csv.zip", etag: "x", size: 1, lastModified: "")])
-        }
+        // One month under two keys is for a human to sort out, when the window uses it.
+        let twice = objects + [TripListingObject(key: "JC-202608-citibike-tripdata.csv.zip", etag: "x", size: 1, lastModified: "")]
+        #expect(throws: TripSources.ListingError.duplicateMonth(
+            system: .jc, month: august, keys: ["JC-202608-citibike-tripdata.csv.zip", "JC-202608-citibike-tripdata.zip"]
+        )) { try TripSources.requireOneKey(for: months, in: twice) }
+        #expect(TripSources.monthlyFiles(twice)[.jc]?[august]?.object.key == "JC-202608-citibike-tripdata.zip")
+        // An old month re-uploaded under a corrected name blocks nothing.
+        let renamed = objects + [TripListingObject(key: "JC-202207-citibike-tripdata.csv.zip", etag: "y", size: 1, lastModified: "")]
+        try TripSources.requireOneKey(for: months, in: renamed)
+        #expect(throws: TripSources.ListingError.self) { try TripSources.requireOneKey(for: [TripMonth(year: 2022, month: 7)], in: renamed) }
     }
 
     @Test func percentEncodesKeysInDownloadURLs() throws {
-        let files = try TripSources.monthlyFiles(try TripSources.parseListing(Listing.first).objects)
+        let files = TripSources.monthlyFiles(try TripSources.parseListing(Listing.first).objects)
         let spaced = try #require(files[.jc]?[TripMonth(year: 2017, month: 8)])
         #expect(spaced.url == "https://s3.amazonaws.com/tripdata/JC-201708%20citibike-tripdata.csv.zip")
         #expect(files[.nyc]?[TripMonth(year: 2026, month: 8)]?.url == "https://s3.amazonaws.com/tripdata/202608-citibike-tripdata.zip")

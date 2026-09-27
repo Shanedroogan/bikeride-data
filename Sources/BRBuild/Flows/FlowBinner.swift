@@ -15,6 +15,40 @@ public struct TripInput: Sendable {
     }
 }
 
+/// The days a build counts, per direction. A monthly file holds the trips that *ended* in its
+/// month, so the newest file lacks the trips that start on its last day and end the next day (they
+/// are in next month's file, which is not read): ``trips(from:through:)`` stops the departure
+/// window a day before the arrival window. Counts are indexed by day from ``span``'s start.
+public struct FlowWindows: Sendable, Hashable, Codable {
+    public let departures: FlowWindow
+    public let arrivals: FlowWindow
+    /// The first to the last day of either window.
+    public let span: FlowWindow
+
+    public init(departures: FlowWindow, arrivals: FlowWindow) {
+        precondition(departures.dayCount > 0 && arrivals.dayCount > 0, "empty flows window")
+        self.departures = departures
+        self.arrivals = arrivals
+        let first = min(departures.start, arrivals.start), last = max(departures.end, arrivals.end)
+        span = FlowWindow(start: first, dayCount: first.distance(to: last) + 1)
+    }
+
+    /// Trip files for the months `first` … `last`: arrivals every day, departures every day but the last.
+    public static func trips(from first: ServiceDate, through last: ServiceDate) -> FlowWindows {
+        let days = first.distance(to: last) + 1
+        return FlowWindows(departures: FlowWindow(start: first, dayCount: days - 1), arrivals: FlowWindow(start: first, dayCount: days))
+    }
+
+    public func window(_ direction: FlowDirection) -> FlowWindow { direction == .departures ? departures : arrivals }
+
+    /// The day offsets (from ``span``'s start) of `direction`'s window.
+    public func days(_ direction: FlowDirection) -> Range<Int> {
+        let window = window(direction)
+        let first = span.start.distance(to: window.start)
+        return first..<first + window.dayCount
+    }
+}
+
 /// How one side's (start or end) station ids resolved, and what became of the trip ends at keys.
 public struct TripEndStats: Codable, Sendable, Equatable {
     public var exact = 0
@@ -30,8 +64,12 @@ public struct TripEndStats: Codable, Sendable, Equatable {
     public var stationIDStyle = 0
     /// Trip ends at keys counted into the cells.
     public var counted = 0
-    /// Trip ends at keys dated outside the window (a file holds trips by `ended_at` month).
+    /// Trip ends at keys dated outside the build's days (a file holds trips by `ended_at` month,
+    /// so the first month's holds a few that started the day before).
     public var outsideWindow = 0
+    /// Trip ends at keys inside the build's days but outside their direction's window: departures
+    /// on the last day, left out on purpose (``FlowWindows``). Not a sign of bad input.
+    public var outsideDirectionWindow = 0
     /// Trip ends at keys whose time does not parse.
     public var badTimestamp = 0
     /// Trip ends at keys of rows with an unknown `rideable_type`.
@@ -43,6 +81,12 @@ public struct TripEndStats: Codable, Sendable, Equatable {
     public var joinable: Int { exact + repaired + unmatched }
     public var unmatchedShare: Double { joinable == 0 ? 0 : Double(unmatched) / Double(joinable) }
     public var repairedShare: Double { joinable == 0 ? 0 : Double(repaired) / Double(joinable) }
+    /// Trip ends at keys (exact or repaired): counted, or dropped for one of the reasons below.
+    public var atKeys: Int { exact + repaired }
+    /// Trip ends at keys dropped for their row (an unknown `rideable_type`, a time that does not
+    /// parse, a date outside the build's days): what the dropped-ends gate reads.
+    public var dropped: Int { unknownRideableType + badTimestamp + outsideWindow }
+    public var droppedShare: Double { atKeys == 0 ? 0 : Double(dropped) / Double(atKeys) }
 
     mutating func add(_ other: TripEndStats) {
         exact += other.exact
@@ -55,6 +99,7 @@ public struct TripEndStats: Codable, Sendable, Equatable {
         stationIDStyle += other.stationIDStyle
         counted += other.counted
         outsideWindow += other.outsideWindow
+        outsideDirectionWindow += other.outsideDirectionWindow
         badTimestamp += other.badTimestamp
         unknownRideableType += other.unknownRideableType
     }
@@ -100,15 +145,27 @@ public struct TripFileStats: Codable, Sendable, Equatable {
     }
 }
 
-/// Trip counts per (key, window day, bin, bike type, direction), `u16` each: the raw material of
-/// the means and variances. Integer sums, so the order in which entries are merged never matters.
+/// Trip counts per (key, day of the span, bin, bike type, direction), `u16` each: the raw material
+/// of the means and variances. Integer sums, so the order in which entries are merged never
+/// matters. A direction's counts outside its window are 0.
 public struct FlowCounts: Sendable {
     public let keyCount: Int
-    public let window: FlowWindow
-    /// `[key][day][bin][bikeType][direction]`.
+    public let windows: FlowWindows
+    /// `[key][day][bin][bikeType][direction]`, days from `windows.span.start`.
     public let counts: [UInt16]
     /// Increments dropped because a counter was at 65,535 (never on real data; the gate fails on it).
     public let saturated: Int
+
+    public init(keyCount: Int, windows: FlowWindows, counts: [UInt16], saturated: Int) {
+        precondition(counts.count == keyCount * windows.span.dayCount * FlowsFormat.binsPerDay * Self.perBin, "counts length")
+        self.keyCount = keyCount
+        self.windows = windows
+        self.counts = counts
+        self.saturated = saturated
+    }
+
+    /// The days counted in either direction.
+    public var window: FlowWindow { windows.span }
 
     static let perBin = FlowsFormat.bikeTypeCount * FlowsFormat.directionCount
 
@@ -124,7 +181,7 @@ public struct FlowCounts: Sendable {
 
 /// Streams trip files into ``FlowCounts``: resolves both station ids of every row, bins each trip
 /// end at a key by its local 15-minute bin (departures by `started_at`, arrivals by `ended_at`),
-/// and keeps only dates inside the window. Entries are read in parallel, each by its own `unzip`;
+/// and keeps only dates inside its direction's window. Entries are read in parallel, each by its own `unzip`;
 /// counters merge under a lock (integer adds, so the result does not depend on scheduling).
 public enum FlowBinner {
     public struct Result: Sendable {
@@ -134,13 +191,13 @@ public enum FlowBinner {
     }
 
     public static func count(
-        _ inputs: [TripInput], universe: FlowUniverse, depots: DepotList, window: FlowWindow, threads: Int,
+        _ inputs: [TripInput], universe: FlowUniverse, depots: DepotList, windows: FlowWindows, threads: Int,
         log: (String) -> Void = { _ in }
     ) throws -> Result {
         let keyCount = universe.stations.count
         let resolver = StationResolver(keys: universe.stations.map(\.key), depots: depots)
         let names = universe.stations.map { Array($0.name.utf8) }
-        let accumulator = CountAccumulator(count: keyCount * window.dayCount * FlowsFormat.binsPerDay * FlowCounts.perBin)
+        let accumulator = CountAccumulator(count: keyCount * windows.span.dayCount * FlowsFormat.binsPerDay * FlowCounts.perBin)
 
         var items: [(input: Int, entry: String)] = []
         for (index, input) in inputs.enumerated() {
@@ -156,7 +213,7 @@ public enum FlowBinner {
             let (inputIndex, entry) = items[item]
             let input = inputs[inputIndex]
             do {
-                let stats = try countEntry(entry, of: input, resolver: resolver, names: names, window: window, into: accumulator)
+                let stats = try countEntry(entry, of: input, resolver: resolver, names: names, windows: windows, into: accumulator)
                 results.append((item, stats))
             } catch {
                 failures.append((item, "\(input.archive.location) \(entry): \(error)"))
@@ -173,12 +230,12 @@ public enum FlowBinner {
             files[index].end.stationIDStyle = files[index].unmatchedEndIDs.filter { universe.stationIDs.contains($0.key) }.values.reduce(0, +)
         }
         let (counts, saturated) = accumulator.finish()
-        return Result(counts: FlowCounts(keyCount: keyCount, window: window, counts: counts, saturated: saturated), files: files)
+        return Result(counts: FlowCounts(keyCount: keyCount, windows: windows, counts: counts, saturated: saturated), files: files)
     }
 
     /// Reads one CSV entry to the end.
     static func countEntry(
-        _ entry: String, of input: TripInput, resolver: StationResolver, names: [[UInt8]], window: FlowWindow,
+        _ entry: String, of input: TripInput, resolver: StationResolver, names: [[UInt8]], windows: FlowWindows,
         into accumulator: CountAccumulator
     ) throws -> TripFileStats {
         var stats = TripFileStats(system: input.system, month: input.month, location: input.archive.location)
@@ -196,7 +253,8 @@ public enum FlowBinner {
             var unmatched: [[[UInt8]: Int]] = [[:], [:]]
             var events: [UInt64] = []
             events.reserveCapacity(Self.flushThreshold + 2)
-            let startDay = window.start.daysSinceEpoch, dayCount = window.dayCount
+            let startDay = windows.span.start.daysSinceEpoch, dayCount = windows.span.dayCount
+            let directionDays = [windows.days(.departures), windows.days(.arrivals)]
             while let record = try reader.next() {
                 stats.rows += 1
                 let typeField = record[columns.rideableType]
@@ -250,6 +308,10 @@ public enum FlowBinner {
                     let day = time.day - startDay
                     guard day >= 0, day < dayCount else {
                         ends[side].outsideWindow += 1
+                        continue
+                    }
+                    guard directionDays[side].contains(day) else {
+                        ends[side].outsideDirectionWindow += 1
                         continue
                     }
                     ends[side].counted += 1

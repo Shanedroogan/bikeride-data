@@ -10,7 +10,7 @@ public struct FlowTallies: Sendable {
     public static let anySeries = 2
 
     public let keyCount: Int
-    public let window: FlowWindow
+    public let windows: FlowWindows
     /// `[key][dayType][direction]` (``FlowsFormat/activeDaysIndex(row:dayType:direction:)``).
     public var activeDays: [UInt16]
     /// `[key][dayType][direction][series][bin]` (``index(key:dayType:direction:series:bin:)``).
@@ -18,19 +18,19 @@ public struct FlowTallies: Sendable {
     public var squares: [Int64]
     /// Counted trip ends per key, both directions.
     public var tripEnds: [Int]
-    /// Counted trip ends per window day, `[direction][day]`.
+    /// Counted trip ends per day of the span, `[direction][day]` (0 outside the direction's window).
     public var daily: [[Int]]
-    /// Window days per day type.
-    public var daysOfType: [Int]
+    /// Days of each type in each direction's window, `[direction][dayType]`.
+    public var daysOfType: [[Int]]
 
     @inline(__always)
     public static func index(key: Int, dayType: Int, direction: Int, series: Int, bin: Int) -> Int {
         (((key * FlowsFormat.dayTypeCount + dayType) * FlowsFormat.directionCount + direction) * Self.series + series) * FlowsFormat.binsPerDay + bin
     }
 
-    public init(keyCount: Int, window: FlowWindow, activeDays: [UInt16], sums: [Int64], squares: [Int64], tripEnds: [Int], daily: [[Int]], daysOfType: [Int]) {
+    public init(keyCount: Int, windows: FlowWindows, activeDays: [UInt16], sums: [Int64], squares: [Int64], tripEnds: [Int], daily: [[Int]], daysOfType: [[Int]]) {
         self.keyCount = keyCount
-        self.window = window
+        self.windows = windows
         self.activeDays = activeDays
         self.sums = sums
         self.squares = squares
@@ -39,16 +39,21 @@ public struct FlowTallies: Sendable {
         self.daysOfType = daysOfType
     }
 
-    /// Sums the counts by day type. A key's active days are the days of each type from its first
-    /// to its last day with a counted trip end (either direction, either bike type): a station that
-    /// opened or closed inside the window is averaged over the days it existed. Both directions
-    /// share the span today; the format keeps them apart so a later build can drop days a station
-    /// could not serve one direction (empty or full) without a format change.
+    /// Sums the counts by day type, each direction over its own window. A key's active days are
+    /// the days of each type from its first to its last day with a counted trip end (either
+    /// direction, either bike type), clipped to each direction's window: a station that opened or
+    /// closed inside the window is averaged over the days it existed. Both directions share the
+    /// span today; the format keeps them apart so a later build can drop days a station could not
+    /// serve one direction (empty or full) without a format change.
     public static func tally(_ counts: FlowCounts, calendar: FlowCalendar) -> FlowTallies {
-        let keys = counts.keyCount, days = counts.window.dayCount, bins = FlowsFormat.binsPerDay
-        let dayTypes = (0..<days).map { Int(calendar.dayType(of: counts.window.start.adding(days: $0)).rawValue) }
-        var daysOfType = [0, 0]
-        for type in dayTypes { daysOfType[type] += 1 }
+        let windows = counts.windows
+        let keys = counts.keyCount, days = windows.span.dayCount, bins = FlowsFormat.binsPerDay
+        let dayTypes = (0..<days).map { Int(calendar.dayType(of: windows.span.start.adding(days: $0)).rawValue) }
+        let directionDays = [windows.days(.departures), windows.days(.arrivals)]
+        var daysOfType = [[0, 0], [0, 0]]
+        for direction in 0..<FlowsFormat.directionCount {
+            for day in directionDays[direction] { daysOfType[direction][dayTypes[day]] += 1 }
+        }
         var sums = [Int64](repeating: 0, count: keys * FlowsFormat.dayTypeCount * FlowsFormat.directionCount * series * bins)
         var squares = sums
         var activeDays = [UInt16](repeating: 0, count: keys * FlowsFormat.dayTypeCount * FlowsFormat.directionCount)
@@ -61,7 +66,7 @@ public struct FlowTallies: Sendable {
                     let dayType = dayTypes[day]
                     let base = FlowCounts.index(key: key, day: day, bin: 0, type: 0, direction: 0, dayCount: days)
                     var dayTotal = 0
-                    for direction in 0..<FlowsFormat.directionCount {
+                    for direction in 0..<FlowsFormat.directionCount where directionDays[direction].contains(day) {
                         var directionTotal = 0
                         let out = index(key: key, dayType: dayType, direction: direction, series: 0, bin: 0)
                         for bin in 0..<bins {
@@ -87,16 +92,17 @@ public struct FlowTallies: Sendable {
                 }
                 tripEnds[key] = total
                 guard first >= 0 else { continue }
-                var active = [0, 0]
-                for day in first...last { active[dayTypes[day]] += 1 }
-                for dayType in 0..<FlowsFormat.dayTypeCount {
-                    for direction in 0..<FlowsFormat.directionCount {
+                for direction in 0..<FlowsFormat.directionCount {
+                    let span = max(first, directionDays[direction].lowerBound)..<min(last + 1, directionDays[direction].upperBound)
+                    var active = [0, 0]
+                    for day in span { active[dayTypes[day]] += 1 }
+                    for dayType in 0..<FlowsFormat.dayTypeCount {
                         activeDays[(key * FlowsFormat.dayTypeCount + dayType) * FlowsFormat.directionCount + direction] = UInt16(active[dayType])
                     }
                 }
             }
         }
-        return FlowTallies(keyCount: keys, window: counts.window, activeDays: activeDays, sums: sums, squares: squares,
+        return FlowTallies(keyCount: keys, windows: windows, activeDays: activeDays, sums: sums, squares: squares,
                            tripEnds: tripEnds, daily: daily, daysOfType: daysOfType)
     }
 }

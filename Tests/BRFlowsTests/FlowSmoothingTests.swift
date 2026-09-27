@@ -24,7 +24,7 @@ private enum Toy {
         for (day, n) in [0, 10, 4, 4, 2].enumerated() { add(1, day, 33, .classic, .departures, UInt16(n)) } // B: 20 over the weekdays
         add(1, 0, 50, .classic, .arrivals, 1)                           // B is active from Monday
         for day in 5..<7 { add(1, day, 41, .classic, .departures, 2) }
-        return FlowCounts(keyCount: 3, window: window, counts: counts, saturated: 0)
+        return FlowCounts(keyCount: 3, windows: FlowWindows(departures: window, arrivals: window), counts: counts, saturated: 0)
     }
 
     static let calendar = try! FlowCalendar(holidays: [FlowCalendar.Holiday(date: ServiceDate(year: 2026, month: 1, day: 1), name: "x", weekendProfile: true)])
@@ -33,7 +33,7 @@ private enum Toy {
 @Suite struct FlowSmoothingTests {
     @Test func tallySumsByDayTypeAndSpansActiveDays() {
         let tallies = FlowTallies.tally(Toy.counts(), calendar: Toy.calendar)
-        #expect(tallies.daysOfType == [5, 2])
+        #expect(tallies.daysOfType == [[5, 2], [5, 2]])
         let a = FlowTallies.index(key: 0, dayType: 0, direction: 0, series: 0, bin: 32)
         #expect(tallies.sums[a] == 10 && tallies.squares[a] == 20)
         let b = FlowTallies.index(key: 1, dayType: 0, direction: 0, series: 0, bin: 33)

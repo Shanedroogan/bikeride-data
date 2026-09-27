@@ -30,6 +30,10 @@ enum TripFixture {
     ]
 
     static let depots = DepotList(exact: ["1234.56"], prefixes: ["SYS", "Shop "])
+
+    /// August 2026 for both directions (the fixture's checks predate the shorter departure window).
+    static let august = FlowWindows(departures: FlowWindow(start: ServiceDate(year: 2026, month: 8, day: 1), dayCount: 31),
+                                    arrivals: FlowWindow(start: ServiceDate(year: 2026, month: 8, day: 1), dayCount: 31))
 }
 
 @Suite struct TripParsingTests {
@@ -166,7 +170,8 @@ enum TripFixture {
         let window = FlowWindow(start: august.firstDay, dayCount: 31)
         let universe = try FlowUniverse(gbfs: TripFixture.gbfs)
         for threads in [1, 4] {
-            try checkCounts(FlowBinner.count(inputs, universe: universe, depots: TripFixture.depots, window: window, threads: threads))
+            try checkCounts(FlowBinner.count(inputs, universe: universe, depots: TripFixture.depots,
+                                             windows: FlowWindows(departures: window, arrivals: window), threads: threads))
         }
     }
 
@@ -189,8 +194,49 @@ enum TripFixture {
         let inputs = [TripInput(system: .nyc, month: august, archive: nycZip),
                       TripInput(system: .jc, month: august, archive: ZipTripArchive(archive: scratch.file("jc.zip"), runner: runner))]
         let result = try FlowBinner.count(inputs, universe: try FlowUniverse(gbfs: TripFixture.gbfs), depots: TripFixture.depots,
-                                          window: FlowWindow(start: august.firstDay, dayCount: 31), threads: 3)
+                                          windows: TripFixture.august, threads: 3)
         try checkCounts(result)
+    }
+
+    /// Through the binner: the fall-back day's two 01:30s share bin 6 (the data has no UTC offset),
+    /// and with the build's windows a departure on the last day is left out on purpose, never
+    /// counted as a dropped trip end; each direction's active days stay inside its window.
+    @Test func binsTheFallBackHourAndLeavesOutLastDayDepartures() throws {
+        let scratch = try ScratchDirectory()
+        try scratch.write("nov/202611-citibike-tripdata_1.csv", ([TripFixture.header] + [
+            // 2026-11-01 01:30 EDT, then 01:30 EST an hour later: one wall-clock time.
+            TripFixture.row("classic_bike", "2026-11-01 01:30:00.000", "2026-11-01 01:40:00.000", from: "5343.10", to: "6131.1"),
+            TripFixture.row("classic_bike", "2026-11-01 01:30:00.000", "2026-11-01 01:40:00.000", from: "5343.10", to: "6131.1"),
+            TripFixture.row("classic_bike", "2026-11-01 00:55:00.000", "2026-11-01 01:05:00.000", from: "5343.10", to: "6131.1"),
+            // The last day (a Monday): the arrival counts, the departure is outside the departure window.
+            TripFixture.row("electric_bike", "2026-11-30 10:00:00.000", "2026-11-30 10:20:00.000", from: "6131.1", to: "HB101"),
+        ]).joined(separator: "\n") + "\n")
+        let november = TripMonth(year: 2026, month: 11)
+        let windows = FlowWindows.trips(from: november.firstDay, through: november.lastDay)
+        #expect(windows.departures.dayCount == 29 && windows.arrivals.dayCount == 30 && windows.span == windows.arrivals)
+        #expect(windows.days(.departures) == 0..<29 && windows.days(.arrivals) == 0..<30)
+        let result = try FlowBinner.count([TripInput(system: .nyc, month: november, archive: DirectoryTripArchive(directory: scratch.file("nov")))],
+                                          universe: try FlowUniverse(gbfs: TripFixture.gbfs), depots: TripFixture.depots, windows: windows, threads: 1)
+        let counts = result.counts
+        #expect(counts.count(key: 0, day: 0, bin: 6, type: .classic, direction: .departures) == 2)
+        #expect(counts.count(key: 1, day: 0, bin: 6, type: .classic, direction: .arrivals) == 2)
+        #expect(counts.count(key: 0, day: 0, bin: 3, type: .classic, direction: .departures) == 1)
+        #expect(counts.count(key: 1, day: 0, bin: 4, type: .classic, direction: .arrivals) == 1)
+        #expect(counts.count(key: 3, day: 29, bin: 41, type: .ebike, direction: .arrivals) == 1)
+        #expect(counts.counts.reduce(0) { $0 + Int($1) } == 7)
+        let file = result.files[0]
+        #expect(file.start.outsideDirectionWindow == 1 && file.start.dropped == 0 && file.start.counted == 3 && file.end.counted == 4)
+
+        let calendar = try FlowCalendar(csv: Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Data/config/calendar/holidays.csv")))
+        let tallies = FlowTallies.tally(counts, calendar: calendar)
+        // Weekends plus Thanksgiving and the day after: 11 weekend days; Nov 30 (a weekday) has arrivals only.
+        #expect(tallies.daysOfType == [[18, 11], [19, 11]])
+        #expect(tallies.daily[0][29] == 0 && tallies.daily[1][29] == 1)
+        // HB101's only trip end is the last day's arrival: one weekday of arrivals, no departure days.
+        #expect(Array(tallies.activeDays[12..<16]) == [0, 1, 0, 0])
+        // 6131.1's last-day departure was not counted, so it is active on Nov 1 (a Sunday) alone.
+        #expect(Array(tallies.activeDays[4..<8]) == [0, 0, 1, 1])
     }
 
     @Test func missingColumnsFailTheFile() throws {
@@ -200,7 +246,7 @@ enum TripFixture {
         #expect(throws: FlowsBuildError.self) {
             try FlowBinner.count([TripInput(system: .nyc, month: august, archive: DirectoryTripArchive(directory: scratch.file("bad")))],
                                  universe: try FlowUniverse(gbfs: TripFixture.gbfs), depots: TripFixture.depots,
-                                 window: FlowWindow(start: august.firstDay, dayCount: 31), threads: 2)
+                                 windows: TripFixture.august, threads: 2)
         }
     }
 

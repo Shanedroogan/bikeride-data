@@ -8,7 +8,7 @@ import Foundation
 /// at a GBFS station (full `station_information`, capacity 0 included), smooth, gate, and write
 /// `flows.bin` (+ `.xz`) only when the gate passes. Otherwise the file in place is kept.
 ///
-/// The outcome maps to the CLI's exit status: built 0, gate failure 3, kept previous (no new month,
+/// The outcome maps to the CLI's exit status: built 0, gate failure 3, kept previous (nothing new,
 /// or offline without the inputs) 4.
 public struct FlowsCompiler: Sendable {
     public struct Configuration: Sendable {
@@ -52,7 +52,7 @@ public struct FlowsCompiler: Sendable {
 
     /// Runs the build. `previous` is the last report written (its baseline row counts feed the
     /// month comparison). Throws only for errors that are neither a gate failure nor a fail-soft.
-    public func run(previous: FlowsReport? = nil, log: (String) -> Void = { _ in }) throws -> FlowsReport {
+    public func run(previous: FlowsReport.Previous? = nil, log: (String) -> Void = { _ in }) throws -> FlowsReport {
         let config = configuration
         var seconds: [String: Double] = [:]
         func timed<T>(_ phase: String, _ body: () throws -> T) rethrows -> T {
@@ -82,14 +82,19 @@ public struct FlowsCompiler: Sendable {
         let depots = try DepotList(csv: depotsData)
         report.depots = FlowsReport.Depots(exact: depots.exact.map { String(decoding: $0, as: UTF8.self) }.sorted(),
                                            prefixes: depots.prefixes.map { String(decoding: $0, as: UTF8.self) })
+        let holidaysSha = try ArtifactOutput.sha256(ofFileAt: config.holidaysFile, runner: runner)
+        let depotsSha = try ArtifactOutput.sha256(ofFileAt: config.depotsFile, runner: runner)
+        let buildInputs = FlowsArtifactWriter.buildInputs(holidaysSha: holidaysSha, depotsSha: depotsSha)
 
-        // 2. The flows file in place, if any: its window's last month and input pins.
+        // 2. The flows file in place, if any: its window's last month, input pins and build inputs.
         var previousEnd: TripMonth?
         var previousPins: [String]?
+        var previousBuildInputs: String?
         if FileManager.default.fileExists(atPath: config.artifactFile.path),
            let flows = try? MappedFlows(contentsOf: config.artifactFile, validate: false) {
             previousEnd = TripMonth(year: flows.arrivalWindow.end.year, month: flows.arrivalWindow.end.month)
             previousPins = FlowsArtifactWriter.tripPins(ofDataVersion: flows.header.dataVersion)
+            previousBuildInputs = FlowsArtifactWriter.buildInputs(ofDataVersion: flows.header.dataVersion)
             report.previousDataVersion = flows.header.dataVersion
         }
 
@@ -102,27 +107,36 @@ public struct FlowsCompiler: Sendable {
             return finish(.keptPrevious, "\(error)")
         }
         report.listingFetchedAt = listing.fetchedAt
-        let files = try TripSources.monthlyFiles(listing.objects)
+        let files = TripSources.monthlyFiles(listing.objects)
         let months: [TripMonth]
         if let explicit = config.months {
             let missing = TripSystem.allCases.flatMap { system in explicit.filter { files[system]?[$0] == nil }.map { "\(system.rawValue) \($0)" } }
             guard missing.isEmpty else { return finish(.gateFailed, "the listing has no \(missing.joined(separator: ", "))") }
             months = explicit
         } else {
-            switch TripSources.choose(files, count: config.monthCount, previousEnd: previousEnd, previousPins: previousPins) {
-            case .window(let chosen): months = chosen
+            let buildInputsMatch = previousBuildInputs == buildInputs
+            switch TripSources.choose(files, count: config.monthCount, previousEnd: previousEnd, previousPins: previousPins,
+                                      previousBuildInputsMatch: buildInputsMatch) {
+            case .window(let chosen):
+                months = chosen
+                if previousPins != nil, previousEnd == chosen.last, !buildInputsMatch {
+                    log("rebuilding \(chosen.last!): holidays.csv or depots.csv changed (\(previousBuildInputs ?? "none") → \(buildInputs))")
+                }
             case .nothingNew(let newest):
                 return finish(.keptPrevious, "no new month: the newest month published for NYC and JC is \(newest), and flows.bin already ends with it (same inputs)")
+            case .olderThanInPlace(let newest, let inPlace):
+                return finish(.keptPrevious, "the newest month published for NYC and JC is \(newest), older than \(inPlace), the last month of flows.bin; not stepping back")
             case .missing(let missing): return finish(.gateFailed, "the window lacks \(missing.joined(separator: ", "))")
             case .noCommonMonth: return finish(.gateFailed, "the listing has no month published for both NYC and JC")
             }
         }
+        try TripSources.requireOneKey(for: months, in: listing.objects)
         report.months = months
-        let window = FlowWindow(start: months[0].firstDay, dayCount: months[0].firstDay.distance(to: months[months.count - 1].lastDay) + 1)
-        report.window = window
-        try calendar.requireCoverage(from: window.start, through: window.end)
-        report.holidays = calendar.weekendHolidays(from: window.start, through: window.end)
-        log("window \(window.start)…\(window.end) (\(months.map(\.yyyymm).joined(separator: ", ")))")
+        let windows = FlowWindows.trips(from: months[0].firstDay, through: months[months.count - 1].lastDay)
+        report.windows = windows
+        try calendar.requireCoverage(from: windows.span.start, through: windows.span.end)
+        report.holidays = calendar.weekendHolidays(from: windows.span.start, through: windows.span.end)
+        log("window \(windows.span.start)…\(windows.span.end), departures through \(windows.departures.end) (\(months.map(\.yyyymm).joined(separator: ", ")))")
 
         // 4. Trip zips and GBFS.
         let sources = TripSources.files(of: months, in: files)
@@ -140,10 +154,16 @@ public struct FlowsCompiler: Sendable {
             throw error
         }
         let fetcher = SourceFetcher(runner: runner, offline: config.offline)
-        let (discovery, information) = try timed("download") { () throws -> (SourceRecord, SourceRecord) in
-            let discovery = try fetcher.fetch(GBFSStations.discoveryURL, to: config.discoveryFile)
-            let url = try GBFSStations.stationInformationURL(discovery: Data(contentsOf: config.discoveryFile))
-            return (discovery, try fetcher.fetch(url, to: config.stationInformationFile))
+        let discovery: SourceRecord, information: SourceRecord
+        do {
+            (discovery, information) = try timed("download") { () throws -> (SourceRecord, SourceRecord) in
+                let discovery = try fetcher.fetch(GBFSStations.discoveryURL, to: config.discoveryFile)
+                let url = try GBFSStations.stationInformationURL(discovery: Data(contentsOf: config.discoveryFile))
+                return (discovery, try fetcher.fetch(url, to: config.stationInformationFile))
+            }
+        } catch let error as SourceFetcher.FetchError {
+            if case .missingOffline = error { return finish(.keptPrevious, "\(error)") }
+            throw error
         }
         report.sources = records + [discovery, information]
         let feed = try GBFSStations.parseStationInformation(Data(contentsOf: config.stationInformationFile))
@@ -169,7 +189,7 @@ public struct FlowsCompiler: Sendable {
             TripInput(system: source.system, month: source.month, archive: ZipTripArchive(archive: try cache.file(for: source), runner: runner))
         }
         let binned = try timed("count") {
-            try FlowBinner.count(inputs, universe: universe, depots: depots, window: window, threads: config.threads, log: log)
+            try FlowBinner.count(inputs, universe: universe, depots: depots, windows: windows, threads: config.threads, log: log)
         }
         log(String(format: "counted %d rows in %.1f s", binned.files.reduce(0) { $0 + $1.rows }, seconds["count"] ?? 0))
         let tallies = timed("tally") { FlowTallies.tally(binned.counts, calendar: calendar) }
@@ -186,8 +206,6 @@ public struct FlowsCompiler: Sendable {
         }
 
         // 7. Write through a staging directory, so the file in place changes only as a whole.
-        let holidaysSha = try ArtifactOutput.sha256(ofFileAt: config.holidaysFile, runner: runner)
-        let depotsSha = try ArtifactOutput.sha256(ofFileAt: config.depotsFile, runner: runner)
         let dataVersion = FlowsArtifactWriter.dataVersion(months: months, sources: sources, gbfs: gbfsVersion,
                                                           holidaysSha: holidaysSha, depotsSha: depotsSha)
         let data = FlowsArtifactWriter.data(universe: universe, tallies: tallies, cells: smoothed.cells, flags: smoothed.flags,
@@ -230,48 +248,75 @@ public enum FlowsGate {
     /// window's newest month: below this. The newest month is where the join has to be right (its
     /// stations are today's GBFS). Earlier months also hold trips at stations GBFS has dropped
     /// since (JC, June 2026: 3.8%, almost all at HB106, removed in July), which is no join
-    /// failure; their shares are reported, not gated.
+    /// failure; they are bounded only by ``windowUnmatchedLimit``.
     public static let unmatchedLimit = 0.02
+    /// The same share over the whole window, per side and per system (JC 2026-06…08: 2.5%): a
+    /// corrupted older file still fails.
+    public static let windowUnmatchedLimit = 0.05
+    /// Trip ends at stations dropped for their row (an unknown `rideable_type`, a time that does
+    /// not parse, a date outside the build's days) ÷ trip ends at stations, per file and side:
+    /// below this (2026-06…08: at most 0.012%). A renamed bike type or a changed timestamp format
+    /// in one entry fails here, where the row counts and the unmatched shares would not notice.
+    public static let droppedLimit = 0.01
     /// A month also in the baseline keeps at least this share of its rows (a re-published file
     /// that lost rows fails).
     public static let sameMonthRowsLimit = 0.9
-    /// A new month has at least this share of the baseline's newest month (per system): the
-    /// monthly swing is under ±40% on 2024–2026 data, a truncated file is not.
+    /// A month the baseline lacks has at least this share of the rows of the month before it (per
+    /// system; the baseline's count, else this build's own): the month-to-month swing is under
+    /// ±40% on 2024–2026 data, a truncated file is not. Always the month before, never the
+    /// baseline's newest: a failed or skipped build must not leave a later month to be compared
+    /// across a season.
     public static let newMonthRowsLimit = 0.5
 
     public static func evaluate(_ report: FlowsReport, baseline: [String: [String: Int]]?) -> FlowsReport.Gate {
         var gate = FlowsReport.Gate()
-        gate.unmatchedLimit = unmatchedLimit
         for summary in report.systems {
             for (side, stats) in [("start", summary.newestMonthStart), ("end", summary.newestMonthEnd)] where stats.unmatchedShare >= unmatchedLimit {
                 gate.failures.append(String(format: "%@ %@ %@ ids: %.3f%% unmatched (limit %.1f%%)", summary.system.rawValue,
                                             summary.newestMonth.yyyymm, side, 100 * stats.unmatchedShare, 100 * unmatchedLimit))
+            }
+            for (side, stats) in [("start", summary.startSide.stats), ("end", summary.endSide.stats)] where stats.unmatchedShare >= windowUnmatchedLimit {
+                gate.failures.append(String(format: "%@ window %@ ids: %.3f%% unmatched (limit %.1f%%)", summary.system.rawValue,
+                                            side, 100 * stats.unmatchedShare, 100 * windowUnmatchedLimit))
+            }
+        }
+        for file in report.files {
+            for (side, stats) in [("start", file.start), ("end", file.end)] where stats.droppedShare >= droppedLimit {
+                gate.failures.append(String(
+                    format: "%@ %@ %@: %.3f%% of the trip ends at stations dropped (unknown rideable_type %d, bad time %d, outside the window %d; limit %.1f%%)",
+                    file.system.rawValue, file.month.yyyymm, side, 100 * stats.droppedShare, stats.unknownRideableType, stats.badTimestamp,
+                    stats.outsideWindow, 100 * droppedLimit
+                ))
             }
         }
         if !report.daily.emptyDays.isEmpty {
             gate.failures.append("window days without a counted departure or arrival: \(report.daily.emptyDays.map(\.description).joined(separator: ", "))")
         }
         if report.saturatedCounters > 0 { gate.failures.append("\(report.saturatedCounters) counter increments saturated at 65,535") }
-        if let baseline {
-            for (system, months) in report.monthRows.sorted(by: { $0.key < $1.key }) {
-                let previous = baseline[system] ?? [:]
-                guard let newestPrevious = previous.keys.max() else { continue }
-                for (month, rows) in months.sorted(by: { $0.key < $1.key }) {
-                    if let before = previous[month] {
-                        gate.checkedMonths.append("\(system) \(month): \(rows) rows, \(before) before")
-                        if Double(rows) < sameMonthRowsLimit * Double(before) {
-                            gate.failures.append("\(system) \(month): \(rows) rows, \(before) in the previous build (limit \(Int(100 * sameMonthRowsLimit))%)")
-                        }
-                    } else if let reference = previous[newestPrevious] {
-                        gate.checkedMonths.append("\(system) \(month): \(rows) rows, \(reference) in \(newestPrevious)")
-                        if Double(rows) < newMonthRowsLimit * Double(reference) {
-                            gate.failures.append("\(system) \(month): \(rows) rows, under \(Int(100 * newMonthRowsLimit))% of \(newestPrevious) (\(reference))")
-                        }
+        if baseline == nil {
+            gate.checkedMonths.append("no baseline (first build, or no previous report): months compared only with the month before them in this build")
+        }
+        for (system, months) in report.monthRows.sorted(by: { $0.key < $1.key }) {
+            let previous = baseline?[system] ?? [:]
+            for (month, rows) in months.sorted(by: { $0.key < $1.key }) {
+                if let before = previous[month] {
+                    gate.checkedMonths.append("\(system) \(month): \(rows) rows, \(before) before")
+                    if Double(rows) < sameMonthRowsLimit * Double(before) {
+                        gate.failures.append("\(system) \(month): \(rows) rows, \(before) in the previous build (limit \(Int(100 * sameMonthRowsLimit))%)")
                     }
+                    continue
+                }
+                guard let prior = TripMonth(yyyymm: month)?.adding(-1).yyyymm else { continue }
+                if let reference = previous[prior] ?? months[prior] {
+                    gate.checkedMonths.append("\(system) \(month): \(rows) rows, \(reference) in \(prior)")
+                    if Double(rows) < newMonthRowsLimit * Double(reference) {
+                        gate.failures.append("\(system) \(month): \(rows) rows, under \(Int(100 * newMonthRowsLimit))% of \(prior) (\(reference))")
+                    }
+                } else {
+                    // Only a window's first month, after a gap of a whole window since the baseline.
+                    gate.checkedMonths.append("\(system) \(month): \(rows) rows, not compared (no count for \(prior))")
                 }
             }
-        } else {
-            gate.checkedMonths.append("no baseline (first build, or no previous report): month row counts not compared")
         }
         gate.passed = gate.failures.isEmpty
         return gate
@@ -340,8 +385,9 @@ public struct FlowsReport: Codable, Sendable {
         public var minDepartures = 0
         public var minArrivals = 0
         public var maxDepartures = 0
-        /// Window days with no counted departure or no counted arrival.
+        /// Days with no counted departure (inside the departure window) or no counted arrival.
         public var emptyDays: [ServiceDate] = []
+        /// Counted trip ends per day of the departure and the arrival window.
         public var departures: [Int] = []
         public var arrivals: [Int] = []
     }
@@ -350,7 +396,29 @@ public struct FlowsReport: Codable, Sendable {
         public var passed = false
         public var failures: [String] = []
         public var unmatchedLimit = FlowsGate.unmatchedLimit
+        public var windowUnmatchedLimit = FlowsGate.windowUnmatchedLimit
+        public var droppedLimit = FlowsGate.droppedLimit
         public var checkedMonths: [String] = []
+    }
+
+    /// What a build reads from the report before it. Only these fields, so that a report written
+    /// by an older builder (with other fields) still serves as the baseline.
+    public struct Previous: Codable, Sendable, Equatable {
+        public var outcome: Outcome
+        public var monthRows: [String: [String: Int]]
+        public var baselineMonthRows: [String: [String: Int]]?
+
+        public init(outcome: Outcome, monthRows: [String: [String: Int]], baselineMonthRows: [String: [String: Int]]?) {
+            self.outcome = outcome
+            self.monthRows = monthRows
+            self.baselineMonthRows = baselineMonthRows
+        }
+
+        /// What the next build compares its months against: these rows if the build passed, else
+        /// the baseline it was itself compared against (so a failed build never becomes the reference).
+        public var baselineForNext: [String: [String: Int]]? {
+            outcome == .built ? monthRows : baselineMonthRows
+        }
     }
 
     public var generatedAt = SourceRecord.isoFormatter.string(from: Date())
@@ -361,7 +429,8 @@ public struct FlowsReport: Codable, Sendable {
     public var previousDataVersion: String?
     public var dataVersion: String?
     public var months: [TripMonth] = []
-    public var window: FlowWindow?
+    /// The build's days: arrivals over the months, departures over all but the last day.
+    public var windows: FlowWindows?
     /// Weekend-profile holidays inside the window (the file's `holidays` section).
     public var holidays: [ServiceDate] = []
     public var tripFiles: [TripSourceFile] = []
@@ -388,11 +457,11 @@ public struct FlowsReport: Codable, Sendable {
         self.tool = tool
     }
 
-    /// What the next build compares its months against: this build's rows if it passed, else the
-    /// baseline it was itself compared against (so a failed build never becomes the reference).
-    public var baselineForNext: [String: [String: Int]]? {
-        outcome == .built ? monthRows : baselineMonthRows
-    }
+    /// This report as the next build reads it.
+    public var asPrevious: Previous { Previous(outcome: outcome, monthRows: monthRows, baselineMonthRows: baselineMonthRows) }
+
+    /// What the next build compares its months against (``Previous/baselineForNext``).
+    public var baselineForNext: [String: [String: Int]]? { asPrevious.baselineForNext }
 
     mutating func record(files: [TripFileStats], tallies: FlowTallies, saturated: Int, smoothing: FlowSmoothing.Stats) {
         self.files = files
@@ -423,14 +492,18 @@ public struct FlowsReport: Codable, Sendable {
                           newestMonthStartSide: side(latest.start, latest.unmatchedStartIDs), newestMonthEndSide: side(latest.end, latest.unmatchedEndIDs),
                           monthlyUnmatchedShares: monthly)
         }
+        // Each direction over its own window (departures stop a day before arrivals).
+        let windows = tallies.windows
+        let departureDays = windows.days(.departures), arrivalDays = windows.days(.arrivals)
         var daily = Daily()
-        daily.departures = tallies.daily[0]
-        daily.arrivals = tallies.daily[1]
-        daily.minDepartures = tallies.daily[0].min() ?? 0
-        daily.minArrivals = tallies.daily[1].min() ?? 0
-        daily.maxDepartures = tallies.daily[0].max() ?? 0
-        daily.emptyDays = (0..<tallies.window.dayCount).filter { tallies.daily[0][$0] == 0 || tallies.daily[1][$0] == 0 }
-            .map { tallies.window.start.adding(days: $0) }
+        daily.departures = Array(tallies.daily[0][departureDays])
+        daily.arrivals = Array(tallies.daily[1][arrivalDays])
+        daily.minDepartures = daily.departures.min() ?? 0
+        daily.minArrivals = daily.arrivals.min() ?? 0
+        daily.maxDepartures = daily.departures.max() ?? 0
+        daily.emptyDays = (0..<windows.span.dayCount).filter { day in
+            (departureDays.contains(day) && tallies.daily[0][day] == 0) || (arrivalDays.contains(day) && tallies.daily[1][day] == 0)
+        }.map { windows.span.start.adding(days: $0) }
         self.daily = daily
     }
 }
