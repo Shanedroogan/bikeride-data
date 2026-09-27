@@ -335,6 +335,12 @@ public enum HopBuilder {
         }
         let chosenPickups = choose(pickups, pickupScore, first: best.u, p.pickupsPerHop)
         let chosenDocks = choose(docks, dockScore, first: best.d, p.docksPerHop)
+        // `bike` is the least over the stored tuples. With the default paces a tuple that rides
+        // less far than the best lowers it by at most 2 s of rounding, and not at all when it
+        // rides over 200 m less: ranking at 4,470 mm/s costs it more extra walking than riding
+        // 15% faster (5,141 mm/s) saves, net of the change after the bike (at most 10% of the
+        // ride). So spare short tuples, even u = d, cannot keep a pair
+        // (`bikeTimeComesFromTheBestTupleOrALongerRide`).
         var minDecameters = Int.max, minWalk = Int.max, bike = Int.max
         for i in chosenPickups {
             for j in chosenDocks {

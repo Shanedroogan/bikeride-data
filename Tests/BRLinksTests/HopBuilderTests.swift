@@ -216,6 +216,43 @@ import Testing
         }
     }
 
+    /// With the default paces, a stored tuple that rides less far than the best never sets the
+    /// one-seat comparison's bike time (`HopBuilder.evaluate`), so spare short tuples, even u = d,
+    /// cannot keep a pair a one-seat ride beats.
+    @Test func bikeTimeComesFromTheBestTupleOrALongerRide() {
+        var options = HopOptions()
+        options.oneSeatFilter = false
+        let p = options.parameters
+        var hops = 0, shorterTuples = 0, longerTupleSetsBike = 0
+        for seed in 0..<40 as Range<UInt64> {
+            let inputs = RandomHopWorld(seed: seed).inputs
+            let n = inputs.parents.parents.count
+            for a in 0..<n {
+                for b in 0..<n {
+                    guard case .kept(let hop) = HopBuilder.evaluate(a, b, inputs: inputs, options: options) else { continue }
+                    hops += 1
+                    let exit = Dictionary(uniqueKeysWithValues: inputs.pickups[a].map { ($0.station, $0.seconds) })
+                    let enter = Dictionary(uniqueKeysWithValues: inputs.docks[b].map { ($0.station, $0.seconds) })
+                    func bike(_ u: Int, _ d: Int) -> (seconds: Int, decameters: Int)? {
+                        let decameters = Int(inputs.distances.decameters(from: u, to: d))
+                        guard decameters != 0xFFFF else { return nil }
+                        let ride = HopReference.ceilDivide(decameters * 10_000, p.maxSpeedMmPerSecond)
+                        return (exit[u]! + p.unlockSeconds + ride + p.dockSeconds + enter[d]! + max(60, ride / 10), decameters)
+                    }
+                    let best = bike(hop.pickups[0], hop.docks[0])!
+                    let stored = hop.pickups.flatMap { u in hop.docks.compactMap { d in bike(u, d) } }
+                    #expect(hop.bikeSeconds == stored.map(\.seconds).min())
+                    for tuple in stored where tuple.decameters < best.decameters {
+                        shorterTuples += 1
+                        #expect(tuple.seconds > best.seconds, "seed \(seed), \(a) → \(b)")
+                    }
+                    if hop.bikeSeconds < best.seconds { longerTupleSetsBike += 1 }
+                }
+            }
+        }
+        #expect(hops > 100 && shorterTuples > 100 && longerTupleSetsBike > 0, "\(hops) hops, \(shorterTuples) shorter tuples, \(longerTupleSetsBike)")
+    }
+
     // MARK: - Platform links
 
     @Test func findsPlatformsWithoutALinkToAStoredStation() throws {

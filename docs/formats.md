@@ -632,8 +632,12 @@ the least arrival − departure among them, the pair is dropped when
 `inVehicle + ⌊⌊21,600 ÷ trips⌋ ÷ 2⌋ ≤ bike` (half the midday headway), where `bike` is the least
 door-to-door time over the stored tuples at the *fastest* pace:
 `exit + unlock + ⌈decameters × 10,000 ÷ maxSpeed⌉ + dock + enter + max(60, ⌊ride ÷ 10⌋)` seconds
-(the last term is the change after the bike). With no midday trip nothing is dropped. The rule is
-deliberately lenient: the planner's own admission test decides whether a hop is used.
+(the last term is the change after the bike). With the default paces a stored tuple that rides
+less far than the best lowers `bike` by at most 2 s of rounding, and not at all when it rides
+over 200 m less: ranking at a pace 15% slower than the fastest costs it more extra walking than
+the faster ride saves, net of the change after the bike (at most 10% of the ride). So spare
+short tuples, even u = d, cannot keep a pair. With no midday trip nothing is dropped. The rule
+is deliberately lenient: the planner's own admission test decides whether a hop is used.
 
 **Defaults** (`HopOptions`): rides of 300–1,500 s at 3,040–5,141 mm/s (0.85 × 8 mph to 1.15 ×
 10 mph), ranked at 4,470 mm/s (10 mph) with a 90 s unlock and a 60 s dock; kP = kD = 2.
