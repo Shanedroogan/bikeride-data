@@ -13,7 +13,8 @@ let usage = """
       stations    Build the Citi Bike stations artifact and bike matrix (see: stations --help)
       links       Build footpaths, access points and station links (see: links --help)
       links-show  Print one stop's access points, footpaths and station links
-      all         Run streets → timetables → stations → links (see: all --help)
+      all         Build and publish a set: streets → timetables → stations → config → links → flows
+                  → gate → manifest → heartbeat (see: all --help)
       config      Build the config artifact from Data/config and Data/fares (see: config --help)
       flows       Build the Citi Bike flows artifact from trip data (see: flows --help)
       gate        Run the validation gate over a built set (see: gate --help)
