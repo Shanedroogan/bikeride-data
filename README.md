@@ -17,7 +17,7 @@ This repository contains **no Citi Bike data** (test fixtures are synthetic), **
 | `BRData` | Binary reader/writer, artifact header, `MappedArtifact`, `DatasetHandle`, xz codecs, SHA-256 |
 | `BRStreetCore` | CSR street graph, walk and bike cost profiles, Dijkstra (one-to-many, multi-source, forward/reverse), A*; the mapped `streets` and `stations` readers and snapping |
 | `BRTimetable` | The mapped `tt-*` timetable and `links` readers: stops, patterns, trips, calendars, day views, real-time match tables, footpaths |
-| `BRConfig` | The `config` artifact's format and reader (M1; empty for now) |
+| `BRConfig` | The `config` artifact's wire types, writer and reader (draft format 0 until the M1 freeze) |
 | `BRFlows` | The Citi Bike `flows` artifact's format and reader (M1; empty for now) |
 | `BRBuild` | Artifact compilers (streets, timetables, stations, links) and the streaming byte-level CSV and OPL readers |
 | `bikeride-data` | The command-line tool: `streets`, `timetables`, `stations`, `links`, `all` (and, in M1, `config`, `flows`, `gate`, `manifest`) |

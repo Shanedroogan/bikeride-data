@@ -623,10 +623,11 @@ payload golden (`ConfigFormatTests`) pins the bytes of a hand-built document on 
 
 - Readers ignore keys they don't know, at any depth. A key added within a format is optional, and
   its default is a *format* default written next to it here ("absent = off", "absent = none"),
-  never the value some app build compiled in. Every key listed below is required.
+  never the value some app build compiled in. Every key listed below is required unless marked
+  optional.
 - A required key never changes type, unit or meaning without a formatVersion bump. Units are in
-  the key names: `…Cents`, `…Seconds`, `…Minutes`, `…Meters`, `…Percent`, `…HundredthsMph`,
-  `…E6` (microdegrees).
+  the names of quantities: `…Cents`, `…Seconds`, `…Minutes`, `…Meters`, `…Percent`,
+  `…HundredthsMph`, `…E6` (microdegrees).
 - Enum strings are strict: an unknown value fails the decode, so the set fails verification and
   is not switched to. A new value needs a bump (or a new optional key that carries it).
 - `null` reads as absent. Writers omit an absent optional.
