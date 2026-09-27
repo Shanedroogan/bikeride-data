@@ -122,7 +122,8 @@ builds that can't update in step with the pipeline, and because an in-progress t
 ## Integrity and compression
 
 - The set manifest records each artifact's `rawBytes` and `rawSha256` (of the file above), and its
-  blob's size and SHA-256. Blobs are named by the SHA-256 of their `.xz` bytes.
+  blob's size and SHA-256. Blobs are named by the SHA-256 of their `.xz` bytes. The manifest, the
+  gate and the heartbeat are described in `publish.md`.
 - Blobs are compressed with `xz -6 -T1 --check=crc32`: exactly one stream with one block.
 - Apple's LZMA decoder stops after the first xz stream and reports success, so a blob with
   concatenated streams would silently decode short. `AppleLZMACodec` rejects any input after the
