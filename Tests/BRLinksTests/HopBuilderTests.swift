@@ -377,6 +377,20 @@ import Testing
         #expect(withHops.prefix(without.count - 4) == without.prefix(without.count - 4))
     }
 
+    @Test func opensAHopBlockOverNoStops() throws {
+        // Links built with stations but no timetable: no stops, and an empty hop block.
+        let network = LinkNetwork(systemStopCounts: [0, 0, 0, 0, 0], routable: [], stopAccess: [], accessPoints: [], transfers: [])
+        let empty = HopBuilder.Inputs(systemStopCounts: [0, 0, 0, 0, 0], parents: RailParents(parents: [], platforms: []), pickups: [], docks: [],
+                                      stationCount: 2, distances: DenseHopDistances(count: 2, values: [0, 7, 7, 0]), oneSeat: OneSeatTable())
+        let (hops, stats) = HopBuilder.build(empty, options: HopOptions(), threads: 4)
+        #expect(hops.start == [0] && hops.count == 0 && stats.hops == 0 && stats.candidatePairs == 0)
+        let links = CompiledLinks(network: network, footpaths: FootpathTable(start: [0], target: [], seconds: []),
+                                  stationLinks: .empty(stops: 0, stations: 2), stationCount: 2, options: LinksOptions(), hops: hops)
+        let file = LinksArtifactWriter.artifact(links, dataVersion: "empty", builtAgainst: ["stations": "s"])
+        let opened = try open(file)
+        #expect(opened.stopCount == 0 && opened.stationCount == 2 && opened.hops?.count == 0)
+    }
+
     @Test func ignoresUndefinedHopFlagBits() throws {
         let f = try HopFile()
         var hops = f.hops

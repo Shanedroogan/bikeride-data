@@ -171,7 +171,7 @@ extension LinkHops {
 
         // Structure and indices: always.
         guard start[0] == 0, Int(start[t]) == h else { throw LinksFormatError.countMismatch(section: "hopStart", expected: h, actual: Int(start[t])) }
-        for i in 1...t where start[i] < start[i - 1] { throw LinksFormatError.notMonotonic(section: "hopStart", index: i) }
+        for i in 1..<(t + 1) where start[i] < start[i - 1] { throw LinksFormatError.notMonotonic(section: "hopStart", index: i) }
         if let bad = target.firstIndex(where: { Int($0) >= t }) { throw LinksFormatError.valueOutOfRange(section: "hopTarget", index: bad) }
         for (section, slots) in [("hopPickup", pickup), ("hopDock", dock)] {
             if let bad = slots.firstIndex(where: { $0 != LinksFormat.noStation && Int($0) >= s }) {
