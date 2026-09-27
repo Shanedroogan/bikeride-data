@@ -8,8 +8,16 @@ public enum LinksFormat {
     /// The payload revision (`docs/formats.md`, "Compatibility"). While the artifact's
     /// formatVersion is still 0 it is bumped on every layout change, and readers reject any other
     /// value. Draft history: 2 added PATH as the fifth system (``systems``); 3 added the
-    /// extension tail and flag masking. The format-1 freeze sets it to 1.
+    /// extension tail (with the rail bike hops as id ``hopsExtensionID``) and flag masking. The
+    /// format-1 freeze sets it to 1.
     public static let payloadRevision: UInt32 = 3
+    /// Extension-tail id of the rail bike-hop block (``LinkHops``). A reader that skips it has no
+    /// hops, which is still correct; a revised hop layout takes a new id.
+    public static let hopsExtensionID: UInt32 = 1
+    /// The systems whose parent stations have bike hops: rail only (SIR rides in `tt-subway`).
+    public static let hopSystems: [TransitSystem] = [.subway, .lirr, .path]
+    /// "No station" in a `u16` station slot (an unused hop pickup or dock slot).
+    public static let noStation: UInt16 = .max
     /// "No value" in a `u16` seconds field (e.g. a station link that cannot be walked in that
     /// direction).
     public static let noSeconds: UInt16 = .max

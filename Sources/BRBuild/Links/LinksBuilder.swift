@@ -310,6 +310,22 @@ public struct CompiledLinks: Sendable {
     public var options: LinksOptions
     public var footpathStats: FootpathStats
     public var stationLinkStats: StationLinkStats
+    /// The rail bike hops (``HopBuilder``), written as extension id
+    /// ``BRTimetable/LinksFormat/hopsExtensionID``; `nil` writes none (no stations).
+    public var hops: CompiledHops?
+
+    public init(network: LinkNetwork, footpaths: FootpathTable, stationLinks: StationLinkTable, stationCount: Int,
+                options: LinksOptions, footpathStats: FootpathStats = FootpathStats(),
+                stationLinkStats: StationLinkStats = StationLinkStats(), hops: CompiledHops? = nil) {
+        self.network = network
+        self.footpaths = footpaths
+        self.stationLinks = stationLinks
+        self.stationCount = stationCount
+        self.options = options
+        self.footpathStats = footpathStats
+        self.stationLinkStats = stationLinkStats
+        self.hops = hops
+    }
 }
 
 // MARK: - Builders

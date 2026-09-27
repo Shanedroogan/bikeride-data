@@ -157,10 +157,25 @@ struct LinksFixture {
 
         let links = try MappedLinks(contentsOf: configuration.artifactFile)
         #expect(links.header.builtAgainst == report.artifact.builtAgainst)
-        // Same payload as writing the directly compiled links.
+        // Same payload as writing the directly compiled links with their hops.
+        let timetables = fixture.world.timetables
+        let parents = RailParents.make(timetables: timetables, network: fixture.network)
+        let stations = try MappedStations(contentsOf: fixture.data.appendingPathComponent(MappedStations.fileName))
+        let inputs = HopBuilder.Inputs(
+            systemStopCounts: fixture.network.systemStopCounts, parents: parents, stationLinks: fixture.compiled.stationLinks,
+            stationCount: stations.count, distances: stations,
+            oneSeat: OneSeatTable.build(timetables: timetables, network: fixture.network, parents: parents, options: HopOptions())
+        )
+        var compiled = fixture.compiled
+        compiled.hops = HopBuilder.build(inputs, options: HopOptions(), threads: 1).hops
         let written = try MappedArtifact(contentsOf: configuration.artifactFile)
-        let direct = try ArtifactHeader.decode(from: fixture.artifact()).payload
+        let direct = try ArtifactHeader.decode(from: fixture.artifact(compiled)).payload
         #expect(written.payload == direct)
+        // The fixture's rail stations lie under 1 km apart: every pair is too short to bike.
+        let hops = try #require(report.hops)
+        #expect(hops.railParents == ["subway": 4, "lirr": 2] && hops.hops == 0 && links.hops?.count == 0)
+        #expect(hops.candidatePairs == hops.droppedBelowWindow && hops.candidatePairs > 0 && hops.blockBytes > 0)
+        #expect(report.parameters["hops.maxSpeedMmPerSecond"] == 5141)
         if configuration.compress {
             #expect(report.artifact.xzStreams == 1 && report.artifact.xzBlocks == 1)
             let decoded = try ProcessToolRunner().run(executable: "xz", args: ["-dc", report.artifact.xzPath!])

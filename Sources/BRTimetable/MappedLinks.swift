@@ -54,6 +54,9 @@ public final class MappedLinks: @unchecked Sendable {
     public let raw: LinksBuffers
     /// The payload's extension tail, as slices of the payload that the table keeps alive.
     public let extensions: ExtensionTable
+    /// The rail bike hops (extension id ``LinksFormat/hopsExtensionID``), viewed in place; `nil`
+    /// when the file has none (it was built without stations), which means no bike hops.
+    public let hops: LinkHops?
 
     private let storage: Data
     private let ownedCopy: UnsafeMutableRawBufferPointer?
@@ -104,6 +107,7 @@ public final class MappedLinks: @unchecked Sendable {
         do {
             let layout = try Layout(base: base, length: length, builtAgainst: artifact.header.builtAgainst, validate: validate)
             raw = layout.raw
+            hops = layout.hops
             // The layout's slices view `base`, which may be the private copy freed in `deinit`;
             // re-slice from `storage` (same offsets), which the table then keeps alive on its own.
             let storage = self.storage
@@ -252,6 +256,7 @@ public final class MappedLinks: @unchecked Sendable {
     private struct Layout {
         var raw: LinksBuffers
         var extensions: ExtensionTable
+        var hops: LinkHops?
         var stopCount: Int
         var stationCount: Int
         var maxFootpathWalkSeconds: Int
@@ -353,6 +358,20 @@ public final class MappedLinks: @unchecked Sendable {
                 stopStationEnter: stopStationEnter, stopStationExit: stopStationExit
             )
             if validate { try Self.checkInvariants(raw, systemCounts: systemCounts, systemAccess: systemAccess, walkSeconds: maxFootpathWalkSeconds, builtAgainst: builtAgainst) }
+
+            if let block = extensions[LinksFormat.hopsExtensionID] {
+                // `block` slices the reader's bytes, which start at `base`.
+                var railStops: [Range<Int>] = []
+                var running = 0
+                for (slot, system) in LinksFormat.systems.enumerated() {
+                    if LinksFormat.hopSystems.contains(system) { railStops.append(running..<running + systemCounts[slot]) }
+                    running += systemCounts[slot]
+                }
+                hops = try LinkHops.parse(base: base + block.startIndex, length: block.count, stopCount: t, stationCount: s,
+                                          railStops: railStops, validate: validate)
+            } else {
+                hops = nil
+            }
         }
 
         /// The documented invariants beyond structure (`docs/formats.md`, "links"). Linear in the

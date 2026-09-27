@@ -66,16 +66,18 @@ func runLinksCommand(_ arguments: [String]) -> Int32 {
 }
 
 let linksShowUsage = """
-    USAGE: bikeride-data links-show --stop SYSTEM:STOP_ID [--data DIR] [--limit N]
+    USAGE: bikeride-data links-show --stop SYSTEM:STOP_ID [--data DIR] [--limit N] [--hop-to SYSTEM:STOP_ID]
 
     Prints one stop's access points, footpaths and station links from links.bin, with names from
-    the tt-* and stations artifacts. SYSTEM is S, B, L, F or P, e.g. S:127N, B:400001 or P:781743.
+    the tt-* and stations artifacts, and the rail bike hops from its parent station. SYSTEM is S,
+    B, L, F or P, e.g. S:127N, B:400001 or P:781743. --hop-to prints only the hop to that stop's
+    parent station (or says there is none).
     """
 
 /// `bikeride-data links-show …`: inspect one stop's links.
 func runLinksShowCommand(_ arguments: [String]) -> Int32 {
     do {
-        let options = try CommandOptions(arguments, valued: ["--stop", "--data", "--limit"], flags: [])
+        let options = try CommandOptions(arguments, valued: ["--stop", "--data", "--limit", "--hop-to"], flags: [])
         guard let stopText = options.values["--stop"] else { throw CommandOptions.UsageError(description: "--stop is required") }
         let data = options.url("--data", default: "build/data")
         let limit = try options.int("--limit") ?? 40
@@ -111,6 +113,36 @@ func runLinksShowCommand(_ arguments: [String]) -> Int32 {
             let name = stations.map { "\($0.stationID(link.index)) \($0.name(link.index))" } ?? "#\(link.index)"
             print("    exit \(link.exitSeconds.map(String.init) ?? "-") s, enter \(link.enterSeconds.map(String.init) ?? "-") s ↔ \(name)")
         }
+
+        // Rail bike hops, keyed by the parent station (or the stop itself when it has none).
+        func parent(_ system: TransitSystem, _ local: Int) -> Int {
+            links.globalStop(system: system, stop: timetables[system]!.stopParent(local) ?? local)
+        }
+        guard let hops = links.hops else {
+            print("  no hop block (built without stations)")
+            return 0
+        }
+        let origin = parent(system, local)
+        let rows = hops.hops(fromParent: origin)
+        func stationName(_ index: Int) -> String { stations.map { $0.name(index) } ?? "#\(index)" }
+        func show(_ hop: LinkHop) {
+            let flags = hop.flags.contains(.oneSeatRideExists) ? " (one-seat ride exists)" : ""
+            print("    → \(describe(hop.target)): ≥ \(hop.minDecameters * 10) m, walks ≥ \(hop.minWalkSeconds) s\(flags); "
+                + "pickups \(hop.pickups.map(stationName)), docks \(hop.docks.map(stationName))")
+        }
+        if let destinationText = options.values["--hop-to"] {
+            let destination = StopID(destinationText)
+            guard let destinationSystem = destination.system, let destinationTimetable = timetables[destinationSystem],
+                  let destinationLocal = destinationTimetable.stop(id: destination) else {
+                throw CommandOptions.UsageError(description: "no stop \(destinationText)")
+            }
+            let target = parent(destinationSystem, destinationLocal)
+            print("  hop \(describe(origin)) → \(describe(target)):")
+            if let hop = rows.first(where: { $0.target == target }) { show(hop) } else { print("    none") }
+            return 0
+        }
+        print("  \(rows.count) hops from \(describe(origin)):")
+        for hop in rows.prefix(limit) { show(hop) }
         return 0
     } catch let error as CommandOptions.UsageError {
         FileHandle.standardError.write(Data("bikeride-data links-show: \(error)\n\n\(linksShowUsage)\n".utf8))

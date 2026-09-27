@@ -79,8 +79,27 @@ public enum LinksArtifactWriter {
         writer.append(array: stations.stopStation)
         writer.append(array: stations.stopEnter)
         writer.append(array: stations.stopExit)
-        writer.appendExtensions([])
+        writer.appendExtensions(links.hops.map { [(id: LinksFormat.hopsExtensionID, bytes: hopBlock($0, stopCount: t, stationCount: links.stationCount))] } ?? [])
         return writer.data
+    }
+
+    /// The bytes of extension id ``BRTimetable/LinksFormat/hopsExtensionID`` (`docs/formats.md`,
+    /// "links: rail bike hops"): nine `u32` parameters, then the hop arrays, 8-aligned relative to
+    /// the block's start (which the tail places 8-aligned in the payload).
+    public static func hopBlock(_ hops: CompiledHops, stopCount: Int, stationCount: Int) -> [UInt8] {
+        precondition(hops.start.count == stopCount + 1, "one hop row per global stop")
+        precondition(hops.pickups.allSatisfy { $0 == LinksFormat.noStation || Int($0) < stationCount }
+            && hops.docks.allSatisfy { $0 == LinksFormat.noStation || Int($0) < stationCount }, "hop station out of range")
+        var writer = BinaryWriter(reservingCapacity: 64 + stopCount * 4 + hops.count * (4 + 2 * (hops.parameters.pickupsPerHop + hops.parameters.docksPerHop) + 5))
+        for value in hops.parameters.stored { writer.append(value) }
+        writer.append(array: hops.start)
+        writer.append(array: hops.target)
+        writer.append(array: hops.pickups)
+        writer.append(array: hops.docks)
+        writer.append(array: hops.minDecameters)
+        writer.append(array: hops.minWalkSeconds)
+        writer.append(array: hops.flags)
+        return Array(writer.data)
     }
 }
 

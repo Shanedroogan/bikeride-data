@@ -32,6 +32,8 @@ public struct LinksOptions: Sendable {
     /// platform-to-platform transfers (no station access) between every routable platform of
     /// each end, both ways. The street walk still wins where it is quicker.
     public var fixedTransfers: [FixedTransfer] = FixedTransfer.pathSubway
+    /// The rail bike hops, built when `stations.bin` is present.
+    public var hops = HopOptions()
     public var threads = ProcessInfo.processInfo.activeProcessorCount
 
     public init() {}
