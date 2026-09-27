@@ -314,7 +314,13 @@ public struct SetManifestBuilder {
     func verifiedGate(_ local: [ArtifactKind: SetArtifactFile]) throws -> GateReport {
         let url = reportsDirectory.appendingPathComponent(GateReport.fileName)
         guard FileManager.default.fileExists(atPath: url.path) else { throw SetManifest.ManifestError.noGateReport(url.path) }
-        let gate = try GateReport.load(url)
+        let gate: GateReport
+        do {
+            gate = try GateReport.load(url)
+        } catch {
+            // A report this tool cannot read (written by an older gate, or cut short) vouches for nothing.
+            throw SetManifest.ManifestError.gateStale("\(url.lastPathComponent) does not read (\(error))")
+        }
         guard gate.status != .fail else { throw SetManifest.ManifestError.gateFailed(url.path) }
         let hashes = Dictionary(uniqueKeysWithValues: local.values.map { ($0.kind.name, $0.rawSha256) })
         guard gate.artifacts == hashes else {

@@ -34,9 +34,9 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now"], flags: [])
         let data = options.url("--data", default: "build/data")
         let reports = options.values["--reports"].map(CommandOptions.absoluteURL) ?? data.deletingLastPathComponent().appendingPathComponent("reports")
-        let today = try publishToday(options)
         // No gate.json may survive a run that fails before writing its own (manifest would take it).
         try Gate.removeReport(in: reports)
+        let today = try publishToday(options)
         guard let repoData = options.values["--repo-data"].map(CommandOptions.absoluteURL) ?? GateConfiguration.defaultRepoData() else {
             throw CommandOptions.UsageError(description: "no Data/ directory with gate/thresholds.json found; pass --repo-data")
         }

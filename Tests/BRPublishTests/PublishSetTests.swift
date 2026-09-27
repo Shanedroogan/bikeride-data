@@ -251,6 +251,18 @@ struct PublishSetTests {
         #expect(throws: SetManifest.ManifestError.noGateReport(set.reports.appendingPathComponent("gate.json").path)) {
             try set.manifestBuilder().build()
         }
+        // A report from before gate.json had blobs does not read: stale, not a crash.
+        _ = try set.gate()
+        let reportURL = set.reports.appendingPathComponent("gate.json")
+        var old = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: reportURL)) as? [String: Any])
+        old["blobs"] = nil
+        try JSONSerialization.data(withJSONObject: old).write(to: reportURL)
+        do {
+            _ = try set.manifestBuilder().build()
+            Issue.record("a gate.json without blobs was accepted")
+        } catch SetManifest.ManifestError.gateStale(let message) {
+            #expect(message.hasPrefix("gate.json does not read"))
+        }
         _ = try set.gate()
         var otherDay = set.manifestBuilder()
         otherDay.today = day("20261007")
