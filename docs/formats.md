@@ -599,8 +599,8 @@ sources in `Data/config/` and `Data/fares/` (BRBuild, `bikeride-data config`). R
 (`Sources/BRConfig/ConfigDocument.swift`). `builtAgainst` is empty: config is a root input, like
 a GTFS zip. `dataVersion` is `config:` + the lowercase-hex SHA-256 of the JSON bytes.
 
-Why JSON and not arrays: the document is about 16 KB (about 2 KB xz) and is decoded once per set
-open (well under a millisecond), off the query path; every consumer builds its own lookup tables
+Why JSON and not arrays: the v1 document is about 14 KB (2.4 KB xz) and is decoded once per set
+open (about a millisecond), off the query path; every consumer builds its own lookup tables
 from it anyway. JSON keeps the reviewed diffs readable and lets the format grow by optional keys.
 
 | Field | Encoding | Notes |
