@@ -14,6 +14,7 @@ Outputs in this folder:
 - `lirr-stations-2026.csv`: `stop_id,gtfs_name,zone,city_fare,source_note`. 125 rows, one for each public LIRR station with service in the GTFS fixture.
 - `lirr-zone-fares-2026.csv`: `from_zone,to_zone,peak_cents,offpeak_cents`. One-way adult fares for 36 rows, which are all unordered pairs of the 8 zones in use (1, 3, 4, 7, 9, 10, 12, 14), including same-zone pairs. `from_zone <= to_zone`. `FareEngine.ZonePair` normalizes to (min, max) when it looks a fare up (FareEngine.swift:188-194), so one row per pair is enough.
 - `build.py`: regenerates both CSVs from `raw/` and the GTFS zip. All checks below are asserts in this script.
+- `lirr.json`: the rest of `fares.lirr` in the `config` artifact: which CSVs hold the station zones and zone fares (so a new fare year adds new CSVs and points here), CityTicket and the Far Rockaway Ticket ($7.25 peak / $5.25 off-peak; the Far Rockaway Ticket only to Zone 1), the peak rule (NYC terminal arrivals 06:00–10:00, departures 16:00–20:00, from the fares page quoted below) and the NYC terminals it is evaluated at (Penn Station, Grand Central Madison, Atlantic Terminal, Hunterspoint Avenue, Long Island City; all zone 1). `bikeride-data config` checks every station with boarding or alighting service in `tt-lirr` is zoned.
 - `raw/`: the source PDFs as downloaded (`doc194866.pdf`, `doc186866.pdf`), their `pdftotext` output, and a 60 dpi render of the fare chart (`map60-1.png`).
 
 ## Sources

@@ -1,0 +1,21 @@
+{
+  "sameStopChangeSeconds": { "subway": 30, "bus": 60, "lirr": 180, "ferry": 60, "path": 30 },
+  "guaranteedTransferSeconds": 0,
+  "minimumPlatformChangeSeconds": 30,
+  "accessSlack": { "baseSeconds": 30, "walkPercent": 5 },
+  "afterBikeChange": { "minSeconds": 60, "ridePercent": 10 },
+  "extraLeg": { "pruneRound": 4, "minSavingSeconds": 480 },
+  "maxJourneySeconds": 21600,
+  "accessWalkLimitSeconds": 1200,
+  "directWalkLimitSeconds": 3600,
+  "originSnapMeters": 250,
+  "links": {
+    "stationAccessSeconds": { "subway": 120, "bus": 30, "lirr": 240, "ferry": 120, "path": 120 },
+    "maxSnapMeters": { "subway": 150, "bus": 150, "lirr": 150, "ferry": 250, "path": 150 },
+    "maxFootpathWalkSeconds": 480,
+    "minTransferSeconds": 30,
+    "stationLinkMaxWalkMeters": 350,
+    "walkSpeedHundredthsMph": 350,
+    "streetAccessOnlyInsideServiceArea": ["path"]
+  }
+}

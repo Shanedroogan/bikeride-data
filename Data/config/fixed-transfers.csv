@@ -1,0 +1,7 @@
+from,to,seconds,note
+P:place_WTC,S:138,240,PATH World Trade Center to WTC Cortlandt (1) via the Oculus: about 4 min
+P:place_WTC,S:E01,360,PATH World Trade Center to World Trade Center (E) via the Oculus: about 6 min
+P:place_14S,S:D19,180,PATH 14th St to 14 St (F M): about 3 min
+P:place_23S,S:D18,180,PATH 23rd St to 23 St (F M): about 3 min
+P:place_33S,S:D17,240,PATH 33rd St to 34 St-Herald Sq (B D F M): about 4 min
+P:place_33S,S:R17,240,PATH 33rd St to 34 St-Herald Sq (N Q R W): about 4 min
