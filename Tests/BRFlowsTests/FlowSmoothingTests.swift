@@ -106,6 +106,28 @@ private enum Toy {
         #expect(stats.keysWithTrips == 2 && stats.keysWithoutTrips == 1 && stats.neighborCountHistogram[1] == 2 && stats.neighborCountHistogram[0] == 1)
     }
 
+    /// SHA-256 of the payload ``Golden`` smooths to. The builder promises the same bytes on every
+    /// host (integer inputs, `+ − × ÷` on `Double` in a fixed order, no libm, binary16 by bit
+    /// operations); this pins it where the hand-computed toy cannot, since those expectations run
+    /// the same arithmetic as the code. CI (Linux x86_64) checks the value pinned on macOS arm64.
+    static let smoothingGolden = "006a0b1b5ac4becc0df461e70861c62cbf6cbdcca8f68ac1058a58b3794c70c7"
+
+    @Test func smoothingMatchesTheGoldenOnEveryHost() throws {
+        let (payload, stats, cells) = try Golden.build()
+        let digest = try sha256Hex(payload)
+        // The paths it pins: silent keys, neighbors, bursty cells above the Poisson floor, and
+        // any-type variances raised after rounding.
+        var aboveFloor = 0
+        for series in 0..<(48 * FlowsFormat.dayTypeCount * FlowsFormat.directionCount) {
+            let base = series * FlowsFormat.slotCount * FlowsFormat.binsPerDay
+            for bin in 0..<FlowsFormat.binsPerDay where cells[base + FlowsFormat.binsPerDay + bin] > cells[base + bin] { aboveFloor += 1 }
+        }
+        #expect(stats.keysWithTrips == 36 && stats.keysWithoutTrips == 12 && stats.neighborCountHistogram == [0, 0, 0, 0, 0, 0, 0, 1, 47])
+        #expect(stats.neighborhoodDominated == 15 && stats.lowData == 12 && stats.varianceAnyBumped == 3_035 && stats.clamped == 0)
+        #expect(aboveFloor == 5_551)
+        #expect(digest == Self.smoothingGolden, "smoothing payload sha256 \(digest)")
+    }
+
     @Test func storedCellsKeepEveryInvariant() throws {
         let tallies = FlowTallies.tally(Toy.counts(), calendar: Toy.calendar)
         let (cells, flags, _) = FlowSmoothing.smooth(tallies, latE6: Toy.latE6, lonE6: Toy.lonE6, parameters: Toy.parameters)
@@ -117,5 +139,60 @@ private enum Toy {
                              stations: stations, cells: cells)
         let flows = try MappedFlows(artifact: MappedArtifact(fileBytes: try data.artifactBytes(dataVersion: "toy")))
         #expect(flows.count == 3 && flows.activeDays(0, .weekend, .arrivals) == 2)
+    }
+}
+
+/// A deterministic pseudo-random month for the smoothing golden: 48 stations on a 6 × 8 grid
+/// 300 m apart (so most have neighbors inside 1 km), a few silent or short-lived ones, bursty
+/// counts (so the dispersion path runs), and the build's shorter departure window.
+enum Golden {
+    static let windows = FlowWindows.trips(from: ServiceDate(year: 2026, month: 2, day: 1), through: ServiceDate(year: 2026, month: 2, day: 28))
+
+    static func payload() throws -> Data { try build().payload }
+
+    static func build() throws -> (payload: Data, stats: FlowSmoothing.Stats, cells: [UInt16]) {
+        let keys = 48, days = windows.span.dayCount
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func next() -> UInt64 { // SplitMix64: integers only, the same everywhere
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        let latE6 = (0..<keys).map { Int32(40_700_000 + ($0 / 8) * 2_700) }
+        let lonE6 = (0..<keys).map { Int32(-74_000_000 + ($0 % 8) * 3_550) }
+        var counts = [UInt16](repeating: 0, count: keys * days * FlowsFormat.binsPerDay * FlowCounts.perBin)
+        for key in 0..<keys where key % 11 != 5 { // keys 5, 16, 27 and 38 never ride
+            let rate = next() % 6 // 0 … 5: busier and quieter stations
+            let first = key % 13 == 0 ? 10 : 0, last = key % 17 == 3 ? 12 : days // some open late or close early
+            for day in first..<last {
+                for bin in 0..<FlowsFormat.binsPerDay {
+                    let peak: UInt64 = (28...40).contains(bin) || (64...76).contains(bin) ? 3 : 1
+                    for type in 0..<FlowsFormat.bikeTypeCount {
+                        for direction in 0..<FlowsFormat.directionCount {
+                            if direction == 0, !windows.days(.departures).contains(day) { continue }
+                            let roll = next() % 64
+                            guard roll < rate * peak else { continue }
+                            let burst = roll == 0 ? UInt16(next() % 7) : 1 // an occasional crowd
+                            let index = FlowCounts.index(key: key, day: day, bin: bin, type: type, direction: direction, dayCount: days)
+                            counts[index] += burst
+                        }
+                    }
+                }
+            }
+        }
+        let calendar = try FlowCalendar(holidays: [FlowCalendar.Holiday(date: ServiceDate(year: 2026, month: 2, day: 16), name: "x", weekendProfile: true)])
+        let tallies = FlowTallies.tally(FlowCounts(keyCount: keys, windows: windows, counts: counts, saturated: 0), calendar: calendar)
+        let parameters = Toy.parameters // spelled out, so tuning m1 later does not move the golden
+        let (cells, flags, stats) = FlowSmoothing.smooth(tallies, latE6: latE6, lonE6: lonE6, parameters: parameters)
+        let stations = (0..<keys).map { row in
+            FlowStation(key: String(format: "G%02d", row), latE6: latE6[row], lonE6: lonE6[row], capacity: UInt16(row % 40),
+                        activeDays: Array(tallies.activeDays[row * 4..<row * 4 + 4]), flags: flags[row])
+        }
+        let data = FlowsData(departureWindow: windows.departures, arrivalWindow: windows.arrivals, flags: [.customerTripsOnly],
+                             smoothing: parameters, holidays: [ServiceDate(year: 2026, month: 2, day: 16)], stations: stations, cells: cells)
+        _ = try MappedFlows(artifact: MappedArtifact(fileBytes: data.artifactBytes(dataVersion: "golden"))) // every invariant holds
+        return (data.encodedSections(), stats, cells)
     }
 }
