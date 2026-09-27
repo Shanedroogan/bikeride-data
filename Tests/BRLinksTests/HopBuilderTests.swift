@@ -349,6 +349,16 @@ import Testing
         options.middayEndSeconds = 10 * 3600 + 1
         let narrow = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: options)
         #expect(narrow.entry(from: x, to: z)?.middayTrips == 1 && narrow.entry(from: y, to: z)?.middayTrips == 0)
+
+        // Holidays are skipped: the Wednesday, then (all of Tue–Thu off) the Monday, then (every
+        // weekday off) the first covered date.
+        func day(_ d: Int) -> ServiceDate { ServiceDate(year: 2026, month: 10, day: d) }
+        #expect(OneSeatTable.referenceDate(subway, excluding: [day(6)]) == day(7))
+        #expect(OneSeatTable.referenceDate(subway, excluding: [day(6), day(7), day(8)]) == day(5))
+        #expect(OneSeatTable.referenceDate(subway, excluding: Set((5...9).map(day))) == day(5))
+        var holiday = HopOptions()
+        holiday.holidays = [day(6)]
+        #expect(OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: holiday).referenceDates == [.subway: day(7)])
     }
 
     // MARK: - Reader

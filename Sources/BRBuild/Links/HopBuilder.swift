@@ -25,6 +25,10 @@ public struct HopOptions: Sendable, Equatable {
     /// ``afterBikeRidePermille`` of the ride.
     public var afterBikeMinSeconds = 60
     public var afterBikeRidePermille = 100
+    /// Dates never taken as the one-seat reference day (``OneSeatTable/referenceDate(_:excluding:)``):
+    /// holidays run a weekend-like midday. Empty until links is built from the config's holiday
+    /// calendar.
+    public var holidays: Set<ServiceDate> = []
 
     public init() {}
 }

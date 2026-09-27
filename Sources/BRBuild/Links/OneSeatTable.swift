@@ -8,7 +8,7 @@ import Foundation
 ///
 /// - **Existence** is calendar-independent: some pattern with at least one trip lets riders board
 ///   at a platform of A and later alight at a platform of B.
-/// - **Midday** figures come from one reference day per system (``referenceDate(_:)``): the trips
+/// - **Midday** figures come from one reference day per system (``referenceDate(_:excluding:)``): the trips
 ///   boarding at A between ``HopOptions/middayStartSeconds`` and ``HopOptions/middayEndSeconds``
 ///   that later alight at B, counted once each, and the least in-vehicle time among them.
 public struct OneSeatTable: Sendable, Equatable {
@@ -44,12 +44,14 @@ public struct OneSeatTable: Sendable, Equatable {
     public func entry(from origin: Int, to destination: Int) -> Entry? { pairs[Self.key(origin, destination)] }
 
     /// A typical weekday from the timetable's own coverage, so the result depends only on the
-    /// artifact (never on the build machine's clock): the first covered Tuesday, Wednesday or
-    /// Thursday; else the first covered weekday; else the first covered date.
-    public static func referenceDate(_ timetable: Timetable) -> ServiceDate? {
+    /// artifact and `holidays` (never on the build machine's clock): the first covered Tuesday,
+    /// Wednesday or Thursday that is not a holiday; else the first covered weekday that is not
+    /// one; else the first covered date.
+    public static func referenceDate(_ timetable: Timetable, excluding holidays: Set<ServiceDate> = []) -> ServiceDate? {
         let dates = timetable.coveredDates
-        return dates.first { [.tuesday, .wednesday, .thursday].contains($0.weekday) }
-            ?? dates.first { $0.weekday.rawValue <= Weekday.friday.rawValue }
+        let workdays = dates.filter { !holidays.contains($0) }
+        return workdays.first { [.tuesday, .wednesday, .thursday].contains($0.weekday) }
+            ?? workdays.first { $0.weekday.rawValue <= Weekday.friday.rawValue }
             ?? dates.first
     }
 
@@ -66,7 +68,7 @@ public struct OneSeatTable: Sendable, Equatable {
         for system in LinksFormat.hopSystems {
             guard let timetable = timetables[system] else { continue }
             let base = network.stopBase(system)
-            let reference = referenceDate(timetable)
+            let reference = referenceDate(timetable, excluding: options.holidays)
             if let reference { table.referenceDates[system] = reference }
             let view = reference.map { timetable.dayView(for: $0) }
             for pattern in 0..<timetable.patternCount where timetable.patternTripCount(pattern) > 0 {

@@ -624,11 +624,13 @@ every tuple at the rider's own speed.
 
 **One-seat rule.** A pair is also dropped when a train already rides A → B about as fast as the
 bike, judged at midday on a reference day: per rail system, the first Tuesday, Wednesday or
-Thursday its timetable covers (else its first covered weekday, else its first covered date), so
-the result depends only on the artifacts, never on the build machine's clock. Over that day's
-trips that board at a platform of A between 10:00 and 16:00 and later alight at a platform of B
-(pickup and drop-off allowed), with `trips` their number (each trip counted once) and `inVehicle`
-the least arrival − departure among them, the pair is dropped when
+Thursday its timetable covers that is not a holiday (else its first covered weekday that is not
+one, else its first covered date), so the result depends only on the artifacts and the holiday
+list, never on the build machine's clock. The holidays are `HopOptions.holidays`, empty until
+links is built from the config's holiday calendar. Over that day's trips that board at a
+platform of A between 10:00 and 16:00 and later alight at a platform of B (pickup and drop-off
+allowed), with `trips` their number (each trip counted once) and `inVehicle` the least arrival −
+departure among them, the pair is dropped when
 `inVehicle + ⌊⌊21,600 ÷ trips⌋ ÷ 2⌋ ≤ bike` (half the midday headway), where `bike` is the least
 door-to-door time over the stored tuples at the *fastest* pace:
 `exit + unlock + ⌈decameters × 10,000 ÷ maxSpeed⌉ + dock + enter + max(60, ⌊ride ÷ 10⌋)` seconds
