@@ -1,3 +1,5 @@
+import BRCore
+import BRData
 import Foundation
 
 /// `data/heartbeat.json`, written last by every successful run (after the manifest). The relay's
@@ -33,6 +35,20 @@ public struct SetHeartbeat: Codable, Sendable, Equatable {
         let stamp = SetArtifacts.isoTimestamp(now)
         return SetHeartbeat(checkedAt: stamp, lastTimetableSuccessAt: timetablesSucceeded ? stamp : previous?.lastTimetableSuccessAt,
                             setId: manifest.setId, job: job)
+    }
+
+    /// Whether the run that wrote `manifest` counts as a timetable success. By default it does
+    /// when at least one `tt-*` is in the set fresh (not carried forward): a job that carried all
+    /// five (a flows-only job) cannot have built them, so it can never hide a dead timetables job
+    /// by forgetting a flag. `unchanged` is the timetables job that found its sources unchanged
+    /// and carried the five forward (a success); `notRun` a job that has `tt-*` files in its data
+    /// directory without building them.
+    public static func timetablesSucceeded(_ manifest: SetManifest, notRun: Bool, unchanged: Bool) -> Bool {
+        if notRun { return false }
+        if unchanged { return true }
+        return TransitSystem.allCases.map { ArtifactKind.timetable(for: $0).name }.contains {
+            manifest.artifacts[$0] != nil && !manifest.carriedForward.contains($0)
+        }
     }
 
     public static func load(_ url: URL) throws -> SetHeartbeat {

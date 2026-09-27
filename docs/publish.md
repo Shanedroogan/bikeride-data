@@ -10,7 +10,8 @@ The gate runs before the manifest because a soft failure changes `systems.<s>.st
 failure (`gate` exits 3) writes no manifest and no heartbeat, so the previous set stays current;
 `manifest` itself refuses (exit 3) unless `reports/gate.json` passed, or failed only soft, on
 exactly the raw files and `.xz` blobs in the data directory, for the same build day and previous
-manifest.
+manifest. `gate` deletes any earlier `reports/gate.json` before it reads anything, so a gate run
+that stops with an error leaves no report for `manifest` to take.
 
 ## `reports/gate.json` (`GateReport`)
 
@@ -48,7 +49,7 @@ Compact JSON, keys sorted. The app fetches it through the relay every 60 s; the 
  "coverage": {"subway": ["2026-09-25", …], "bus": […], "lirr": […], "ferry": […], "path": […]},
  "systems": {"<system>": {"artifact": "tt-subway", "first", "last", "dates", "days", "status": "ok|noSchedule"}},
  "sources": {"<tt-name>": [{"name", "feed", "etag", "feedVersion", "datesSelected", "firstSelected", "lastSelected"}]},
- "gate": {"status", "checks": [{"name", "status"}], "warnings": […]},
+ "gate": {"status", "checks": [{"name", "status", "warnings": count}]},
  "tripCounts": {"file": "trip-counts.json", "sha256": "…"}}
 ```
 
@@ -61,6 +62,8 @@ Compact JSON, keys sorted. The app fetches it through the relay every 60 s; the 
   set, and `generatedAt` is the only field that differs between two such runs.
 - `sources` come from each timetable's own source table (not from the build report). An archived
   version is named `<feed>@<key8>`.
+- `gate` publishes each check's status and warning count only; the text (which can name local
+  paths) stays in `reports/gate.json`.
 - `--previous` carries forward the kinds the data directory lacks (a job that did not rebuild
   them): their artifact entries, coverage, sources and trip counts. Everything, fresh or carried,
   must match what it was built against, or the manifest is refused.
@@ -78,7 +81,11 @@ systems, would leave the build after that with nothing to compare either.
 
 `{checkedAt, lastTimetableSuccessAt, setId, job, result: "built"}`, written last. The relay fails
 health past 30 h (`checkedAt`) and 16 h (`lastTimetableSuccessAt`). `lastTimetableSuccessAt` is the
-run's time unless `--timetables-not-run`, when it carries over from the previous heartbeat.
+run's time when at least one `tt-*` is in the data directory (not carried forward), and otherwise
+carries over from the previous heartbeat, so a job that carries all five forward (flows only)
+cannot reset it by forgetting a flag. `--timetables-unchanged` (the timetables job found its sources
+unchanged and carried all five) makes it the run's time; `--timetables-not-run` (`tt-*` files in
+the data directory that this job did not build) makes it carry over.
 
 ## Source archive (`sources/gtfs/archive/`)
 

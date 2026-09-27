@@ -82,15 +82,18 @@ public struct SetManifest: Codable, Sendable, Equatable {
         }
     }
 
+    /// The gate's verdict, per check. Only counts are published: warning text (which can name
+    /// local paths and differs between machines) stays in `reports/gate.json`.
     public struct Gate: Codable, Sendable, Equatable {
         public struct Check: Codable, Sendable, Equatable {
             public var name: String
             public var status: GateCheckStatus
+            /// How many warnings the check reported.
+            public var warnings: Int
         }
 
         public var status: GateStatus
         public var checks: [Check]
-        public var warnings: [String]
     }
 
     public struct FileReference: Codable, Sendable, Equatable {
@@ -121,13 +124,13 @@ public struct SetManifest: Codable, Sendable, Equatable {
     /// Per-date trip counts for the next build's gate; only the pipeline reads it.
     public var tripCounts: FileReference
 
-    public static func setId(_ artifacts: [String: Artifact]) -> String {
+    /// Throws when the digest cannot be computed (on Linux it comes from `sha256sum`), so a set is
+    /// never published with an empty id.
+    public static func setId(_ artifacts: [String: Artifact], runner: any ToolRunner = ProcessToolRunner()) throws -> String {
         let lines = artifacts.keys.sorted().map { "\($0)\t\(artifacts[$0]!.sha)\n" }.joined()
-        #if canImport(CryptoKit)
-        return String(CryptoKitHasher().sha256(of: Data(lines.utf8)).hex.prefix(16))
-        #else
-        return String(((try? ProcessHasher(runner: ProcessToolRunner()).sha256(of: Data(lines.utf8)).hex) ?? "").prefix(16))
-        #endif
+        let hex = try SetArtifacts.sha256(of: Data(lines.utf8), runner: runner)
+        guard hex.count == 64 else { throw ManifestError.inconsistent("setId: the SHA-256 came out as '\(hex)'") }
+        return String(hex.prefix(16))
     }
 
     public static func load(_ url: URL) throws -> SetManifest {
@@ -282,7 +285,7 @@ public struct SetManifestBuilder {
                 days: days, status: gate.systems[name]?.status ?? .ok)
         }
 
-        let setId = SetManifest.setId(artifacts)
+        let setId = try SetManifest.setId(artifacts, runner: runner)
         let sidecar = TripCountSidecar(setId: setId, buildDay: today.yyyymmdd, systems: counts)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -292,8 +295,8 @@ public struct SetManifestBuilder {
             tool: "bikeride-data \(BuildInfo.toolVersion) (Swift \(BuildInfo.swiftVersion))", buildDay: today.yyyymmdd,
             previousSetId: previous?.setId, carriedForward: carried.sorted(), artifacts: artifacts, coverage: coverage, systems: systems,
             sources: sources,
-            gate: SetManifest.Gate(status: gate.status, checks: gate.checks.map { .init(name: $0.name, status: $0.status) },
-                                   warnings: gate.checks.flatMap { check in check.warnings.map { "\(check.name): \($0)" } }),
+            gate: SetManifest.Gate(status: gate.status,
+                                   checks: gate.checks.map { .init(name: $0.name, status: $0.status, warnings: $0.warnings.count) }),
             tripCounts: SetManifest.FileReference(file: TripCountSidecar.fileName, sha256: try SetArtifacts.sha256(of: sidecarBytes, runner: runner)))
         return (manifest, sidecar, sidecarBytes)
     }

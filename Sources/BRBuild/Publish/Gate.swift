@@ -329,9 +329,12 @@ public struct Gate {
 
     public var reportURL: URL { reportsDirectory.appendingPathComponent(GateReport.fileName) }
 
-    /// Runs every check and writes `reports/gate.json`, whatever the verdict.
+    /// Runs every check and writes `reports/gate.json`, whatever the verdict. The previous report
+    /// is deleted first, so a run that throws (a file that does not scan) leaves none for
+    /// `manifest` to accept.
     @discardableResult
     public func run(log: (String) -> Void = { _ in }) throws -> GateReport {
+        try Self.removeReport(in: reportsDirectory)
         let artifacts = try SetArtifacts.scan(dataDirectory, runner: runner)
         let (previous, previousCounts, previousProblem) = Self.loadPrevious(previousManifest, runner: runner)
         let context = GateContext(dataDirectory: dataDirectory, reportsDirectory: reportsDirectory, today: today,
@@ -387,6 +390,13 @@ public struct Gate {
             carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId, systems: systems, checks: checks)
         _ = try SetArtifacts.writeJSON(report, to: reportURL, pretty: true)
         return report
+    }
+
+    /// Deletes `gate.json` from `reports`, if there is one. `bikeride-data gate` calls it before
+    /// anything that can fail (reading the configuration), and ``run(log:)`` before scanning.
+    public static func removeReport(in reports: URL) throws {
+        let url = reports.appendingPathComponent(GateReport.fileName)
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     }
 
     /// The previous manifest and its trip-count sidecar, or why they cannot be used: a manifest

@@ -42,10 +42,16 @@ struct PublishSetTests {
         }
         #expect(manifest.artifacts["links"]?.builtAgainst["tt-bus"] == manifest.artifacts["tt-bus"]?.rawSha256)
         #expect(manifest.artifacts["links"]?.builtAgainst["stations"] == manifest.artifacts["stations"]?.rawSha256)
-        #expect(manifest.setId.count == 16 && manifest.setId == SetManifest.setId(manifest.artifacts))
+        #expect(try manifest.setId.count == 16 && manifest.setId == SetManifest.setId(manifest.artifacts))
         #expect(manifest.sources["tt-bus"] == [SetManifest.Source(name: "fixture_B", feed: "fixture_B", etag: "\"e\"", feedVersion: "",
                                                                   datesSelected: 21, firstSelected: "2026-10-05", lastSelected: "2026-10-25")])
         #expect(manifest.gate.status == .pass && manifest.buildDay == "20261006" && manifest.previousSetId == nil)
+        // Warnings are published as counts: their text stays in gate.json.
+        #expect(manifest.gate.checks.map(\.name) == gate.checks.map(\.name))
+        #expect(manifest.gate.checks.first { $0.name == "tripCounts" }?.warnings == 1)
+        #expect(gate.check("tripCounts")?.warnings == ["no previous build (no --previous): trip counts not compared"])
+        let published = try String(contentsOf: builder.manifestURL, encoding: .utf8)
+        #expect(!published.contains(set.scratch.url.path) && !published.contains("trip counts not compared"))
 
         let sidecar = try manifest.loadTripCounts(nextTo: builder.manifestURL, runner: publishRunner)
         #expect(sidecar.systems.keys.sorted() == Self.systems)
@@ -235,6 +241,17 @@ struct PublishSetTests {
         }
         try checked.write(to: blob)
         #expect(throws: Never.self) { try set.manifestBuilder().build() }
+        // A gate run that throws before writing (a file that does not scan) leaves no report behind.
+        #expect(FileManager.default.fileExists(atPath: set.reports.appendingPathComponent("gate.json").path))
+        let ferry = set.data.appendingPathComponent("tt-ferry.bin"), ferryBytes = try Data(contentsOf: ferry)
+        try Data(contentsOf: set.data.appendingPathComponent("tt-bus.bin")).write(to: ferry)
+        #expect(throws: SetArtifacts.SetError.kindMismatch(file: "tt-ferry.bin", header: "tt-bus")) { try set.gate() }
+        #expect(!FileManager.default.fileExists(atPath: set.reports.appendingPathComponent("gate.json").path))
+        try ferryBytes.write(to: ferry)
+        #expect(throws: SetManifest.ManifestError.noGateReport(set.reports.appendingPathComponent("gate.json").path)) {
+            try set.manifestBuilder().build()
+        }
+        _ = try set.gate()
         var otherDay = set.manifestBuilder()
         otherDay.today = day("20261007")
         #expect(throws: SetManifest.ManifestError.gateStale("the gate ran for build day 20261006, not 20261007")) { try otherDay.build() }
@@ -255,7 +272,7 @@ struct PublishSetTests {
                                           rawSha256: String(repeating: "b", count: 64), formatVersion: 0, dataVersion: "config", builtAgainst: [:])
         previous.artifacts["flows"] = flows
         previous.artifacts["config"] = config
-        previous.setId = SetManifest.setId(previous.artifacts)
+        previous.setId = try SetManifest.setId(previous.artifacts)
         let previousURL = try writePrevious(previous, sidecar: sidecar, to: set.scratch.url.appendingPathComponent("prev"))
 
         // This job also did not rebuild the ferry: its files are gone from the data directory.
@@ -264,6 +281,7 @@ struct PublishSetTests {
         #expect(gate.status == .pass, "\(gate.checks.filter { $0.status == .fail })")
         #expect(gate.carriedForward == ["tt-ferry", "flows", "config"])
         #expect(gate.check("snapping")?.warnings.first?.hasPrefix("tt-ferry is carried forward: its 2 stops' snapping not checked") == true)
+        #expect(!(gate.check("snapping")?.warnings.first?.contains(set.scratch.url.path) ?? true))
         #expect(gate.check("tripCounts")?.metrics["bus.sameDate"] == 21)
         #expect(gate.systems["ferry"]?.coverageDays == 20)
 

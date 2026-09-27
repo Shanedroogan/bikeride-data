@@ -27,7 +27,7 @@ import Testing
         let again = try #require(JSONSerialization.jsonObject(with: encoder.encode(manifest)) as? NSDictionary)
         #expect(again == object)
         #expect(manifest.schema == 1 && manifest.buildDay == "20260926" && manifest.gate.status == .pass)
-        #expect(manifest.setId == SetManifest.setId(manifest.artifacts))
+        #expect(try manifest.setId == SetManifest.setId(manifest.artifacts))
         #expect(manifest.artifacts.keys.sorted() == SetManifest.coreKinds.map(\.name).sorted())
         #expect(manifest.artifacts["streets"]?.rawSha256 == "06af80ebc1cfdef901dcfbc498e9d3bb9d6dcc8ffc210a4791bf2bb9e2a5076f")
         #expect(manifest.artifacts["links"]?.builtAgainst["streets"] == manifest.artifacts["streets"]?.rawSha256)
@@ -67,5 +67,26 @@ import Testing
         #expect(heartbeat.setId == manifest.setId)
         let iso = ISO8601DateFormatter()
         #expect(iso.date(from: heartbeat.checkedAt) != nil && heartbeat.lastTimetableSuccessAt.flatMap(iso.date(from:)) != nil)
+    }
+
+    /// Whether a run resets `lastTimetableSuccessAt`: yes with a fresh tt-*, never when all five are
+    /// carried forward unless the job says its sources were unchanged.
+    @Test func timetableSuccessIsInferredFromTheSet() throws {
+        let iso = ISO8601DateFormatter()
+        let manifest = try JSONDecoder().decode(SetManifest.self, from: Self.json("sample-manifest.json").data)
+        #expect(SetHeartbeat.timetablesSucceeded(manifest, notRun: false, unchanged: false))
+        #expect(!SetHeartbeat.timetablesSucceeded(manifest, notRun: true, unchanged: false))
+        var oneCarried = manifest
+        oneCarried.carriedForward = ["tt-ferry"]
+        #expect(SetHeartbeat.timetablesSucceeded(oneCarried, notRun: false, unchanged: false))
+        var flowsOnly = manifest
+        flowsOnly.carriedForward = ["links", "stations", "streets", "tt-bus", "tt-ferry", "tt-lirr", "tt-path", "tt-subway"]
+        #expect(!SetHeartbeat.timetablesSucceeded(flowsOnly, notRun: false, unchanged: false))
+        #expect(SetHeartbeat.timetablesSucceeded(flowsOnly, notRun: false, unchanged: true))
+        let previous = SetHeartbeat(checkedAt: "2026-09-26T03:20:00Z", lastTimetableSuccessAt: "2026-09-26T03:20:00Z", setId: "x", job: "timetables")
+        let after = SetHeartbeat.after(flowsOnly, now: iso.date(from: "2026-09-26T16:31:00Z")!, job: "flows",
+                                       timetablesSucceeded: SetHeartbeat.timetablesSucceeded(flowsOnly, notRun: false, unchanged: false),
+                                       previous: previous)
+        #expect(after.lastTimetableSuccessAt == "2026-09-26T03:20:00Z" && after.checkedAt == "2026-09-26T16:31:00Z")
     }
 }

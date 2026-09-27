@@ -171,6 +171,20 @@ import Testing
         #expect(none.status == .fail && none.failures == ["no routable stops in links"])
     }
 
+    // MARK: setId
+
+    #if !canImport(CryptoKit)
+    /// On Linux the digest comes from `sha256sum`: without it there is no setId, never an empty one.
+    @Test func setIdThrowsWithoutAHashTool() {
+        struct NoTools: ToolRunner {
+            func locate(_ executable: String) -> String? { nil }
+            func run(executable: String, args: [String], stdin: Data?) throws -> Data { throw ToolError.notFound(executable: executable) }
+            func stream(executable: String, args: [String], stdinFile: URL?) throws -> ToolStream { throw ToolError.notFound(executable: executable) }
+        }
+        #expect(throws: (any Error).self) { try SetManifest.setId([:], runner: NoTools()) }
+    }
+    #endif
+
     // MARK: Configuration files
 
     @Test func theRepositoryConfigurationLoads() throws {
