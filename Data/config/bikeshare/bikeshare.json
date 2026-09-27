@@ -1,0 +1,9 @@
+{
+  "regions": {
+    "nyc": ["71", "185", "158"],
+    "newJersey": ["70", "311"]
+  },
+  "excludedRegions": ["189", "190"],
+  "vehicleTypes": { "classic": ["1"], "ebike": ["2"] },
+  "maxStatusAgeSeconds": 600
+}

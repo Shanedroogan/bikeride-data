@@ -1,0 +1,7 @@
+severity,keywords
+suspended,suspend|no service|not running|not operating|no trains
+severeDelays,severe delay|major delay|significant delay|extensive delay
+delays,delay
+reroute,detour|reroute
+stopsSkipped,bypass|skip
+reducedService,reduced service|less frequent

@@ -2,7 +2,9 @@
 
 `holidays.csv` is the single holiday source for the pipeline. The `config` artifact ships it
 (`calendar.holidays`), and the flows compiler and the validation gate read this file directly, so
-`flows` keeps an empty `builtAgainst`. Nothing else keeps its own holiday list.
+`flows` keeps an empty `builtAgainst`. Nothing else keeps its own holiday list:
+`lirr-off-peak.csv` beside it only flags some of these dates for the LIRR peak rule (every date
+it lists must be here; `../SOURCES.md`).
 
 ## Format
 

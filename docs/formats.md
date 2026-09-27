@@ -680,6 +680,175 @@ pair; dropped by the window and by the one-seat rule; hops with fewer than kP pi
 
 <!-- Placeholder: the `flows` payload layout and invariants are documented here in M1. -->
 
-### config (kind 9, draft)
+### `config` (kind 9, format 0, draft payload revision 1)
 
-<!-- Placeholder: the `config` envelope, JSON schema and compatibility rules are documented here in M1. -->
+Fares, change times, the `links` build parameters, the bike-share filter and the alert keyword
+table: every value the engine and the links builder took from Swift literals before M1, as one
+JSON document. Writer: `ConfigArtifactWriter`, filled by `ConfigCompiler` from the reviewed
+sources in `Data/config/` and `Data/fares/` (BRBuild, `bikeride-data config`). Reader:
+`MappedConfig` (BRConfig). Wire types: `ConfigDocument` and the `Config*` types
+(`Sources/BRConfig/ConfigDocument.swift`). `builtAgainst` is empty: config is a root input, like
+a GTFS zip. `dataVersion` is `config:` + the lowercase-hex SHA-256 of the JSON bytes.
+
+Why JSON and not arrays: the v1 document is about 14 KB (2.4 KB xz) and is decoded once per set
+open (about a millisecond), off the query path; every consumer builds its own lookup tables
+from it anyway. JSON keeps the reviewed diffs readable and lets the format grow by optional keys.
+
+| Field | Encoding | Notes |
+|---|---|---|
+| magic | `bytes[4]` | ASCII `CNFG` |
+| payloadRevision | `u32` | `1` (draft revision 1). Readers reject any other |
+| json | `array<u8>` | The document, UTF-8 JSON (below) |
+| extensions | extension tail | No ids are defined: writers write an empty tail; readers skip every id |
+
+Nothing follows the tail.
+
+**Canonical JSON.** `JSONEncoder` with sorted keys (UTF-8 byte order) and unescaped slashes, no
+whitespace. Values are integers, booleans, strings, arrays and objects: no floating point
+anywhere, so no platform number formatting reaches the bytes. Arrays that are sets are written
+sorted by the UTF-8 bytes of their key (named per array below) with no repeats; ordered arrays
+say so. No Swift `Set` and no dictionary keyed by anything but a string are wire types. The
+payload golden (`ConfigFormatTests`) pins the bytes of a hand-built document on macOS and Linux.
+
+**Compatibility of the JSON** (these hold from format 1 on; the draft follows them already):
+
+- Readers ignore keys they don't know, at any depth. A key added within a format is optional, and
+  its default is a *format* default written next to it here ("absent = off", "absent = none"),
+  never the value some app build compiled in. Every key listed below is required unless marked
+  optional.
+- A required key never changes type, unit or meaning without a formatVersion bump. Units are in
+  the names of quantities: `…Cents`, `…Seconds`, `…Minutes`, `…Meters`, `…Percent`,
+  `…HundredthsMph`, `…E6` (microdegrees).
+- Enum strings are strict: an unknown value fails the decode, so the set fails verification and
+  is not switched to. A new value needs a bump (or a new optional key that carries it).
+- `null` reads as absent. Writers omit an absent optional.
+- `minAppFormat` is a semantics gate, not a parse gate: an app whose engine level is below it
+  rejects the set before switching to it, although the JSON parses. The manifest will mirror it
+  (M4) so such apps skip the download.
+
+**Checks.** `MappedConfig` checks the envelope, decodes, then applies the *structural* rules an
+engine needs (`ConfigValidation.structuralIssues`): no negative prices or times, unique ids and
+dates, a zone fare for every pair of zones that stations use, peak windows inside 0–1440, a
+footpath bound of 1–3,600 s and link seconds (station access, `minTransferSeconds`, fixed
+transfers) below 65,535, disjoint vehicle types, no fixed transfer listed twice (either
+direction). The compiler also applies the writer's *canonical*
+rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
+never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
+holidays Monday–Friday, CityTicket stations only in zones 1 and 3, `nycTerminals` in zone 1,
+the Far Rockaway destination zone in use, lowercase alert keywords each in one rule, excluded
+bike-share regions disjoint from the service area. Cross-artifact checks (the ids resolve in
+`tt-*` and `stations`) are not the reader's: `ReferenceChecks` in BRBuild runs them in the
+compiler and, later, the gate.
+
+**Document** (top-level keys):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `minAppFormat` | int | Lowest app engine level that may apply this config; ≥ 1. The first app is level 1 |
+| `flags` | object of bool | Feature flags by name. None defined yet; each flag's absent default is documented with it; unknown names are ignored |
+| `calendar` | object | `holidays` |
+| `fares` | object | `mta`, `path`, `lirr`, `citiBike` |
+| `transit` | object | Change times and search bounds, and `links` |
+| `bikeShare` | object | Station filter, vehicle types, valet |
+| `alerts` | object | `pathKeywords` |
+
+`calendar.holidays`: weekday holidays, strictly ascending by `date`, from
+`Data/config/calendar/holidays.csv` (the single holiday list).
+
+| Key | Type | Meaning |
+|---|---|---|
+| `date` | string `YYYYMMDD` | The day off (the observed day when the holiday falls on a weekend) |
+| `name` | string | |
+| `bikeShareDayType` | `weekday` \| `weekend` | The day type Citi Bike demand follows (flows, availability). Not the MTA service calendar, which each system's GTFS gives |
+| `lirrOffPeak` | bool | Every LIRR train that day is off-peak (the peak rule does not apply) |
+
+`fares.mta` (OMNY):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `baseFareCents` | int | Subway, local bus, SBS |
+| `expressBusFareCents` | int | |
+| `expressBusStepUpCents` | int | Paid on a transfer whose cell is `stepUp` |
+| `transferWindowSeconds` | int | A paid tap's one free transfer is valid this long after it, inclusive |
+| `transferTable` | object | Row key: the class whose fare carries the transfer; column key: the class boarded on it; each of `subway`, `localBus`, `expressBus` × the same three, all nine required. Cell: `free` (the transfer covers it), `stepUp` (it covers it after `expressBusStepUpCents`), `pay` (it doesn't apply: a new fare, with its own transfer). A subway → subway change inside fare control never reaches the table; `subway`→`subway` is `pay` except between `outOfSystemTransfers` |
+| `outOfSystemTransfers` | array of [id, id] | Subway parent stations where leaving and re-entering counts as the free transfer. Each pair lesser id first; sorted by (first, second) |
+| `inSystemTransfers` | array of [id, id] | Subway parent stations joined inside fare control that `transfers.txt` doesn't link. Same order |
+| `statenIslandRailway.routes` | array of route id | The SIR's routes in the subway feed; sorted |
+| `statenIslandRailway.fareStations` | array of stop id | Parent stations where the SIR collects fares (on entry and exit); sorted. A ride touching neither is free and leaves the OMNY state alone; one touching a fare station is priced as `subway` |
+
+`fares.path`: `fareCents` (int), per entry; no MTA transfer, no cap.
+
+`fares.lirr`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `stations` | array of {`stop`, `zone`, `cityFare`} | Sorted by `stop`. `cityFare`: `none` (zone fares only), `cityTicket`, `farRockaway` (sells the Far Rockaway Ticket) |
+| `zoneFares` | array of {`fromZone`, `toZone`, `peakCents`, `offPeakCents`} | One row per unordered pair, `fromZone ≤ toZone`, ascending by (fromZone, toZone); complete over the zones `stations` use |
+| `cityTicket` | {`peakCents`, `offPeakCents`} | Between two `cityTicket` stations |
+| `farRockawayTicket` | {`peakCents`, `offPeakCents`, `destinationZone`} | One-way from a `farRockaway` station to a station in `destinationZone` |
+| `peakRule` | {`terminalArrivals`, `terminalDepartures`}, each {`startMinute`, `endMinute`} | Minutes after local midnight, start included, end excluded. Peak: a Monday–Friday train, not on an `lirrOffPeak` holiday, arriving at an NYC terminal inside `terminalArrivals` or departing one inside `terminalDepartures`. Used only for trains whose timetable has no peak flag |
+| `nycTerminals` | array of stop id | Where `peakRule` is evaluated; sorted |
+
+A ticket costs the cheapest of the zone fare and the flat ticket the trip qualifies for; ties go
+to the zone fare.
+
+`fares.citiBike`: `taxConfirmed` (bool; until true, every Citi Bike cost is an estimate) and
+`plans` with the four required plans `nonMember`, `member`, `dayPass`, `reducedFare`, each:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `unlockFeeCents` | int | Every ride |
+| `classicIncludedMinutes` | int | Billed minutes (partial minutes round up) a classic ride includes |
+| `classicPerMinuteCents`, `ebikePerMinuteCents` | int | E-bikes include no minutes |
+| `ebikeManhattanCap` | optional {`amountCents`, `maxRideMinutes`} | E-bike usage on a ride of at most `maxRideMinutes` that enters or leaves Manhattan from another NYC borough is capped at `amountCents`. Absent = no cap |
+| `planPriceCents` | optional int | The membership or pass, for display; never added to a ride. Absent = none shown |
+| `verified` | bool | Checked against a published price list; an unverified plan is shown as an estimate |
+
+`transit` (whole seconds unless the key says otherwise):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `sameStopChangeSeconds` | {`subway`, `bus`, `lirr`, `ferry`, `path`} | Re-boarding where you got off. A stop-level self row in `transfers.txt` replaces it for that stop |
+| `guaranteedTransferSeconds` | int | A guaranteed (`transfer_type` 1) trip pair |
+| `minimumPlatformChangeSeconds` | int | Floor on `transfers.txt` platform-to-platform times |
+| `accessSlack` | {`baseSeconds`, `walkPercent`} | Slack after walking to the first stop: base + walk × percent / 100 (integer division) |
+| `afterBikeChange` | {`minSeconds`, `ridePercent`} | Change time after a bike leg: max(min, ride × percent / 100) |
+| `extraLeg` | {`pruneRound`, `minSavingSeconds`} | A journey of exactly `pruneRound` transit legs (its last leg boards in round `pruneRound`; round 0 is access only) must arrive more than `minSavingSeconds` before the best journey with fewer legs. Journeys with more legs are not held to it; the engine searches at most 4 legs (a limit that is not in config), so `pruneRound` 4 covers the last round |
+| `maxJourneySeconds` | int | No label later than departure + this |
+| `accessWalkLimitSeconds`, `directWalkLimitSeconds` | int | Walk-tree reach; the direct walk |
+| `originSnapMeters` | int | How far an origin or destination may lie from the walk graph |
+| `links` | object | Below |
+
+`transit.links`, the parameters `links` is built with (its `builtAgainst` will name this config):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `stationAccessSeconds` | per system | Charged once at every street↔platform transition; ≤ 65,534. Must equal `links`' `systemAccessSeconds` |
+| `maxSnapMeters` | per system | How far an access point may lie from the walk graph |
+| `maxFootpathWalkSeconds` | int | Footpath walk bound, 1–3,600; station access at both ends comes on top |
+| `minTransferSeconds` | int | In-station transfers are raised to at least this; ≤ 65,534 |
+| `stationLinkMaxWalkMeters` | int | Station-link walk bound |
+| `walkSpeedHundredthsMph` | int | 350 = 3.5 mph (× 0.44704 m/s per mph) |
+| `streetAccessOnlyInsideServiceArea` | array of system | Systems whose access points outside the service area get no street access; sorted |
+| `fixedTransfers` | array of {`from`, `to`, `seconds`} | Indoor or short walks between stations of different systems, applied both ways between every routable platform of each end; system-qualified ids; sorted by (from, to); an unordered pair at most once |
+
+`bikeShare`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `regions` | {`nyc`, `newJersey`}, arrays of GBFS `region_id` | The service area's regions; each sorted. A station with no `region_id` is decided by the service-area polygon |
+| `excludedRegions` | array of `region_id` | Known non-service regions (Citi Bike's test regions); sorted, disjoint from `regions` |
+| `vehicleTypes` | {`classic`, `ebike`}, arrays of `vehicle_type_id` | Sorted; disjoint |
+| `maxStatusAgeSeconds` | int | A station whose status is older is not used |
+| `valet` | array of {`stationID`, `latE6`, `lonE6`} | Valet stations by GBFS `station_id`, with the position they were matched at; sorted by `stationID`. May be empty (it is in v1: see `Data/config/bikeshare/SOURCES.md`). The element shape is draft until the freeze |
+
+`alerts.pathKeywords`: ordered rules {`keywords`, `severity`}. PATH alert titles have no type;
+the first rule with a keyword the lowercased title contains gives the severity, and no match is
+`info`. `keywords`: lowercase substrings, sorted within a rule, each in one rule only.
+`severity`: `noService`, `suspended`, `partSuspended`, `detour`, `reroute`, `stopsSkipped`,
+`severeDelays`, `expressToLocal`, `delays`, `reducedService`, `plannedWork` or `info`.
+
+**Not in the draft yet**, each to arrive as an optional key with the default named here: the
+availability, rules, weather, pace, speeds and overheads sections of M2c (absent = bike planning
+off), the realtime matcher tunables (their absent default is fixed when they are defined), and the rail bike-hop
+build parameters under `transit.links` (added with the hops, while config is still the draft).

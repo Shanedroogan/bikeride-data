@@ -1,0 +1,26 @@
+{
+  "baseFareCents": 300,
+  "expressBusFareCents": 725,
+  "expressBusStepUpCents": 425,
+  "transferWindowSeconds": 7200,
+  "transferTable": {
+    "subway": { "subway": "pay", "localBus": "free", "expressBus": "stepUp" },
+    "localBus": { "subway": "free", "localBus": "free", "expressBus": "stepUp" },
+    "expressBus": { "subway": "free", "localBus": "free", "expressBus": "free" }
+  },
+  "outOfSystemTransfers": [
+    { "stations": ["S:629", "S:B08"], "note": "Lexington Av/59 St (4 5 6) and Lexington Av/63 St (F Q)" },
+    { "stations": ["S:R11", "S:B08"], "note": "Lexington Av/59 St (N R W) and Lexington Av/63 St (F Q)" },
+    { "stations": ["S:254", "S:L26"], "note": "Junius St (3) and Livonia Av (L)" }
+  ],
+  "inSystemTransfers": [
+    { "stations": ["S:142", "S:R27"], "note": "South Ferry (1) and Whitehall St-South Ferry (R W): one complex since 2009, missing from the 2026 subway transfers.txt" }
+  ],
+  "statenIslandRailway": {
+    "routes": ["S:SI"],
+    "fareStations": [
+      { "stop": "S:S31", "note": "St George" },
+      { "stop": "S:S30", "note": "Tompkinsville" }
+    ]
+  }
+}
