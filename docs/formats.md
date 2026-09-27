@@ -110,7 +110,8 @@ builds that can't update in step with the pipeline, and because an in-progress t
   for small hand-built inputs: not compiled from OSM, GBFS or GTFS, with every parameter spelled out
   (no tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
   digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
-  formatVersion.
+  formatVersion. `LinksV1Tests` pins the draft `links` payload (hops included) the same way; the
+  links freeze re-pins it once, for the revision bytes.
 - **Committed v1 files.** `Tests/Fixtures/v1` holds `streets.bin`, `stations.bin` and
   `tt-sample.bin` (a `tt-ferry` file), written by the format-1 writer from those same hand-typed
   inputs. None is compiled from a real extract or feed: the streets and stations are made up, and
@@ -132,7 +133,7 @@ builds that can't update in step with the pipeline, and because an in-progress t
 
 ## Payload layouts
 
-<!-- M1: rail bike hops in links, flows and config are placeholders at the end of this section. -->
+<!-- M1: flows and config are placeholders at the end of this section. -->
 
 Each payload layout is documented here. A draft (format `0`) may change without a version bump;
 the payload revision (a draft's revision number) tells readers which draft they hold. From format
@@ -476,7 +477,7 @@ is present exactly when its snapped flag is set, and fractions lie in [0, 1]; th
 the profile values are finite and positive; the tail. Undefined flag bits are not rejected;
 `MappedStations.flags(_:)` masks them off.
 
-### `links` (kind 7, format 0, draft revision 2)
+### `links` (kind 7, format 0, payload revision 3)
 
 Footpaths between transit stops, each stop's street access points, and walk links between stops
 and Citi Bike stations. Writer: `LinksArtifactWriter`, filled by `LinksCompiler` /
@@ -544,14 +545,14 @@ L station links.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `LNKS` |
-| draftRevision | `u32` | `2`. Readers reject any other |
+| payloadRevision | `u32` | `3`. Readers reject any other. Format-0 draft history: revision 2 added PATH; revision 3 added the extension tail (with the rail bike hops as id 1) and made readers ignore undefined flag bits. The format-1 freeze sets it to `1` |
 | maxFootpathWalkSeconds | `u32` | 480. At most 3,600 |
 | minTransferSeconds | `u32` | 30 |
 | walkSpeed | `f64` | m/s (3.5 mph) |
 | stationLinkMaxWalkMeters | `f64` | 350 |
 | systemStopCounts | `array<u32>`, 5 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path (0 when not linked); T is their sum |
 | systemAccessSeconds | `array<u32>`, 5 | Station access per system, same order |
-| stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it |
+| stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it. Bits 3–7 are undefined: written 0, ignored by readers |
 | footpathStart | `array<u32>`, T + 1 | Footpaths of stop p: `[start[p], start[p + 1])` |
 | footpathTarget | `array<u32>`, F | Global stop, never p itself |
 | footpathSeconds | `array<u16>`, F | Whole seconds, station access included |
@@ -561,7 +562,7 @@ L station links.
 | accessPointFraction | `array<f32>`, A | In [0, 1], from the segment's A node |
 | accessPointSnapDecimeters | `array<u16>`, A | Snap distance |
 | accessPointAccessSeconds | `array<u16>`, A | Access at this transition |
-| accessPointFlags | `array<u8>`, A | Bit 0 entry, 1 exit, 2 synthetic |
+| accessPointFlags | `array<u8>`, A | Bit 0 entry, 1 exit, 2 synthetic. Bits 3–7 are undefined: written 0, ignored by readers |
 | stopAccessStart | `array<u32>`, T + 1 | Access points of stop p: `stopAccessPoint[start[p] ..< start[p + 1]]` |
 | stopAccessPoint | `array<u32>`, K | Access point indices (only snapped points are stored) |
 | stationStopStart | `array<u32>`, S + 1 | S is the `stations` artifact's count |
@@ -570,20 +571,110 @@ L station links.
 | stopStationStart | `array<u32>`, T + 1 | |
 | stopStationStation | `array<u32>`, L | Station index |
 | stopStationEnter, stopStationExit | `array<u16>`, L each | The same links, indexed by stop |
+| extensions | extension tail | See Compatibility. Id 1: the rail bike hops (below), written whenever the links were built with stations and hops enabled (`HopOptions.enabled`, the default; the CLI has no switch for it); a reader that skips it, or a file without it, has no bike hops, which is still correct. Readers skip every other id |
 
-Nothing follows the last array. Rail bike-hop pairs (pickups near parent station A × docks near
-B, rides of 5–25 min) join this artifact in M1.
+Nothing follows the tail.
 
-Invariants, checked by `MappedLinks` at open: the parameters are in range; lengths match T, A, L
-and S; every offset array starts at 0, never decreases and ends at its target's count; every
-stop, access point and station index is in range; each footpath is within its bound (walk bound
-+ both ends' access); flags hold only known bits; fractions lie in [0, 1]. `LinksCompiler` also
-runs `FootpathCheck` over the whole table (every row and two-step chain: triangle inequality,
-closure, sorting, no self-loops) and records the result in its report.
+Invariants, checked by `MappedLinks` at open. Always, because the in-place views depend on them:
+the magic and payload revision; the parameters are in range; lengths match T, A, L and S; every
+offset array starts at 0, never decreases and ends at its target's count; every stop, access
+point and station index is in range; the extension tail (ids strictly ascending, nothing after
+it). Unless the caller opens with `validate: false` (for bytes already verified against a
+manifest's rawSha256):
+- a file with stations (S > 0) names `stations` in its header's `builtAgainst`;
+- a stop without the routable bit has no footpaths, access points or station links, and every
+  footpath leads to a routable stop within its bound (walk bound + both ends' access);
+- every access point's fraction lies in [0, 1] and its access seconds equal its system's
+  `systemAccessSeconds` (the system of its source stop);
+- each station's links are strictly ascending by (enter, stop), each stop's by (exit, station),
+  no row names a stop (station) twice, and no link is `0xFFFF` in both directions;
+- the two directions hold the same links: every stop-side link appears in its station's row with
+  the same enter and exit seconds.
+Undefined flag bits are not rejected; `MappedLinks.stopFlags(_:)` and `accessPoint(_:)` mask them
+off. `LinksCompiler` also runs `FootpathCheck` over the whole table (every row and two-step chain:
+triangle inequality, closure, sorting, no self-loops) and records the result in its report.
 
-### links: rail bike hops (M1)
+### links: rail bike hops (extension id 1)
 
-<!-- Placeholder: the rail bike-hop block of `links` is documented here in M1. -->
+Mid-trip bike rides between rail lines: leave the train at parent station A, walk to a Citi Bike
+pickup, ride to a dock, walk into parent station B and board again. Built by `HopBuilder`
+(BRBuild) after the station links; read by `MappedLinks.hops` (`LinkHops`, BRTimetable), viewed in
+place. The block is the bytes of extension id 1, so a revised layout takes a new id (2) instead
+of a formatVersion bump, and a reader that ignores it plans without bike hops.
+
+**Rail parents.** For every routable platform p of `tt-subway` (the Staten Island Railway
+included), `tt-lirr` and `tt-path`, its parent is `stopParent(p)`, or p itself when it has none (a
+LIRR stop). Ferry terminals and bus stops have no hops. A parent's *pickups* are the stations with
+an exit link from any of its platforms, with the least exit seconds; its *docks* the stations with
+an enter link to any of them, with the least enter seconds (station links above; station access
+included).
+
+**Tuples and ranking.** For parents A ≠ B, every pickup u of A and dock d of B with a matrix path
+(`stations`, any value but `0xFFFF`; u = d is allowed) is a tuple, costing
+`exit(u) + unlockSeconds + ride + dockSeconds + enter(d)`, where `ride = ⌈decameters × 10,000 ÷
+rankSpeedMmPerSecond⌉` seconds. The *best tuple* is the least (cost, u, d). Pickups are ranked by
+their least tuple cost, then station index, and docks the same way; pickup slot 0 and dock slot 0
+are the best tuple's, and the other slots take the next ranked, up to kP and kD. All arithmetic is
+on integers, so the block is identical on every platform.
+
+**Window.** A pair is kept only if some pace in [minSpeed, maxSpeed] makes the best tuple's ride
+5–25 min: `minRideSeconds × minSpeedMmPerSecond ≤ decameters × 10,000 ≤ maxRideSeconds ×
+maxSpeedMmPerSecond` (912–7,711 m with the defaults, both ends included). The planner re-checks
+every tuple at the rider's own speed.
+
+**One-seat rule.** A pair is also dropped when a train already rides A → B about as fast as the
+bike, judged at midday on a reference day: per rail system, the first Tuesday, Wednesday or
+Thursday its timetable covers that is not a holiday (else its first covered weekday that is not
+one, else its first covered date), so the result depends only on the artifacts and the holiday
+list, never on the build machine's clock. The holidays are `HopOptions.holidays`, empty until
+links is built from the config's holiday calendar. Over that day's trips that board at a
+platform of A between 10:00 and 16:00 and later alight at a platform of B (pickup and drop-off
+allowed), with `trips` their number (each trip counted once) and `inVehicle` the least arrival −
+departure among them, the pair is dropped when
+`inVehicle + ⌊⌊21,600 ÷ trips⌋ ÷ 2⌋ ≤ bike` (half the midday headway), where `bike` is the least
+door-to-door time over the stored tuples at the *fastest* pace:
+`exit + unlock + ⌈decameters × 10,000 ÷ maxSpeed⌉ + dock + enter + max(60, ⌊ride ÷ 10⌋)` seconds
+(the last term is the change after the bike). With the default paces a stored tuple that rides
+less far than the best lowers `bike` by at most 2 s of rounding, and not at all when it rides
+over 200 m less: ranking at a pace 15% slower than the fastest costs it more extra walking than
+the faster ride saves, net of the change after the bike (at most 10% of the ride). So spare
+short tuples, even u = d, cannot keep a pair. With no midday trip nothing is dropped. The rule
+is deliberately lenient: the planner's own admission test decides whether a hop is used.
+
+**Defaults** (`HopOptions`): rides of 300–1,500 s at 3,040–5,141 mm/s (0.85 × 8 mph to 1.15 ×
+10 mph), ranked at 4,470 mm/s (10 mph) with a 90 s unlock and a 60 s dock; kP = kD = 2.
+
+Counts: T global stops (as above), H hops, kP pickup and kD dock slots per hop.
+
+| Field | Encoding | Notes |
+|---|---|---|
+| minRideSeconds, maxRideSeconds | `u32` each | 300, 1,500. At most 3,600; min ≤ max |
+| minSpeedMmPerSecond, maxSpeedMmPerSecond | `u32` each | 3,040, 5,141. In (0, 20,000]; min ≤ max |
+| rankSpeedMmPerSecond | `u32` | 4,470. In (0, 20,000] |
+| unlockSeconds, dockSeconds | `u32` each | 90, 60. At most 3,600 |
+| pickupsPerHop, docksPerHop | `u32` each | kP, kD: 2, 2. From 1 to 8, so a build can store 3 × 2 without a new layout |
+| hopStart | `array<u32>`, T + 1 | Hops of origin A (global stop index): `[start[A], start[A + 1])`. Empty for every stop that is not a rail parent |
+| hopTarget | `array<u32>`, H | B, a rail parent other than A; strictly ascending within a row |
+| hopPickup | `array<u16>`, H · kP | Station indices, best first; `0xFFFF` in unused slots, which only follow used ones. Slot 0 is always used |
+| hopDock | `array<u16>`, H · kD | The same, for docks |
+| hopMinDecameters | `array<u16>`, H | The least matrix distance over the stored tuples with a path (a pruning bound) |
+| hopMinWalkSeconds | `array<u16>`, H | The least exit(u) + enter(d) over the same tuples (per parent: its nearest platform), station access included |
+| hopFlags | `array<u8>`, H | Bit 0: some trip (any day) rides A → B without a change; with the one-seat rule on (`HopOptions.oneSeatFilter`, the default; the CLI has no switch for it) the hop was kept because none beat the bike at midday. A hint. Bits 1–7 are undefined: written 0, ignored by readers |
+
+The nine parameters are `u32`s in the order above, from the block's first byte. The arrays are
+8-aligned relative to the block, which the tail places 8-aligned in the payload, so they view in
+place. Nothing follows `hopFlags` inside the block.
+
+Invariants, checked by `MappedLinks` at open. Always: the parameters are in range; lengths match
+T, H, kP and kD; `hopStart` starts at 0, never decreases and ends at H; every target is a stop and
+every used slot a station, in range; nothing trails the block. Unless opened with
+`validate: false`: rows only from subway, LIRR and PATH stops, to other such stops, never to A
+itself, strictly ascending; slot 0 used, unused slots trailing, no station twice among a hop's
+pickups or among its docks; both bounds present (not `0xFFFF`). `LinksCompiler` also fails the
+build unless every routable platform of A has an exit link to every stored pickup and every
+routable platform of B an enter link from every stored dock (true by construction: a parent's
+platforms share its access points), and reports the hop counts in its report's `hops` (by system
+pair; dropped by the window and by the one-seat rule; hops with fewer than kP pickups or kD docks).
 
 ### flows (kind 8, draft)
 

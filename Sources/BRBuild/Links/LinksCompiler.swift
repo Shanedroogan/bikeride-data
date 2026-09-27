@@ -6,11 +6,11 @@ import BRTimetable
 import Foundation
 
 /// Builds the `links` artifact from the `streets`, `stations` and `tt-*` artifacts in a data
-/// directory: access points, transitively closed footpaths, stop↔station walk links; then writes
-/// the raw artifact and its `.xz` blob, re-opens it, checks the footpath invariants and reports.
-///
-/// TODO(M1): rail bike-hop pairs (parent station A → the 2 best pickups near A × the 2 best docks
-/// near parent station B, rides of 5–25 min, dropped when a one-seat ride beats the bike).
+/// directory: access points, transitively closed footpaths, stop↔station walk links, and (with
+/// stations) the rail bike hops (``HopBuilder``: parent station A → the 2 best pickups near A ×
+/// the 2 best docks near parent station B, rides of 5–25 min, dropped when a one-seat ride beats
+/// the bike); then writes the raw artifact and its `.xz` blob, re-opens it, checks the footpath
+/// invariants and reports.
 public struct LinksCompiler: Sendable {
     public struct Configuration: Sendable {
         /// Where `streets.bin`, `stations.bin` and `tt-*.bin` are read from.
@@ -46,6 +46,8 @@ public struct LinksCompiler: Sendable {
         public var footpaths: FootpathStats
         public var footpathCheck: FootpathCheck?
         public var stationLinks: StationLinkStats
+        /// The rail bike hops; `nil` when none were built (no stations, or disabled).
+        public var hops: HopStats?
         /// Walkable segments whose two directions differ (station links assume symmetric walking).
         public var asymmetricWalkSegments: Int
         public var artifact: BuiltArtifactInfo
@@ -56,10 +58,14 @@ public struct LinksCompiler: Sendable {
 
     public enum LinksError: Error, CustomStringConvertible {
         case missingInput(String)
+        /// A stored hop pickup (dock) some platform of its station has no exit (enter) link to.
+        case hopWithoutPlatformLink(missing: Int, examples: [String])
 
         public var description: String {
             switch self {
             case .missingInput(let path): "\(path) is missing; build it first"
+            case .hopWithoutPlatformLink(let missing, let examples):
+                "\(missing) hop (platform, station) pairs lack a station link, e.g. \(examples.prefix(3))"
             }
         }
     }
@@ -132,8 +138,18 @@ public struct LinksCompiler: Sendable {
                 stations.walkSnap(index).flatMap { graph.snappedPoint($0, query: stations.coordinate(index)) }.map(LinkAnchor.init)
             }
         } ?? []
-        let compiled = timed("search") { LinksBuilder.build(network: network, stationAnchors: anchors, graph: graph, options: options) }
+        var compiled = timed("search") { LinksBuilder.build(network: network, stationAnchors: anchors, graph: graph, options: options) }
         log("footpaths: \(compiled.footpaths.count); station links: \(compiled.stationLinks.count)")
+        var hopStats: HopStats?
+        if let stations, options.hops.enabled {
+            let (hops, stats) = try Self.railHops(timetables: timetables, network: network, stationLinks: compiled.stationLinks,
+                                                  stationCount: stations.count, distances: stations, options: options.hops,
+                                                  threads: options.threads, seconds: &seconds)
+            log("hops: \(hops.count) over \(stats.origins) origins (\(stats.candidatePairs) candidates; dropped \(stats.droppedBelowWindow) short, "
+                + "\(stats.droppedAboveWindow) long, \(stats.droppedByOneSeat) by a one-seat ride)")
+            compiled.hops = hops
+            hopStats = stats
+        }
         let check = config.checkFootpaths
             ? timed("check") {
                 FootpathCheck.run(compiled.footpaths, walkSeconds: Int(options.maxFootpathWalkSeconds),
@@ -148,12 +164,13 @@ public struct LinksCompiler: Sendable {
         let bytes = timed("encode") { LinksArtifactWriter.artifact(compiled, dataVersion: dataVersion, builtAgainst: builtAgainst) }
         let artifact = try ArtifactOutput.write(
             bytes, to: config.artifactFile, compress: config.compress, runner: runner,
-            formatVersion: ArtifactKind.links.currentFormatVersion, payloadRevision: LinksFormat.draftRevision,
+            formatVersion: ArtifactKind.links.currentFormatVersion, payloadRevision: LinksFormat.payloadRevision,
             dataVersion: dataVersion, builtAgainst: builtAgainst, seconds: &seconds
         )
         let openStart = Date()
-        _ = try MappedLinks(contentsOf: config.artifactFile)
+        let reopened = try MappedLinks(contentsOf: config.artifactFile)
         let openMilliseconds = Date().timeIntervalSince(openStart) * 1000
+        hopStats?.blockBytes = reopened.extensions[LinksFormat.hopsExtensionID]?.count ?? 0
         seconds["total"] = Date().timeIntervalSince(started)
 
         return Report(
@@ -169,17 +186,58 @@ public struct LinksCompiler: Sendable {
                 "stairsMultiplier": options.walk.stairsMultiplier,
                 "threads": Double(options.threads),
             ].merging(options.accessSeconds.map { ("accessSeconds.\($0.key.linkReportName)", Double($0.value)) }) { a, _ in a }
-                .merging(options.maxSnapMeters.map { ("maxSnapMeters.\($0.key.linkReportName)", $0.value) }) { a, _ in a },
+                .merging(options.maxSnapMeters.map { ("maxSnapMeters.\($0.key.linkReportName)", $0.value) }) { a, _ in a }
+                .merging(Self.hopParameters(options.hops)) { a, _ in a },
             network: networkStats,
             footpaths: compiled.footpathStats,
             footpathCheck: check,
             stationLinks: compiled.stationLinkStats,
+            hops: hopStats,
             asymmetricWalkSegments: asymmetric,
             artifact: artifact,
             readerOpenMilliseconds: openMilliseconds,
             seconds: seconds,
             peakRSSBytes: TimetableBuild.peakRSSBytes()
         )
+    }
+
+    /// The rail bike hops of links built with stations: the one-seat table, ``HopBuilder`` over
+    /// the stop-side station links, then ``HopBuilder/checkPlatformLinks(_:parents:stationLinks:stats:)``.
+    /// Adds the `oneSeat` and `hops` phases to `seconds`.
+    ///
+    /// - Throws: ``LinksError/hopWithoutPlatformLink(missing:examples:)`` unless every routable
+    ///   platform of each hop's origin has an exit link to every stored pickup, and every one of
+    ///   its target an enter link from every stored dock.
+    public static func railHops(timetables: [TransitSystem: Timetable], network: LinkNetwork, stationLinks: StationLinkTable,
+                                stationCount: Int, distances: any HopDistances, options: HopOptions, threads: Int,
+                                seconds: inout [String: Double]) throws -> (hops: CompiledHops, stats: HopStats) {
+        let parents = RailParents.make(timetables: timetables, network: network)
+        var start = Date()
+        let oneSeat = OneSeatTable.build(timetables: timetables, network: network, parents: parents, options: options)
+        seconds["oneSeat", default: 0] += Date().timeIntervalSince(start)
+        start = Date()
+        let inputs = HopBuilder.Inputs(systemStopCounts: network.systemStopCounts, parents: parents, stationLinks: stationLinks,
+                                       stationCount: stationCount, distances: distances, oneSeat: oneSeat)
+        var (hops, stats) = HopBuilder.build(inputs, options: options, threads: threads)
+        seconds["hops", default: 0] += Date().timeIntervalSince(start)
+        HopBuilder.checkPlatformLinks(hops, parents: parents, stationLinks: stationLinks, stats: &stats)
+        let missing = stats.platformPickupLinksMissing + stats.platformDockLinksMissing
+        guard missing == 0 else { throw LinksError.hopWithoutPlatformLink(missing: missing, examples: stats.missingLinkExamples) }
+        return (hops, stats)
+    }
+
+    /// The hop tunables as report parameters (`hops.…`).
+    static func hopParameters(_ options: HopOptions) -> [String: Double] {
+        let p = options.parameters
+        let values: [(String, Int)] = [
+            ("minRideSeconds", p.minRideSeconds), ("maxRideSeconds", p.maxRideSeconds),
+            ("minSpeedMmPerSecond", p.minSpeedMmPerSecond), ("maxSpeedMmPerSecond", p.maxSpeedMmPerSecond),
+            ("rankSpeedMmPerSecond", p.rankSpeedMmPerSecond), ("unlockSeconds", p.unlockSeconds), ("dockSeconds", p.dockSeconds),
+            ("pickupsPerHop", p.pickupsPerHop), ("docksPerHop", p.docksPerHop), ("oneSeatFilter", options.oneSeatFilter ? 1 : 0),
+            ("middayStartSeconds", options.middayStartSeconds), ("middayEndSeconds", options.middayEndSeconds),
+            ("afterBikeMinSeconds", options.afterBikeMinSeconds), ("afterBikeRidePermille", options.afterBikeRidePermille),
+        ]
+        return Dictionary(uniqueKeysWithValues: values.map { ("hops.\($0.0)", Double($0.1)) })
     }
 
     /// Segments walkable one way only, or at different costs each way.
