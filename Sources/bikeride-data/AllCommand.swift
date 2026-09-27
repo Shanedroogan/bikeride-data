@@ -12,6 +12,8 @@ let allUsage = """
     (config after the tt-* and stations its reference checks read, and before links, which is built
     from it and names it in builtAgainst; flows depends on nothing). Each step writes its report to
     <out>/../reports/<step>.json; manifest.json, trip-counts.json and heartbeat.json go to <out>.
+    Before the first step, those three are moved from <out> to <out>/../work/published-before/: they
+    describe the set that was there, so a run that stops leaves no published documents behind.
 
       --sources DIR         Source downloads (default build/sources)
       --out DIR             Artifacts (default build/data)
@@ -19,14 +21,19 @@ let allUsage = """
       --months LIST         Flows months instead of the newest three (YYYYMM-YYYYMM or YYYYMM,YYYYMM,…)
       --config-sources DIR  Reviewed config sources (default ./Data, else ./Vendor/bikeride-data/Data)
       --previous FILE       The previous set's manifest.json: the gate compares trip counts with it, and
-                            gate and manifest carry forward the kinds missing from --out
+                            gate and manifest carry forward the kinds missing from --out. It may be
+                            <out>/manifest.json (read where it is moved to)
       --offline             Use the sources and trip data already downloaded
       --no-xz               Skip compression; nothing can be published, so gate, manifest and heartbeat
                             are skipped
       --skip LIST           Comma-separated steps to skip (any of the nine above), reusing what is in
                             --out, e.g. streets,stations. Skipping manifest skips heartbeat; skipping
-                            timetables tells the heartbeat the timetables were not built
-      --require-flows       A set without flows.bin fails the gate (by default flows is optional)
+                            timetables tells the heartbeat the timetables were not built, so
+                            lastTimetableSuccessAt carries over from the heartbeat beside --previous
+                            (without --previous, from the last one in --out). To build without
+                            publishing (pinned artifacts no report vouches for), skip gate,manifest
+      --require-flows       A set without flows.bin fails the gate, and a flows error stops the run
+                            (by default flows is optional)
       --today DATE          Build day for timetables, gate and manifest (default today in New York; the
                             timetable window starts the day before). Fixtures pin it
       --now ISO8601         Timestamp for gate.json, the manifest and the heartbeat (default: the time
@@ -35,9 +42,10 @@ let allUsage = """
     Step outcomes:
       streets 2 (a sanity route failed)   warning; the run goes on
       config 3 (a reference check failed), or any config failure: stop (no config.bin, no links)
-      flows 4 (nothing new, or offline without trip data) or 3 (its gate failed): the flows.bin in
-                place, if any, is kept and the run goes on; the gate's flows check decides whether that
-                file may be published (without flows.bin the set publishes without flows)
+      flows 4 (nothing new, or offline without trip data), 3 (its gate failed: reports/flows-failed.json)
+            or 1 (an error; without --require-flows): warning; the flows.bin in place, if any, and its
+            reports/flows.json are kept and the run goes on. The gate's flows check passes that
+            file if its report still does (without flows.bin the set publishes without flows)
       gate 3 (a hard failure)             stop with 3: no manifest and no heartbeat are written
       any other failure                   stop with that step's status
 
@@ -83,11 +91,30 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
 
     let sources = options.url("--sources", default: "build/sources").path
     let out = options.url("--out", default: "build/data")
+
+    // The published documents in --out describe the set that was there, not the one this run builds.
+    var retired = Pipeline.Retired(moved: [], directory: Pipeline.retiredDirectory(for: out), previous: previous, previousHeartbeat: nil)
+    if PipelineStep.allCases.contains(where: { !skip.contains($0) }) {
+        do {
+            retired = try Pipeline.retirePublished(in: out, previous: previous)
+        } catch let error as Pipeline.UsageError {
+            return usageError("\(error)")
+        } catch {
+            logLine("all", "cannot move the published documents out of \(out.path): \(error)")
+            return 1
+        }
+        if !retired.moved.isEmpty {
+            logLine("all", "moved the last run's \(retired.moved.joined(separator: ", ")) to \(retired.directory.path)"
+                + (retired.previous != previous ? " (--previous now reads them there)" : ""))
+        }
+    }
+
     let offline = options.flags.contains("--offline") ? ["--offline"] : []
     let noXZ = compress ? [] : ["--no-xz"]
     let todayArgument = ["--today", today.yyyymmdd]
-    let previousArgument = previous.map { ["--previous", $0.path] } ?? []
-    let requireFlows = options.flags.contains("--require-flows") ? ["--require-flows"] : []
+    let previousArgument = retired.previous.map { ["--previous", $0.path] } ?? []
+    let flowsRequired = options.flags.contains("--require-flows")
+    let requireFlows = flowsRequired ? ["--require-flows"] : []
     func value(_ name: String) -> [String] { options.values[name].map { [name, $0] } ?? [] }
     func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
@@ -98,7 +125,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     var publishedAt = pinnedNow
 
     let started = Date()
-    let outcome = Pipeline.run(skip: skip, log: { logLine("all", $0) }) { step in
+    let outcome = Pipeline.run(skip: skip, requireFlows: flowsRequired, log: { logLine("all", $0) }) { step in
         logLine("all", "\(step.rawValue)…")
         let stepStart = Date()
         let status: Int32
@@ -125,7 +152,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
             status = runManifestCommand(["--data", out.path, "--no-heartbeat", "--now", timestamp(now)] + todayArgument + previousArgument
                 + requireFlows + (skip.contains(.timetables) ? ["--timetables-not-run"] : []))
         case .heartbeat:
-            status = runHeartbeatStep(data: out, previous: previous, now: publishedAt ?? Date(), notRun: skip.contains(.timetables))
+            status = runHeartbeatStep(data: out, previousHeartbeat: retired.previousHeartbeat, now: publishedAt ?? Date(), notRun: skip.contains(.timetables))
         }
         logLine("all", String(format: "%@ finished with status %d in %.1f s", step.rawValue, status, Date().timeIntervalSince(stepStart)))
         return status
@@ -141,10 +168,10 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
 }
 
 /// The heartbeat step: `heartbeat.json` for the manifest the manifest step of this run just wrote.
-private func runHeartbeatStep(data: URL, previous: URL?, now: Date, notRun: Bool) -> Int32 {
+private func runHeartbeatStep(data: URL, previousHeartbeat: URL?, now: Date, notRun: Bool) -> Int32 {
     do {
         let manifest = try SetManifest.load(data.appendingPathComponent(SetManifest.fileName))
-        let url = try writeHeartbeat(for: manifest, data: data, previousHeartbeat: previousHeartbeatURL(beside: previous), now: now,
+        let url = try writeHeartbeat(for: manifest, data: data, previousHeartbeat: previousHeartbeat, now: now,
                                      job: "all", notRun: notRun, unchanged: false)
         print("heartbeat: \(url.path) (set \(manifest.setId))")
         return 0

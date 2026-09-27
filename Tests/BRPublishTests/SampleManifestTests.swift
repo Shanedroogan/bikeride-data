@@ -9,7 +9,7 @@ import Testing
 /// flows files and their trip pins stay out of both repositories. The relay's health test reads
 /// them, so they must stay in the exact published shape: these tests fail when the manifest schema
 /// drifts from them. To remake them, rebuild the fixture with `all --offline … --today 20260926`
-/// (no `--trips`, or remove flows.bin, its blob and reports/flows.json), then run `gate` and
+/// (`--skip flows`, or remove flows.bin, its blob, reports/flows.json and any reports/flows-failed.json), then run `gate` and
 /// `manifest` with `--today 20260926 --now 2026-09-26T16:31:00Z` and copy the two files.
 @Suite struct SampleManifestTests {
     static let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

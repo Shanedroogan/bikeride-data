@@ -395,8 +395,8 @@ struct PipelineOsmiumRunner: ToolRunner {
 
 /// `bikeride-data all` over ``SyntheticSources``, step by step through the library: each step
 /// body does what its CLI command does (the same compiler, configuration and report file) and
-/// returns the command's exit status, and ``Pipeline/run(skip:log:_:)`` applies the same policy
-/// as `all`.
+/// returns the command's exit status, and ``Pipeline/run(skip:requireFlows:log:_:)`` applies the
+/// same policy as `all`, after ``Pipeline/retirePublished(in:previous:)`` as `all` does.
 struct SyntheticPipeline {
     let sources: SyntheticSources
     /// Where this run's artifacts go; reports go beside it, as `<out>/../reports`.
@@ -406,6 +406,8 @@ struct SyntheticPipeline {
     var now = Date(timeIntervalSince1970: 1_791_300_000)   // 2026-10-06T15:20:00Z
     /// Errors thrown by the step bodies (exit 1), by step.
     private(set) var errors: [PipelineStep: String] = [:]
+    /// What the last run moved out of the way before its first step, and the previous set it read.
+    private(set) var retired: Pipeline.Retired?
 
     init(sources: SyntheticSources, out: String = "run/data") {
         self.sources = sources
@@ -418,12 +420,19 @@ struct SyntheticPipeline {
     var manifestURL: URL { out.appendingPathComponent(SetManifest.fileName) }
     var heartbeatURL: URL { out.appendingPathComponent(SetHeartbeat.fileName) }
 
-    mutating func run(skip: Set<PipelineStep> = []) -> Pipeline.Outcome {
+    /// Every step not in `skip`, as `all` runs them (`all` also skips what `--no-xz` or a skipped
+    /// manifest imply; these runs always compress).
+    mutating func run(skip: Set<PipelineStep> = []) throws -> Pipeline.Outcome {
         errors = [:]
+        let skip = Pipeline.effectiveSkips(skip, compress: true).skip
+        let retired = PipelineStep.allCases.contains(where: { !skip.contains($0) })
+            ? try Pipeline.retirePublished(in: out, previous: previous)
+            : Pipeline.Retired(moved: [], directory: Pipeline.retiredDirectory(for: out), previous: previous, previousHeartbeat: nil)
+        self.retired = retired
         var failures: [PipelineStep: String] = [:]
-        let outcome = Pipeline.run(skip: skip) { step in
+        let outcome = Pipeline.run(skip: skip, requireFlows: requireFlows) { step in
             do {
-                return try body(step, timetablesSkipped: skip.contains(.timetables))
+                return try body(step, timetablesSkipped: skip.contains(.timetables), retired: retired)
             } catch {
                 failures[step] = "\(error)"
                 return 1
@@ -433,8 +442,9 @@ struct SyntheticPipeline {
         return outcome
     }
 
-    func body(_ step: PipelineStep, timetablesSkipped: Bool) throws -> Int32 {
+    func body(_ step: PipelineStep, timetablesSkipped: Bool, retired: Pipeline.Retired) throws -> Int32 {
         let runner = SyntheticSources.runner
+        let previous = retired.previous
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         switch step {
         case .streets:
@@ -480,17 +490,13 @@ struct SyntheticPipeline {
                 depotsFile: SyntheticSet.repoData.appendingPathComponent("flows/depots.csv"))
             configuration.offline = true
             configuration.threads = 2
-            let previous = (try? Data(contentsOf: report("flows"))).flatMap { try? JSONDecoder().decode(FlowsReport.Previous.self, from: $0) }
-            let result = try FlowsCompiler(runner: runner, configuration: configuration).run(previous: previous)
+            let previousReport = (try? Data(contentsOf: report("flows"))).flatMap { try? JSONDecoder().decode(FlowsReport.Previous.self, from: $0) }
+            let result = try FlowsCompiler(runner: runner, configuration: configuration).run(previous: previousReport)
+            try result.record(at: report("flows"))
             switch result.outcome {
-            case .built:
-                try writeJSONReport(result, to: report("flows"))
-                return 0
-            case .gateFailed:
-                try writeJSONReport(result, to: report("flows"))
-                return 3
-            case .keptPrevious:
-                return 4
+            case .built: return 0
+            case .gateFailed: return 3
+            case .keptPrevious: return 4
             }
         case .gate:
             try Gate.removeReport(in: reports)
@@ -515,7 +521,7 @@ struct SyntheticPipeline {
             return 0
         case .heartbeat:
             let manifest = try SetManifest.load(manifestURL)
-            let previousHeartbeat = previous.flatMap { try? SetHeartbeat.load($0.deletingLastPathComponent().appendingPathComponent(SetHeartbeat.fileName)) }
+            let previousHeartbeat = retired.previousHeartbeat.flatMap { try? SetHeartbeat.load($0) }
             try SetHeartbeat.after(manifest, now: now, job: "all",
                                    timetablesSucceeded: SetHeartbeat.timetablesSucceeded(manifest, notRun: timetablesSkipped, unchanged: false),
                                    previous: previousHeartbeat).write(to: heartbeatURL)
@@ -541,11 +547,9 @@ struct SyntheticPipeline {
         return directory.appendingPathComponent(SetManifest.fileName)
     }
 
-    /// Removes the published documents, so a run that must not publish can be seen not to.
-    func removePublished() throws {
-        for file in [SetManifest.fileName, TripCountSidecar.fileName, SetHeartbeat.fileName] {
-            try? FileManager.default.removeItem(at: out.appendingPathComponent(file))
-        }
+    /// Whether any of manifest.json, trip-counts.json and heartbeat.json is in the data directory.
+    var publishedFiles: [String] {
+        Pipeline.publishedFileNames.filter { FileManager.default.fileExists(atPath: out.appendingPathComponent($0).path) }
     }
 
     /// Every file in the data directory with its bytes.

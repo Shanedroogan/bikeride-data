@@ -15,8 +15,9 @@ let flowsUsage = """
       --trips DIR     Trip-zip cache and saved listing (default build/trips). Trip data and flows
                       files never go into a repository
       --out DIR       Raw artifact and .xz (default build/data)
-      --report FILE   Build report JSON (default <out>/../reports/flows.json); also the previous
-                      report the month row counts are compared against
+      --report FILE   Build report JSON (default <out>/../reports/flows.json): always the report
+                      of the flows.bin in place, and the previous report the month row counts are
+                      compared against. A build whose gate fails writes <name>-failed.json beside it
       --months LIST   Build these months instead of the newest three: YYYYMM-YYYYMM or YYYYMM,YYYYMM,…
       --holidays FILE Holiday calendar (default: this package's Data/config/calendar/holidays.csv)
       --depots FILE   Depot ids (default: this package's Data/flows/depots.csv)
@@ -24,10 +25,11 @@ let flowsUsage = """
       --offline       Use the saved listing and the cached zips and GBFS
       --no-xz         Skip compression
 
-    EXIT STATUS: 0 built; 3 gate failure (flows.bin kept); 4 nothing new (flows.bin already ends with
-    the newest month published for NYC and JC, from the same inputs, or with a later one), or offline
-    without the inputs (listing, a zip or GBFS) (flows.bin kept; the report is left as it was);
-    1 any other error; 64 usage.
+    EXIT STATUS: 0 built (the report replaced, any -failed.json removed); 3 gate failure (flows.bin and
+    the report kept, the failed build's report in reports/flows-failed.json); 4 nothing new (flows.bin
+    already ends with the newest month published for NYC and JC, from the same inputs, or with a later
+    one), or offline without the inputs (listing, a zip or GBFS) (flows.bin kept; the reports are left
+    as they were); 1 any other error (nothing written); 64 usage.
     """
 
 /// This package's `Data/` directory, found from this source file's path at build time.
@@ -86,9 +88,9 @@ func runFlowsCommand(_ arguments: [String]) -> Int32 {
             if previous == nil { logLine("flows", "warning: \(reportURL.path) is not a flows report; month row counts will not be compared") }
         }
         let report = try FlowsCompiler(runner: ProcessToolRunner(), configuration: configuration).run(previous: previous) { logLine("flows", $0) }
+        let written = try report.record(at: reportURL)
         switch report.outcome {
         case .built:
-            try writeJSONReport(report, to: reportURL)
             let artifact = report.artifact
             print("flows: \(artifact?.path ?? "") (\(artifact?.rawBytes ?? 0) bytes raw, \(artifact?.xzBytes ?? 0) bytes xz), "
                 + "\(report.gbfs?.keys ?? 0) keys, \(report.months.map(\.yyyymm).joined(separator: "-")) "
@@ -102,9 +104,8 @@ func runFlowsCommand(_ arguments: [String]) -> Int32 {
             print("flows: report \(reportURL.path)")
             return 0
         case .gateFailed:
-            try writeJSONReport(report, to: reportURL)
             for failure in report.gate.failures { logLine("flows", "gate failed: \(failure)") }
-            logLine("flows", "kept the previous flows.bin; report \(reportURL.path)")
+            logLine("flows", "kept the previous flows.bin and its report \(reportURL.path); this build's report \(written?.path ?? "")")
             return 3
         case .keptPrevious:
             logLine("flows", "\(report.reason ?? "nothing to build"); kept the previous flows.bin")

@@ -35,7 +35,11 @@ import Testing
         #expect(Pipeline.decision(.links, status: 2) == .stop(2))
         #expect(Pipeline.decision(.flows, status: 4) != .stop(4) && Pipeline.decision(.flows, status: 4) != .proceed)
         #expect(Pipeline.decision(.flows, status: 3) != .stop(3))
-        #expect(Pipeline.decision(.flows, status: 1) == .stop(1))
+        // A flows error keeps what is in place (flows writes nothing then), unless flows is required.
+        #expect(Pipeline.decision(.flows, status: 1) != .stop(1) && Pipeline.decision(.flows, status: 1) != .proceed)
+        #expect(Pipeline.decision(.flows, status: 1, requireFlows: true) == .stop(1))
+        #expect(Pipeline.decision(.flows, status: 4, requireFlows: true) != .stop(4))
+        #expect(Pipeline.decision(.flows, status: 64) == .stop(64))
         #expect(Pipeline.decision(.gate, status: 3) == .stop(3))
         #expect(Pipeline.decision(.manifest, status: 3) == .stop(3))
     }
@@ -62,7 +66,7 @@ struct PipelineTests {
     /// A full run that must publish.
     static func published(_ sources: SyntheticSources, out: String = "run/data") throws -> SyntheticPipeline {
         var pipeline = SyntheticPipeline(sources: sources, out: out)
-        let outcome = pipeline.run()
+        let outcome = try pipeline.run()
         #expect(outcome.status == 0, "\(outcome) \(pipeline.errors) \(pipeline.gateReport?.checks.filter { $0.status == .fail } ?? [])")
         #expect(outcome.ran.map(\.step) == PipelineStep.allCases && outcome.warnings.isEmpty)
         return pipeline
@@ -130,25 +134,32 @@ struct PipelineTests {
         #expect(try SetManifest.load(elsewhere.manifestURL).setId == SetManifest.load(first.manifestURL).setId)
         #expect(bytes == (try elsewhere.files()))
 
-        // Again in the same directory: flows has nothing new (exit 4, fail-soft) and keeps its file.
-        let again = first.run()
+        // Again in the same directory: flows has nothing new (exit 4, fail-soft) and keeps its file;
+        // the last run's published documents are moved aside first, and written again the same.
+        let again = try first.run()
         #expect(again.status == 0 && again.ran.first { $0.step == .flows }?.status == 4 && again.warnings.count == 1)
         #expect(bytes == (try first.files()))
+        let retired = try #require(first.retired)
+        #expect(retired.moved == Pipeline.publishedFileNames && retired.previous == nil)
+        #expect(retired.previousHeartbeat == retired.directory.appendingPathComponent(SetHeartbeat.fileName))
+        for name in Pipeline.publishedFileNames {
+            #expect(try Data(contentsOf: retired.directory.appendingPathComponent(name)) == bytes[name], "\(name)")
+        }
     }
 
     // MARK: Hard failures: one mutation each, after a run that published
 
     /// Runs `steps` (the others skipped) after `mutate`, and expects the gate to stop the run with
-    /// 3 and nothing to be published. Returns the gate report.
+    /// 3 and nothing to be published: the documents an earlier run published are no longer in the
+    /// data directory (moved aside before the first step), and none are written. Returns the gate
+    /// report.
     static func expectGateFailure(_ pipeline: inout SyntheticPipeline, running steps: Set<PipelineStep>,
                                   sourceLocation: SourceLocation = #_sourceLocation) throws -> GateReport {
-        try pipeline.removePublished()
-        let outcome = pipeline.run(skip: Self.buildSteps.subtracting(steps))
+        let before = pipeline.publishedFiles
+        let outcome = try pipeline.run(skip: Self.buildSteps.subtracting(steps))
         #expect(outcome.status == 3 && outcome.stoppedAt == .gate, "\(outcome) \(pipeline.errors)", sourceLocation: sourceLocation)
         #expect(outcome.ran.map(\.step) == PipelineStep.allCases.filter { steps.contains($0) || $0 == .gate }, sourceLocation: sourceLocation)
-        for file in [SetManifest.fileName, TripCountSidecar.fileName, SetHeartbeat.fileName] {
-            #expect(!FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent(file).path), "\(file)", sourceLocation: sourceLocation)
-        }
+        #expect(pipeline.publishedFiles.isEmpty && pipeline.retired?.moved == before, "\(pipeline.publishedFiles) \(before)", sourceLocation: sourceLocation)
         let gate = try #require(pipeline.gateReport, sourceLocation: sourceLocation)
         #expect(gate.status == .fail, sourceLocation: sourceLocation)
         return gate
@@ -159,7 +170,8 @@ struct PipelineTests {
         let blob = pipeline.out.appendingPathComponent("tt-lirr.bin.xz")
         try (Data(contentsOf: blob) + Data(contentsOf: blob)).write(to: blob)
         let gate = try Self.expectGateFailure(&pipeline, running: [])
-        #expect(gate.check("xz")?.failures.count == 1 && gate.check("xz")?.failures.first?.hasPrefix("tt-lirr: ") == true)
+        let xz = try #require(gate.check("xz"))
+        #expect(xz.failures.count == 1 && xz.failures[0].hasPrefix("tt-lirr: ") && xz.failures[0].contains("2 xz stream(s)"), "\(xz.failures)")
         #expect(gate.checks.filter { $0.status == .fail }.map(\.name) == ["xz"])
     }
 
@@ -206,10 +218,10 @@ struct PipelineTests {
         let config = try Data(contentsOf: pipeline.out.appendingPathComponent("config.bin"))
         let configXZ = try Data(contentsOf: pipeline.out.appendingPathComponent("config.bin.xz"))
 
-        try pipeline.removePublished()
-        let stopped = pipeline.run(skip: [.streets, .stations, .flows])
+        let stopped = try pipeline.run(skip: [.streets, .stations, .flows])
         #expect(stopped.status == 3 && stopped.stoppedAt == .config && stopped.ran.map(\.step) == [.timetables, .config])
         #expect(!FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent("config.bin").path))
+        #expect(pipeline.publishedFiles.isEmpty && pipeline.retired?.moved == Pipeline.publishedFileNames)
 
         try config.write(to: pipeline.out.appendingPathComponent("config.bin"))
         try configXZ.write(to: pipeline.out.appendingPathComponent("config.bin.xz"))
@@ -228,6 +240,7 @@ struct PipelineTests {
         #expect(references.failures.count == 1)
         #expect(references.failures.first?.hasPrefix("valetStations: bikeShare.valet: st2 Station st2 is ") == true)
         #expect(references.failures.first?.hasSuffix(" m from its listed coordinate (limit 50 m)") == true)
+        #expect(gate.checks.filter { $0.status == .fail }.map(\.name) == ["configReferences"])
     }
 
     /// A station named in the MTA's out-of-system transfers leaves the subway feed.
@@ -238,21 +251,15 @@ struct PipelineTests {
         try pipeline.sources.writeFeed(.subway, options)
         let gate = try Self.expectGateFailure(&pipeline, running: [.timetables, .links])
         #expect(gate.check("configReferences")?.failures == ["mtaStationPairs: fares.mta.outOfSystemTransfers: S:SC is not in the subway feed"])
+        #expect(gate.checks.filter { $0.status == .fail }.map(\.name) == ["configReferences"])
     }
 
-    /// New trip data with a third of August's NYC starts at a station GBFS does not list: the flows
-    /// build fails its own gate (exit 3) and keeps the older flows.bin, and the run goes on to the
-    /// set gate, where no report vouches for that file any more. Against a previous set that
-    /// published it, it may go out again, with the failure as a warning.
+    /// The gate reads the flows figures again: a report for this flows.bin whose NYC starts are
+    /// mostly unmatched fails the set, whatever the report says of its own gate.
     @Test func flowsWithTooManyUnmatchedTripEnds() throws {
         var pipeline = try Self.published(try SyntheticSources())
-        let previous = try pipeline.keepAsPrevious("previous")
-        let flows = try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin"))
-
-        // The gate reads the figures again: a report for this flows.bin whose NYC starts are
-        // mostly unmatched fails, whatever the report says of its own gate.
-        let reportURL = pipeline.report("flows"), reportBytes = try Data(contentsOf: reportURL)
-        var report = try #require(JSONSerialization.jsonObject(with: reportBytes) as? [String: Any])
+        let reportURL = pipeline.report("flows")
+        var report = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: reportURL)) as? [String: Any])
         var systems = try #require(report["systems"] as? [[String: Any]])
         let nyc = try #require(systems.firstIndex { $0["system"] as? String == "NYC" })
         var side = try #require(systems[nyc]["newestMonthStartSide"] as? [String: Any])
@@ -262,23 +269,127 @@ struct PipelineTests {
         systems[nyc]["newestMonthStartSide"] = side
         report["systems"] = systems
         try JSONSerialization.data(withJSONObject: report).write(to: reportURL)
-        let tampered = try Self.expectGateFailure(&pipeline, running: [])
-        #expect(tampered.check("flows")?.failures == ["NYC 202608 start ids: 50.000% unmatched (limit 2.0%)"])
-        try reportBytes.write(to: reportURL)
+        let gate = try Self.expectGateFailure(&pipeline, running: [])
+        #expect(gate.check("flows")?.failures == ["NYC 202608 start ids: 50.000% unmatched (limit 2.0%)"])
+        #expect(gate.checks.filter { $0.status == .fail }.map(\.name) == ["flows"])
+    }
+
+    /// New trip data with a third of August's NYC starts at a station GBFS does not list: the flows
+    /// build fails its own gate (exit 3) and keeps the older flows.bin and its report, writing
+    /// reports/flows-failed.json. Flows fails soft: the set gate checks the older file against its
+    /// report and publishes it again, with the failed build as a warning, and so on every run until
+    /// a build passes. A flows.json that is itself gate-failed (an older builder's) vouches for
+    /// nothing: then only a previous set that published that flows.bin lets it out.
+    @Test func aFailedFlowsBuildKeepsTheOlderFlows() throws {
+        var pipeline = try Self.published(try SyntheticSources())
+        let previous = try pipeline.keepAsPrevious("previous")
+        let setId = try SetManifest.load(previous).setId
+        let flows = try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin"))
+        let reportURL = pipeline.report("flows"), reportBytes = try Data(contentsOf: reportURL)
+        let failedURL = FlowsReport.failedReportURL(for: reportURL)
+        #expect(failedURL.lastPathComponent == "flows-failed.json")
+
         try pipeline.sources.writeTrips(unmatchedAugust: 1, version: "v2")
-        let gate = try Self.expectGateFailure(&pipeline, running: [.flows])
-        #expect(try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin")) == flows)
+        for run in 1...2 {
+            let outcome = try pipeline.run(skip: Self.buildSteps.subtracting([.flows]))
+            #expect(outcome.status == 0 && outcome.ran.map(\.status) == [3, 0, 0, 0] && outcome.warnings.count == 1, "run \(run): \(outcome) \(pipeline.errors)")
+            #expect(try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin")) == flows && Data(contentsOf: reportURL) == reportBytes)
+            let failed = try JSONDecoder().decode(FlowsReport.self, from: Data(contentsOf: failedURL))
+            #expect(failed.outcome == .gateFailed && failed.gate.failures.contains("NYC 202608 start ids: 33.333% unmatched (limit 2.0%)"))
+            let check = try #require(pipeline.gateReport?.check("flows"))
+            #expect(check.status == .pass && check.failures.isEmpty, "\(check)")
+            #expect(check.warnings.count == 1 && check.warnings[0].contains("failed its gate: NYC 202608 start ids: 33.333% unmatched (limit 2.0%)")
+                && check.warnings[0].hasSuffix("(reports/flows-failed.json)"), "\(check.warnings)")
+            #expect(pipeline.gateReport?.status == .pass)
+            #expect(try SetManifest.load(pipeline.manifestURL).setId == setId)
+        }
+
+        // A flows.json from a builder that wrote the failed report there.
+        try FileManager.default.moveItem(at: failedURL, to: reportURL.deletingLastPathComponent().appendingPathComponent("legacy.json"))
+        try FileManager.default.removeItem(at: reportURL)
+        try FileManager.default.moveItem(at: reportURL.deletingLastPathComponent().appendingPathComponent("legacy.json"), to: reportURL)
+        let gate = try Self.expectGateFailure(&pipeline, running: [])
         let check = try #require(gate.check("flows"))
         #expect(check.failures.count == 2 && check.failures[0].contains("failed its gate: NYC 202608 start ids: 33.333% unmatched (limit 2.0%)"), "\(check.failures)")
         #expect(check.failures[1] == "reports/flows.json is from a flows build that wrote nothing (gate-failed)")
         #expect(gate.checks.filter { $0.status == .fail }.map(\.name) == ["flows"])
 
         pipeline.previous = previous
-        let republished = pipeline.run(skip: Self.buildSteps)
+        let republished = try pipeline.run(skip: Self.buildSteps)
         #expect(republished.status == 0)
         let again = try #require(pipeline.gateReport?.check("flows"))
         #expect(again.status == .skipped && again.warnings.contains { $0.contains("NYC 202608 start ids: 33.333% unmatched") })
-        #expect(try SetManifest.load(pipeline.manifestURL).setId == SetManifest.load(previous).setId)
+        #expect(try SetManifest.load(pipeline.manifestURL).setId == setId)
+
+        // A build that passes again replaces the report and removes the failed one.
+        try pipeline.sources.writeTrips(version: "v3")
+        let rebuilt = try pipeline.run(skip: Self.buildSteps.subtracting([.flows]))
+        #expect(rebuilt.status == 0 && rebuilt.ran.first?.status == 0 && rebuilt.warnings.isEmpty, "\(rebuilt) \(pipeline.errors)")
+        #expect(!FileManager.default.fileExists(atPath: failedURL.path))
+        #expect(pipeline.gateReport?.check("flows")?.status == .pass && pipeline.gateReport?.check("flows")?.warnings == [])
+    }
+
+    /// A flows error (exit 1: here a cached trip zip that is not the listed object) leaves flows.bin
+    /// and its report as they were: the run goes on and publishes them again, unless flows is
+    /// required, which stops the run there.
+    @Test func aFlowsErrorFailsSoftUnlessFlowsIsRequired() throws {
+        var pipeline = try Self.published(try SyntheticSources())
+        let setId = try SetManifest.load(pipeline.manifestURL).setId
+        let flows = try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin"))
+        try pipeline.sources.writeTrips(version: "v2")
+        let zip = pipeline.sources.trips.appendingPathComponent("202608-citibike-tripdata.zip")
+        try (Data(contentsOf: zip) + Data("x".utf8)).write(to: zip)
+
+        let outcome = try pipeline.run(skip: Self.buildSteps.subtracting([.flows]))
+        #expect(outcome.status == 0 && outcome.ran.map(\.status) == [1, 0, 0, 0] && outcome.warnings.count == 1, "\(outcome)")
+        #expect(pipeline.errors[.flows]?.contains("202608-citibike-tripdata.zip") == true, "\(pipeline.errors)")
+        #expect(try Data(contentsOf: pipeline.out.appendingPathComponent("flows.bin")) == flows)
+        #expect(pipeline.gateReport?.check("flows")?.status == .pass)
+        #expect(try SetManifest.load(pipeline.manifestURL).setId == setId)
+
+        pipeline.requireFlows = true
+        let stopped = try pipeline.run(skip: Self.buildSteps.subtracting([.flows]))
+        #expect(stopped.status == 1 && stopped.stoppedAt == .flows && stopped.ran.map(\.step) == [.flows])
+        #expect(pipeline.publishedFiles.isEmpty)
+    }
+
+    // MARK: Published documents from an earlier run
+
+    /// `--previous` may be the data directory's own manifest.json: it is moved aside with the others
+    /// and read there. Without `--previous`, a run that did not build the timetables carries
+    /// lastTimetableSuccessAt over from the data directory's last heartbeat.
+    @Test func thePreviousSetMayBeTheOneInPlace() throws {
+        var pipeline = try Self.published(try SyntheticSources())
+        let first = try SetManifest.load(pipeline.manifestURL)
+        let firstHeartbeat = try SetHeartbeat.load(pipeline.heartbeatURL)
+
+        pipeline.previous = pipeline.manifestURL
+        pipeline.now = pipeline.now.addingTimeInterval(3600)
+        let outcome = try pipeline.run(skip: Self.buildSteps)
+        #expect(outcome.status == 0, "\(outcome) \(pipeline.errors)")
+        let retired = try #require(pipeline.retired)
+        #expect(retired.previous == Pipeline.retiredDirectory(for: pipeline.out).appendingPathComponent(SetManifest.fileName))
+        let gate = try #require(pipeline.gateReport)
+        #expect(gate.previousSetId == first.setId && gate.check("tripCounts")?.status == .pass)
+        let second = try SetManifest.load(pipeline.manifestURL)
+        #expect(second.setId == first.setId && second.previousSetId == first.setId && second.generatedAt != first.generatedAt)
+        // No tt-* was built by this run: lastTimetableSuccessAt carries over (from beside --previous).
+        let heartbeat = try SetHeartbeat.load(pipeline.heartbeatURL)
+        #expect(heartbeat.lastTimetableSuccessAt == firstHeartbeat.lastTimetableSuccessAt && heartbeat.checkedAt != firstHeartbeat.checkedAt)
+
+        // The same without --previous: from the heartbeat the data directory had.
+        pipeline.previous = nil
+        pipeline.now = pipeline.now.addingTimeInterval(3600)
+        #expect(try pipeline.run(skip: Self.buildSteps).status == 0)
+        #expect(pipeline.retired?.previousHeartbeat == Pipeline.retiredDirectory(for: pipeline.out).appendingPathComponent(SetHeartbeat.fileName))
+        #expect(try SetHeartbeat.load(pipeline.heartbeatURL).lastTimetableSuccessAt == firstHeartbeat.lastTimetableSuccessAt)
+
+        // Any other file there cannot be the previous manifest: its sidecar would move.
+        let copy = pipeline.out.appendingPathComponent("old-manifest.json")
+        try FileManager.default.copyItem(at: pipeline.manifestURL, to: copy)
+        pipeline.previous = copy
+        #expect(throws: Pipeline.UsageError.self) { try pipeline.run(skip: Self.buildSteps) }
+        #expect(pipeline.publishedFiles == Pipeline.publishedFileNames)
     }
 
     // MARK: Optional flows, carried config
@@ -289,7 +400,7 @@ struct PipelineTests {
         let sources = try SyntheticSources()
         try FileManager.default.removeItem(at: sources.trips)
         var pipeline = SyntheticPipeline(sources: sources)
-        let outcome = pipeline.run()
+        let outcome = try pipeline.run()
         #expect(outcome.status == 0 && outcome.ran.first { $0.step == .flows }?.status == 4 && outcome.warnings.count == 1, "\(outcome)")
         let manifest = try SetManifest.load(pipeline.manifestURL)
         #expect(manifest.artifacts.keys.sorted() == Self.artifacts.filter { $0 != "flows" })

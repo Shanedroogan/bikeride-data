@@ -23,8 +23,9 @@ extension Gate {
 ///
 /// A config carried forward from the previous manifest cannot be read here. When any `tt-*` or
 /// `stations` is new in the data directory, the check fails: the new artifacts would go out
-/// unchecked against the config, so a job that rebuilds them keeps `config.bin` in its data
-/// directory. When nothing it references is new either, it is skipped. A check whose input is
+/// unchecked against the config, so a job that rebuilds them keeps `config.bin` and
+/// `config.bin.xz` in its data directory (a raw file without its blob fails the `xz` check and
+/// the manifest). When nothing it references is new either, it is skipped. A check whose input is
 /// carried forward (config new, a timetable not) is skipped with a warning: the config build ran
 /// it against the set it was built with.
 public struct ConfigReferencesCheck: GateCheck {
@@ -81,9 +82,13 @@ public struct ConfigReferencesCheck: GateCheck {
 /// must pass ``FlowsGate`` again: unmatched trip ends in the newest month under 2 % and over the
 /// window under 5 % per system and side, dropped trip ends, empty days, saturated counters, month
 /// row counts. The same rule as `streets`: a `flows.bin` no report vouches for fails, unless it is
-/// the previous set's, unchanged (checked when it was built); then the check is skipped and a
-/// failed flows build since is a warning. So a flows build whose own gate failed (`flows` exit 3,
-/// the older file kept) blocks the set unless that older file was already published.
+/// the previous set's, unchanged (checked when it was built); then the check is skipped.
+///
+/// A flows build whose own gate failed (`flows` exit 3) keeps the older flows.bin and its report
+/// and writes `reports/flows-failed.json` (``FlowsReport/record(at:)``): the older file is checked
+/// against its own report as before and may go out again, with the failed build as a warning, so
+/// flows fails soft. (A `flows.json` that is itself gate-failed, from a builder before that file
+/// existed, vouches for nothing.)
 ///
 /// Without a `flows.bin`: carried forward, skipped; absent, skipped with a warning (the set
 /// publishes without flows; the artifacts check fails it when flows is required).
@@ -95,20 +100,31 @@ public struct FlowsStatisticsCheck: GateCheck {
 
     public func run(_ context: GateContext) throws -> GateCheckResult {
         let reportURL = context.reportsDirectory.appendingPathComponent(Self.reportFileName)
-        var report: FlowsReport?
-        var unreadable: String?
-        if FileManager.default.fileExists(atPath: reportURL.path) {
+        func load(_ url: URL) -> (report: FlowsReport?, unreadable: String?) {
+            guard FileManager.default.fileExists(atPath: url.path) else { return (nil, nil) }
             do {
-                report = try JSONDecoder().decode(FlowsReport.self, from: Data(contentsOf: reportURL))
+                return (try JSONDecoder().decode(FlowsReport.self, from: Data(contentsOf: url)), nil)
             } catch {
-                unreadable = "reports/\(Self.reportFileName) does not read (\(error))"
+                return (nil, "reports/\(url.lastPathComponent) does not read (\(error))")
             }
         }
-        let lastBuildFailed: [String] = report.flatMap { report in
-            report.outcome == .gateFailed
-                ? ["the last flows build (\(report.generatedAt)) failed its gate: " + (report.gate.failures.isEmpty ? report.reason ?? "no reason given" : report.gate.failures.joined(separator: "; "))]
-                : nil
-        } ?? []
+        let (report, unreadable) = load(reportURL)
+        func failure(_ report: FlowsReport) -> String {
+            "the last flows build (\(report.generatedAt)) failed its gate: "
+                + (report.gate.failures.isEmpty ? report.reason ?? "no reason given" : report.gate.failures.joined(separator: "; "))
+        }
+        let failedURL = FlowsReport.failedReportURL(for: reportURL)
+        let failed = load(failedURL)
+        let lastBuildFailed: [String]
+        if let problem = failed.unreadable {
+            lastBuildFailed = [problem]
+        } else if let failedBuild = failed.report {
+            lastBuildFailed = [failure(failedBuild) + " (reports/\(failedURL.lastPathComponent))"]
+        } else if let report, report.outcome == .gateFailed {
+            lastBuildFailed = [failure(report)]
+        } else {
+            lastBuildFailed = []
+        }
 
         guard let local = context.artifacts[.flows] else {
             if context.carriedForward.contains(.flows) {
@@ -139,7 +155,7 @@ public struct FlowsStatisticsCheck: GateCheck {
             return .verdict(name, checked: true,
                             summary: failures.isEmpty ? "flows.bin \(report.months.map(\.yyyymm).joined(separator: "-")) passes the flows gate again"
                                                       : "\(failures.count) flows statistic(s) fail",
-                            failures: failures, notes: notes, metrics: metrics)
+                            failures: failures, warnings: lastBuildFailed, notes: notes, metrics: metrics)
         }
 
         let why = unreadable ?? report.map { report in

@@ -11,7 +11,8 @@ let gateUsage = """
     decoding to rawSha256; coverage (under 3 days fails soft: the system is marked noSchedule);
     trip counts against the previous build; per-region street shares; stop snapping; the config's
     reference checks against the set (LIRR zones, MTA and SIR stations, fixed transfers, valet
-    stations, station regions); the flows statistics in <reports>/flows.json.
+    stations, station regions); the flows statistics in <reports>/flows.json (a failed flows build's
+    <reports>/flows-failed.json is a warning).
 
       --data DIR       The set (default build/data)
       --reports DIR    Build reports, and where gate.json goes (default <data>/../reports)

@@ -76,12 +76,14 @@ public enum Pipeline {
     /// - `config`: 3 (a reference check failed: no config.bin) and every other failure stop the
     ///   run; links cannot be built without it.
     /// - `flows`: 4 (nothing new, or offline without trip data) and 3 (its own gate failed) keep
-    ///   the flows.bin in place, if any, and go on: the set gate's `flows` check decides whether
-    ///   that file may be published (flows is optional unless required). Any other failure stops.
+    ///   the flows.bin in place, if any, and its report, and go on: the set gate's `flows` check
+    ///   decides whether that file may be published (flows is optional unless required). 1 (an
+    ///   error: a download, GBFS, the holiday calendar; flows writes nothing then) is a warning too,
+    ///   unless flows is required (`requireFlows`): then it stops the run. Any other status stops.
     /// - `gate`: 3 (a hard failure) stops with 3: no manifest, no heartbeat, the previous set stays
     ///   current. Any other failure stops too.
     /// - `manifest`, `heartbeat`: any failure stops the run.
-    public static func decision(_ step: PipelineStep, status: Int32) -> Decision {
+    public static func decision(_ step: PipelineStep, status: Int32, requireFlows: Bool = false) -> Decision {
         guard status != 0 else { return .proceed }
         switch step {
         case .streets:
@@ -92,8 +94,9 @@ public enum Pipeline {
             return .stop(status)
         case .flows:
             switch status {
-            case 3: return .proceedWithWarning("flows: its gate failed; the flows.bin in place (if any) is kept, and the set gate decides whether it is published (see reports/flows.json)")
+            case 3: return .proceedWithWarning("flows: its gate failed (see reports/flows-failed.json); the flows.bin in place (if any) and its report are kept, and the set gate decides whether it is published")
             case 4: return .proceedWithWarning("flows: nothing new, or no trip data offline; the flows.bin in place (if any) is kept")
+            case 1 where !requireFlows: return .proceedWithWarning("flows: failed with an error (above); the flows.bin in place (if any) is kept, and the set gate decides whether it is published")
             default: return .stop(status)
             }
         case .gate:
@@ -117,8 +120,8 @@ public enum Pipeline {
         }
     }
 
-    /// Runs `body` for every step not in `skip`, in order, and applies ``decision(_:status:)``.
-    public static func run(skip: Set<PipelineStep>, log: (String) -> Void = { _ in },
+    /// Runs `body` for every step not in `skip`, in order, and applies ``decision(_:status:requireFlows:)``.
+    public static func run(skip: Set<PipelineStep>, requireFlows: Bool = false, log: (String) -> Void = { _ in },
                            _ body: (PipelineStep) throws -> Int32) rethrows -> Outcome {
         var outcome = Outcome(status: 0, ran: [], warnings: [], stoppedAt: nil)
         for step in PipelineStep.allCases {
@@ -128,7 +131,7 @@ public enum Pipeline {
             }
             let status = try body(step)
             outcome.ran.append((step, status))
-            switch decision(step, status: status) {
+            switch decision(step, status: status, requireFlows: requireFlows) {
             case .proceed:
                 break
             case .proceedWithWarning(let warning):
@@ -142,5 +145,76 @@ public enum Pipeline {
             }
         }
         return outcome
+    }
+}
+
+extension Pipeline {
+    /// The documents a published set adds to its data directory, in the order they are written.
+    public static let publishedFileNames = [TripCountSidecar.fileName, SetManifest.fileName, SetHeartbeat.fileName]
+
+    /// Where ``retirePublished(in:previous:)`` moves them: `<out>/../work/published-before/`.
+    public static func retiredDirectory(for out: URL) -> URL {
+        out.deletingLastPathComponent().appendingPathComponent("work/published-before", isDirectory: true)
+    }
+
+    /// What ``retirePublished(in:previous:)`` did, and the previous-set inputs the run uses.
+    public struct Retired: Equatable, Sendable {
+        /// The documents moved out of the data directory (names), now in ``directory``.
+        public var moved: [String]
+        public var directory: URL
+        /// `--previous`: moved into ``directory`` with the others when it was the data directory's
+        /// own manifest.json.
+        public var previous: URL?
+        /// The heartbeat the run's heartbeat carries `lastTimetableSuccessAt` over from (when this
+        /// run did not build the timetables): the one beside ``previous``; without `--previous`,
+        /// the data directory's last one (in ``directory``), if any.
+        public var previousHeartbeat: URL?
+
+        public init(moved: [String], directory: URL, previous: URL?, previousHeartbeat: URL?) {
+            self.moved = moved
+            self.directory = directory
+            self.previous = previous
+            self.previousHeartbeat = previousHeartbeat
+        }
+    }
+
+    /// Before a run that runs any step: moves `manifest.json`, `trip-counts.json` and
+    /// `heartbeat.json` out of the data directory, into ``retiredDirectory(for:)`` (replacing what
+    /// is there). They describe the set that was there; once a step rewrites an artifact they
+    /// describe nothing, and a run that stops (a gate hard failure, a config failure) must leave
+    /// no published documents beside files they do not describe. A run that publishes writes new
+    /// ones. `previous` may be `<out>/manifest.json` (the set in place is the previous set): it is
+    /// moved with the others and the result points at the moved copy. Any other file in the data
+    /// directory cannot be `--previous` (its sidecar would be moved from under it), nor can a
+    /// file in the retired directory when there are documents to move (they replace it).
+    public static func retirePublished(in out: URL, previous: URL?) throws -> Retired {
+        let out = out.standardizedFileURL, directory = retiredDirectory(for: out)
+        var previous = previous?.standardizedFileURL
+        func isIn(_ folder: URL) -> Bool {
+            previous.map { $0.deletingLastPathComponent().resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path } ?? false
+        }
+        let inOut = isIn(out)
+        if let url = previous, inOut, url.lastPathComponent != SetManifest.fileName {
+            throw UsageError(description: "--previous \(url.path) is in the data directory but is not its \(SetManifest.fileName) "
+                + "(all moves the published documents there out of the way before it builds); copy it elsewhere")
+        }
+        let fileManager = FileManager.default
+        let present = publishedFileNames.filter { fileManager.fileExists(atPath: out.appendingPathComponent($0).path) }
+        if let url = previous, isIn(directory), !present.isEmpty {
+            throw UsageError(description: "--previous \(url.path) is in \(directory.path), which all replaces with the data directory's "
+                + "published documents; pass \(out.appendingPathComponent(SetManifest.fileName).path) or a copy elsewhere")
+        }
+        if !present.isEmpty {
+            if fileManager.fileExists(atPath: directory.path) { try fileManager.removeItem(at: directory) }
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            for name in present {
+                try fileManager.moveItem(at: out.appendingPathComponent(name), to: directory.appendingPathComponent(name))
+            }
+        }
+        if inOut { previous = directory.appendingPathComponent(SetManifest.fileName) }
+        let retiredHeartbeat = directory.appendingPathComponent(SetHeartbeat.fileName)
+        let heartbeat = previous.map { $0.deletingLastPathComponent().appendingPathComponent(SetHeartbeat.fileName) }
+            ?? (fileManager.fileExists(atPath: retiredHeartbeat.path) ? retiredHeartbeat : nil)
+        return Retired(moved: present, directory: directory, previous: previous, previousHeartbeat: heartbeat)
     }
 }
