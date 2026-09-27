@@ -69,6 +69,14 @@ public struct StreetBuildStats: Sendable, Codable, Equatable {
     public var droppedComponentVertices = 0
     public var droppedComponentSegments = 0
     public var droppedComponentMeters = 0.0
+    /// Street length per service-area region before and after the component filter, by region
+    /// name; a piece counts in the region of its first node. The validation gate checks each
+    /// region's ``RegionLength/keptShare``: the city-wide shares above hide a region that lost its
+    /// streets (the largest component alone is under 80 % of all length, since Staten Island and
+    /// New Jersey are their own components).
+    public var regions: [String: RegionLength] = [:]
+    /// The same for pieces outside every region (the city buffer, the New Jersey clip margin).
+    public var outsideRegions = RegionLength()
     /// Walkable length whose walk access was removed because it is cut off from the largest
     /// walking component, and its share of all walkable length.
     public var walkIslandMeters = 0.0
@@ -79,6 +87,20 @@ public struct StreetBuildStats: Sendable, Codable, Equatable {
     public var bikeIslandShare = 0.0
 
     public init() {}
+
+    /// Street length in one region before and after the component filter.
+    public struct RegionLength: Sendable, Codable, Equatable {
+        public var totalMeters = 0.0
+        public var keptMeters = 0.0
+        /// `keptMeters / totalMeters`, or 1 for a region with no streets.
+        public var keptShare = 1.0
+
+        public init(totalMeters: Double = 0, keptMeters: Double = 0) {
+            self.totalMeters = totalMeters
+            self.keptMeters = keptMeters
+            self.keptShare = totalMeters > 0 ? keptMeters / totalMeters : 1
+        }
+    }
 }
 
 /// Streets compiled from OSM, ready to serialize (``StreetsArtifactWriter``).
@@ -231,7 +253,8 @@ public struct StreetNetworkBuilder {
         network.mergeChains()
         stats.segmentsAfterMerge = network.pieceCount
         if options.keepLargestComponents {
-            network.restrictToLargestComponents(minimumShare: options.minimumComponentShare, regions: raster, stats: &stats)
+            network.restrictToLargestComponents(minimumShare: options.minimumComponentShare, regions: raster,
+                                                regionNames: regions.map(\.name), stats: &stats)
         }
         return network.compile(options: options, regions: regions, stats: &stats)
     }
@@ -694,7 +717,8 @@ struct PieceNetwork {
     /// components and bike access outside the large strongly connected riding components. A
     /// component is large when it holds at least `minimumShare` of the biggest one's length, or
     /// (given `regions`) has the most length inside some region: see ``LargeComponents``.
-    mutating func restrictToLargestComponents(minimumShare: Double, regions raster: RegionRaster?, stats: inout StreetBuildStats) {
+    mutating func restrictToLargestComponents(minimumShare: Double, regions raster: RegionRaster?, regionNames: [String] = [],
+                                              stats: inout StreetBuildStats) {
         let totalMeters = lengths.reduce(0, +)
         // Each piece is counted in the region of its first node (−1: outside every region).
         let pieceRegion: [Int16] = (0..<pieceCount).map { piece in
@@ -742,6 +766,20 @@ struct PieceNetwork {
             droppedVertices.insert(last(piece))
         }
         stats.droppedComponentVertices = droppedVertices.count
+        // Per region (by `pieceRegion`, i.e. only with a raster), then everything outside.
+        var regionTotal = [Double](repeating: 0, count: regionNames.count + 1), regionKept = regionTotal
+        for piece in 0..<pieceCount {
+            let slot = pieceRegion[piece] >= 0 && Int(pieceRegion[piece]) < regionNames.count ? Int(pieceRegion[piece]) : regionNames.count
+            regionTotal[slot] += lengths[piece]
+            if keep[piece] { regionKept[slot] += lengths[piece] }
+        }
+        var byName: [String: (total: Double, kept: Double)] = [:]
+        for (index, name) in regionNames.enumerated() {
+            byName[name, default: (0, 0)].total += regionTotal[index]
+            byName[name, default: (0, 0)].kept += regionKept[index]
+        }
+        stats.regions = byName.mapValues { StreetBuildStats.RegionLength(totalMeters: $0.total, keptMeters: $0.kept) }
+        stats.outsideRegions = StreetBuildStats.RegionLength(totalMeters: regionTotal[regionNames.count], keptMeters: regionKept[regionNames.count])
 
         // 2. Walking: the large walking components.
         var walking = UnionFind(count: nodeIDs.count)
