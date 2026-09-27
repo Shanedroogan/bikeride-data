@@ -504,14 +504,24 @@ public struct Gate {
         return GateChecks.streetRegions(regions, thresholds: configuration.thresholds.streets)
     }
 
+    /// Skipped only when links is carried forward (it was checked when it was built). A links
+    /// artifact in the data directory is always checked: without the streets it was built against
+    /// the check fails, and a system whose timetable is carried forward is left out with a warning.
     func snappingCheck(_ context: GateContext) throws -> GateCheckResult {
-        guard let links = try context.links(), let streets = try context.streets() else {
-            return GateCheckResult(name: "snapping", status: .skipped, summary: "links or streets not in the data directory")
+        guard let links = try context.links() else {
+            return GateCheckResult(name: "snapping", status: .skipped, summary: "links carried forward; checked when it was built")
+        }
+        guard let streets = try context.streets() else {
+            return GateCheckResult(name: "snapping", status: .fail, summary: "cannot check snapping",
+                                   failures: ["links.bin is in the data directory but streets.bin is not: the check needs the streets links was built against"])
         }
         let area = streets.serviceArea
-        var stops: [GateChecks.SnapStop] = [], failures: [String] = []
+        var stops: [GateChecks.SnapStop] = [], failures: [String] = [], unchecked: [String] = []
         for system in TransitSystem.allCases {
-            guard let timetable = try context.timetable(system) else { continue }
+            guard let timetable = try context.timetable(system) else {
+                unchecked.append("\(ArtifactKind.timetable(for: system).name) is carried forward: its \(links.stopCount(system: system)) stops' snapping not checked")
+                continue
+            }
             guard links.stopCount(system: system) == timetable.stopCount else {
                 failures.append("\(SetSystems.name(system)): links has \(links.stopCount(system: system)) stops, the timetable \(timetable.stopCount)")
                 continue
@@ -530,6 +540,7 @@ public struct Gate {
         }
         var result = GateChecks.snapping(stops, maxSnapMeters: configuration.thresholds.snapping.maxSnapMeters,
                                          exceptions: configuration.snapExceptions)
+        result.warnings = unchecked + result.warnings
         if !failures.isEmpty {
             result.failures = failures + result.failures
             result.status = .fail

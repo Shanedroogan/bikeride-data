@@ -125,6 +125,15 @@ import Testing
         var missing = regions
         missing["Hoboken"] = nil
         #expect(GateChecks.streetRegions(missing, thresholds: thresholds).failures == ["Hoboken: not in the streets report's regions"])
+        // A region that lost every street (the report calls that a 100 % share), configured or not.
+        var emptied = regions
+        emptied["Hoboken"] = .init(totalMeters: 0, keptMeters: 0)
+        emptied["Queens"] = .init(totalMeters: 0, keptMeters: 0)
+        #expect(emptied["Hoboken"]?.keptShare == 1)
+        let empty = GateChecks.streetRegions(emptied, thresholds: thresholds)
+        #expect(empty.status == .fail)
+        #expect(empty.failures == ["Hoboken: no street length in the region before the component filter",
+                                   "Queens: no street length in the region before the component filter"])
     }
 
     // MARK: Snapping
@@ -155,6 +164,11 @@ import Testing
         // The allowance is per rule: a snap exception does not excuse missing street access.
         let wrongRule = GateChecks.snapping([stop("B:203592", entry: false)], maxSnapMeters: 100, exceptions: exceptions)
         #expect(wrongRule.status == .fail)
+        // Nothing to check is a failure, not a skip: a broken service area puts every stop outside.
+        let outside = GateChecks.snapping([stop("S:101", inside: false), stop("B:1", inside: false)], maxSnapMeters: 100, exceptions: [])
+        #expect(outside.status == .fail && outside.failures.first?.hasPrefix("none of the 2 routable stops is inside the service area") == true)
+        let none = GateChecks.snapping([], maxSnapMeters: 100, exceptions: [])
+        #expect(none.status == .fail && none.failures == ["no routable stops in links"])
     }
 
     // MARK: Configuration files

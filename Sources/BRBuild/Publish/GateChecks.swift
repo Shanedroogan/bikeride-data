@@ -165,7 +165,9 @@ public enum GateChecks {
 
     /// Each service-area region keeps at least its threshold share of street length through the
     /// component filter (`stats.regions` in `reports/streets.json`). Every configured region must be
-    /// present; a region without its own threshold uses the default.
+    /// present; a region without its own threshold uses the default. A region with no street
+    /// length at all fails whatever its share (the report gives it 100 %): an empty or truncated
+    /// extract, a misaligned region raster, or a build without per-region stats.
     public static func streetRegions(_ regions: [String: StreetBuildStats.RegionLength],
                                      thresholds: GateConfiguration.Thresholds.Streets) -> GateCheckResult {
         var failures: [String] = [], notes: [String] = [], metrics: [String: Double] = [:]
@@ -178,7 +180,11 @@ public enum GateChecks {
             metrics["\(name).keptSharePercent"] = (percent * 100).rounded() / 100
             let line = String(format: "%@: %.2f%% of %.1f km kept (minimum %.0f%%)", name, percent, region.totalMeters / 1000, minimum)
             notes.append(line)
-            if percent < minimum { failures.append(line) }
+            if region.totalMeters <= 0 {
+                failures.append("\(name): no street length in the region before the component filter")
+            } else if percent < minimum {
+                failures.append(line)
+            }
         }
         return .verdict("streets", checked: !regions.isEmpty,
                         summary: failures.isEmpty ? "\(regions.count) regions keep their street share" : "\(failures.count) region(s) under their street share",
@@ -211,7 +217,9 @@ public enum GateChecks {
     /// Every routable stop inside the service area can be entered and left from the street, and
     /// every one of its access points snaps within `maxSnapMeters`, except as the allowlist says.
     /// Stops outside the service area are only counted. Allowlist entries that no longer match
-    /// anything are warnings, so the list does not rot.
+    /// anything are warnings, so the list does not rot. No routable stop at all, or none inside
+    /// the service area, fails: that is a broken links artifact or service-area polygon, not a set
+    /// with nothing to check.
     public static func snapping(_ stops: [SnapStop], maxSnapMeters: Double, exceptions: [GateConfiguration.SnapException]) -> GateCheckResult {
         var used = Set<Int>()
         func exception(_ stop: String, _ rule: GateConfiguration.SnapException.Rule) -> (Int, GateConfiguration.SnapException)? {
@@ -247,7 +255,12 @@ public enum GateChecks {
         let warnings = exceptions.indices.filter { !used.contains($0) }.map {
             "allowlist entry \(exceptions[$0].stop) (\(exceptions[$0].rule.rawValue)) matched nothing; remove it if the stop is fixed or gone"
         }
-        return .verdict("snapping", checked: inside > 0,
+        if stops.isEmpty {
+            failures.append("no routable stops in links")
+        } else if inside == 0 {
+            failures.append("none of the \(stops.count) routable stops is inside the service area (a broken service-area polygon or stop coordinates)")
+        }
+        return .verdict("snapping", checked: true,
                         summary: failures.isEmpty ? "\(inside) routable stops in the service area reach the street within \(Int(maxSnapMeters)) m"
                                                   : "\(failures.count) routable stop(s) fail street access or snapping",
                         failures: failures, warnings: warnings, notes: notes,

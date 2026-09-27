@@ -123,6 +123,12 @@ struct PublishSetTests {
         let strict = try set.gate(configuration: SyntheticSet.configuration(regionMinimum: 99.99))   // the stub is dropped
         #expect(strict.check("streets")?.status == .fail)
         #expect(strict.check("streets")?.failures.first?.hasPrefix("Manhattan: ") == true)
+        // The region lost all its streets: the report's 100 % share of 0 km does not pass.
+        try set.writeStreetsReport(rawSha256: set.sha256(set.data.appendingPathComponent("streets.bin")),
+                                   regions: ["Manhattan": .init(totalMeters: 0, keptMeters: 0)])
+        let emptied = try set.gate()
+        #expect(emptied.status == .fail)
+        #expect(emptied.check("streets")?.failures == ["Manhattan: no street length in the region before the component filter"])
         // A report for other streets bytes cannot vouch for these.
         try set.writeStreetsReport(rawSha256: String(repeating: "0", count: 64), regions: ["Manhattan": .init(totalMeters: 1, keptMeters: 1)])
         let stale = try set.gate()
@@ -229,6 +235,7 @@ struct PublishSetTests {
         let gate = try set.gate(previous: previousURL)
         #expect(gate.status == .pass, "\(gate.checks.filter { $0.status == .fail })")
         #expect(gate.carriedForward == ["tt-ferry", "flows", "config"])
+        #expect(gate.check("snapping")?.warnings.first?.hasPrefix("tt-ferry is carried forward: its 2 stops' snapping not checked") == true)
         #expect(gate.check("tripCounts")?.metrics["bus.sameDate"] == 21)
         #expect(gate.systems["ferry"]?.coverageDays == 20)
 
@@ -240,6 +247,26 @@ struct PublishSetTests {
         #expect(manifest.previousSetId == previous.setId && manifest.setId == previous.setId)   // same blobs, same set
         let counts = try manifest.loadTripCounts(nextTo: set.manifestBuilder().manifestURL, runner: publishRunner)
         #expect(counts.systems["ferry"] == sidecar.systems["ferry"])
+    }
+
+    /// A links artifact in the data directory is always snapping-checked, so the streets it was
+    /// built against must be there too.
+    @Test func freshLinksWithoutItsStreetsFailsSnapping() throws {
+        let set = try SyntheticSet()
+        _ = try set.gate()
+        let (first, sidecar, _) = try set.manifestBuilder().build()
+        let previous = try writePrevious(first, sidecar: sidecar, to: set.scratch.url.appendingPathComponent("prev"))
+        for name in ["streets.bin", "streets.bin.xz"] { try FileManager.default.removeItem(at: set.data.appendingPathComponent(name)) }
+        let gate = try set.gate(previous: previous)
+        #expect(gate.check("artifacts")?.status == .pass && gate.carriedForward == ["streets"])
+        #expect(gate.check("streets")?.status == .skipped)
+        #expect(gate.check("snapping")?.status == .fail)
+        #expect(gate.check("snapping")?.failures.first?.hasPrefix("links.bin is in the data directory but streets.bin is not") == true)
+        #expect(gate.status == .fail)
+        // With links carried forward too, there is nothing new to check.
+        for name in ["links.bin", "links.bin.xz"] { try FileManager.default.removeItem(at: set.data.appendingPathComponent(name)) }
+        let carried = try set.gate(previous: previous)
+        #expect(carried.check("snapping")?.status == .skipped && carried.status == .pass)
     }
 
     @Test func aCarriedArtifactMustMatchWhatWasBuiltAgainstIt() throws {
