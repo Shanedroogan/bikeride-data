@@ -639,8 +639,8 @@ payload golden (`ConfigFormatTests`) pins the bytes of a hand-built document on 
 engine needs (`ConfigValidation.structuralIssues`): no negative prices or times, unique ids and
 dates, a zone fare for every pair of zones that stations use, peak windows inside 0–1440, a
 footpath bound of 1–3,600 s and link seconds (station access, `minTransferSeconds`, fixed
-transfers) below 65,535, disjoint vehicle types, no fixed
-transfer listed twice (either direction). The compiler also applies the writer's *canonical*
+transfers) below 65,535, disjoint vehicle types, no fixed transfer listed twice (either
+direction). The compiler also applies the writer's *canonical*
 rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
 never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
 holidays Monday–Friday, CityTicket stations only in zones 1 and 3, `nycTerminals` in zone 1,

@@ -46,9 +46,9 @@ the service area (Newark, Harrison) get no street access. `links` bakes these in
 `date,source_note`: one row per holiday on which every LIRR train is off-peak. Each date must be
 in `calendar/holidays.csv` (the build fails otherwise); the compiler sets `lirrOffPeak` on those
 holidays and clears it on the rest. This file flags dates of the holiday list; it is not a second
-list. So a day that is off-peak on the LIRR but not a holiday (a day LIRR alone treats as one)
-can't be flagged without adding it to `holidays.csv`, which also makes it a holiday for flows and
-the validation gate; if such a day is needed, change this rule first.
+list. A day the LIRR runs all off-peak that is not otherwise a holiday can therefore only be
+flagged by adding it to `holidays.csv`, which makes it a holiday for flows and the validation gate
+as well; if such a day is ever needed, change this rule first.
 
 **Empty for now**: the LIRR's holiday fare rule has not been verified, and the engine applies no
 holiday today (`LIRRPeakRule.holidays` is empty), so every weekday holiday is priced by the peak
