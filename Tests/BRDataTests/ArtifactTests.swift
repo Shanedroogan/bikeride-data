@@ -67,18 +67,15 @@ import Testing
         #expect(TransitSystem.allCases.map(ArtifactKind.timetable(for:)) == [.ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath])
     }
 
-    /// The S1 freeze (2026-09-26): streets, stations and the five timetables are format 1; links,
-    /// flows and config are still drafts. Changing a line here is a format decision
+    /// Every kind is format 1: streets, stations and the five timetables froze on 2026-09-26 (S1),
+    /// links, flows and config on 2026-09-27 (M1). Changing a line here is a format decision
     /// (`docs/formats.md`, "Compatibility"), not a test fix.
     @Test func formatVersions() {
-        let frozen: [ArtifactKind] = [.streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath]
-        let drafts: [ArtifactKind] = [.links, .flows, .config]
-        #expect(Set(frozen + drafts) == Set(ArtifactKind.allCases))
-        for kind in frozen {
+        let s1: [ArtifactKind] = [.streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath]
+        let m1: [ArtifactKind] = [.links, .flows, .config]
+        #expect(Set(s1 + m1) == Set(ArtifactKind.allCases))
+        for kind in s1 + m1 {
             #expect(kind.currentFormatVersion == 1 && kind.supportedFormatVersions == [1], "\(kind.name)")
-        }
-        for kind in drafts {
-            #expect(kind.currentFormatVersion == 0 && kind.supportedFormatVersions == [0], "\(kind.name)")
         }
         #expect(ArtifactKind.allCases.allSatisfy { $0.supportedFormatVersions.contains($0.currentFormatVersion) })
     }

@@ -9,7 +9,8 @@ import Testing
 
 /// A `links` payload typed by hand: no OSM, GTFS or GBFS, no builder, every parameter spelled out
 /// and every coordinate a whole number of microdegrees, so no platform-dependent floating point
-/// reaches the bytes and the digest is the same on macOS and Linux.
+/// reaches the bytes and the digest is the same on macOS and Linux. The stops, stations, snaps and
+/// seconds are made up. The payload golden and the committed v1 file are made from it.
 ///
 /// Global stops (T = 9): subway 0 (station A, not routable), 1 (A's platform), 2 (another
 /// platform); bus 3 (routable), 4 (not); LIRR 5; ferry 6; PATH 7, 8. Stations 0–2.
@@ -123,21 +124,28 @@ enum HandBuiltLinks {
         "tt-subway": String(repeating: "2", count: 64),
     ]
 
-    static func artifact(dataVersion: String = "v1-fixture") -> Data {
+    static func artifact(dataVersion: String = V1Fixtures.dataVersion) -> Data {
         LinksArtifactWriter.artifact(compiled, dataVersion: dataVersion, builtAgainst: builtAgainst)
     }
 }
 
-/// The frozen-to-be `links` layout: the payload golden for ``HandBuiltLinks``, and the payload
-/// revision gate. `links` is still format 0 (payload revision 3); the P2c freeze flips it to
-/// format 1, revision 1, which changes the 4 revision bytes, so that step re-pins this digest once
-/// and commits `Tests/Fixtures/v1/links.bin`. After that a layout change never re-pins it: it
-/// needs a new formatVersion (or, for the hops, a new extension id).
+/// Format 1 of `links`, frozen 2026-09-27 (`docs/formats.md`, "Compatibility"): the payload golden
+/// for ``HandBuiltLinks`` (hops included), the committed v1 file, and the formatVersion and
+/// payloadRevision gates. The freeze moved the payload revision from the last draft's 3 to 1,
+/// which re-pinned this digest once; the rest of the draft-3 bytes froze unchanged.
 @Suite struct LinksV1Tests {
     /// SHA-256 of the writer's payload for ``HandBuiltLinks`` (the header is left out: it embeds
-    /// builderSwiftVersion). Review the new bytes before pinning a new digest, and only for a
-    /// deliberate change to the hand-built input or to what the writer puts in the payload.
-    static let payloadGolden = "ee177e5d8a842e5ca6c032c3a86291785e4186e83df51b487aa0a985380bea39"
+    /// builderSwiftVersion). What may change it:
+    /// - a change to the payload layout. That is a new formatVersion (or, for the hops, a new
+    ///   extension id), because a v1 reader would misread the bytes; never re-pin this digest for
+    ///   one.
+    /// - a deliberate change to the hand-built input, or to what the writer puts in a v1 payload
+    ///   (such as a newly defined extension id). Review the new bytes, then pin the new digest.
+    /// Builder changes (snapping, footpath search, station links, hop selection) don't reach it:
+    /// every table is typed by hand.
+    static let payloadGolden = "aa51814416aa3610cd62889ac3cd5a7191197b4a2ab95e8f81804b4715a8d4bf"
+
+    static let fixtureName = "links.bin"
 
     func reader(_ file: Data) throws -> MappedLinks {
         try MappedLinks(artifact: MappedArtifact(fileBytes: file, expecting: .links))
@@ -147,14 +155,14 @@ enum HandBuiltLinks {
         let file = HandBuiltLinks.artifact()
         #expect(Data(try ArtifactHeader.decode(from: file).payload) == LinksArtifactWriter.payload(HandBuiltLinks.compiled))
         let digest = try linksPayloadSHA256(file)
-        #expect(digest == Self.payloadGolden)
+        #expect(digest == Self.payloadGolden, "payload sha256 \(digest)")
         #expect(try linksPayloadSHA256(HandBuiltLinks.artifact(dataVersion: "other")) == digest)
     }
 
     /// The hand-built file is valid, and reads back as typed.
     @Test func readsTheHandBuiltValues() throws {
         let links = try reader(HandBuiltLinks.artifact())
-        #expect(links.header.formatVersion == ArtifactKind.links.currentFormatVersion && links.header.builtAgainst == HandBuiltLinks.builtAgainst)
+        #expect(links.header.formatVersion == 1 && links.header.builtAgainst == HandBuiltLinks.builtAgainst)
         #expect(links.stopCount == 9 && links.stationCount == 3 && links.maxFootpathWalkSeconds == 480 && links.minTransferSeconds == 30)
         #expect(links.walkSpeedMetersPerSecond == 1.5 && links.stationLinkMaxWalkMeters == 350)
         #expect(LinksFormat.systems.map(links.accessSeconds(system:)) == [120, 30, 240, 120, 90])
@@ -187,13 +195,105 @@ enum HandBuiltLinks {
         #expect((1..<9).allSatisfy { $0 == 5 || hops.hops(fromParent: $0).isEmpty })
     }
 
-    @Test func rejectsEveryOtherPayloadRevision() throws {
+    @Test func rejectsEveryOtherFormatVersionAndPayloadRevision() throws {
         let file = HandBuiltLinks.artifact()
+        _ = try reader(file)
+        for version: UInt16 in [0, 2] {
+            #expect(throws: LinksFormatError.unsupportedFormatVersion(version)) { try reader(V1Fixtures.withFormatVersion(version, file)) }
+        }
+        // Format 1 is revision 1 only; 3 was the last format-0 draft's.
         let (header, payload) = try ArtifactHeader.decode(from: file)
-        for revision: UInt32 in [0, 1, 2, 4] {
+        for revision: UInt32 in [0, 2, 3] {
             #expect(throws: LinksFormatError.unsupportedPayloadRevision(revision)) {
                 try reader(header.assemble(payload: Data(payload).replacing(revision, at: 4)))
             }
         }
+    }
+
+    /// A reader of this build opens the committed v1 file (`MappedLinks` validates by default) and
+    /// reads what was written on the day the format froze. Every value is a literal: the file is
+    /// frozen, not rebuilt.
+    @Test(.disabled(if: V1Fixtures.regenerating, "rewriting the v1 fixtures"))
+    func opensTheCommittedV1File() throws {
+        let file = try V1Fixtures.data(Self.fixtureName)
+        let links = try reader(file)
+        #expect(links.header.kind == .links && links.header.formatVersion == 1 && links.header.dataVersion == "v1-fixture")
+        #expect(links.header.builtAgainst == [
+            "streets": String(repeating: "0", count: 64), "stations": String(repeating: "1", count: 64),
+            "tt-subway": String(repeating: "2", count: 64),
+        ])
+        let payload = Data(try ArtifactHeader.decode(from: file).payload)
+        #expect(payload.prefix(4) == Data("LNKS".utf8))
+        #expect(payload.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) } == 1)
+
+        #expect(links.stopCount == 9 && links.stationCount == 3 && links.maxFootpathWalkSeconds == 480 && links.minTransferSeconds == 30)
+        #expect(links.walkSpeedMetersPerSecond == 1.5 && links.stationLinkMaxWalkMeters == 350)
+        #expect([TransitSystem.subway, .bus, .lirr, .ferry, .path].map(links.accessSeconds(system:)) == [120, 30, 240, 120, 90])
+        #expect([TransitSystem.subway, .bus, .lirr, .ferry, .path].map(links.stopCount(system:)) == [3, 2, 1, 1, 2])
+        #expect([TransitSystem.subway, .bus, .lirr, .ferry, .path].map(links.stopBase(system:)) == [0, 3, 5, 6, 7])
+        #expect(links.system(ofGlobalStop: 6) == .ferry && links.localStop(ofGlobalStop: 8) == 1)
+        #expect((0..<9).map { links.stopFlags($0).rawValue } == [0, 7, 3, 7, 0, 7, 7, 7, 1])
+        #expect(links.stopFlags(1) == [.routable, .streetEntry, .streetExit] && links.stopFlags(2) == [.routable, .streetEntry])
+
+        #expect(links.footpathCount == 42 && links.footpaths(from: 0).isEmpty && links.footpaths(from: 4).isEmpty)
+        #expect(links.footpaths(from: 1).map { [$0.stop, $0.seconds] } == [[2, 51], [3, 62], [5, 84], [6, 95], [7, 106], [8, 117]])
+        #expect(links.footpaths(from: 8).map { [$0.stop, $0.seconds] } == [[7, 54], [6, 65], [5, 76], [3, 98], [2, 109], [1, 120]])
+        #expect(links.footpathSeconds(from: 8, to: 1) == 120 && links.footpathSeconds(from: 1, to: 8) == 117)
+        #expect(links.footpathSeconds(from: 1, to: 4) == nil)
+
+        #expect(links.accessPointCount == 6)
+        #expect((0..<9).map { Array(links.accessPoints(ofStop: $0)) } == [[], [0], [1], [2], [], [3], [4], [5], []])
+        let points = (0..<6).map(links.accessPoint)
+        #expect(points.map(\.sourceStop) == [0, 2, 3, 5, 6, 7])
+        #expect(points.map(\.flags) == [[.entry, .exit, .synthetic], [.entry], [.entry, .exit], [.entry, .exit], [.entry, .exit],
+                                        [.entry, .exit, .synthetic]])
+        #expect(points.map(\.accessSeconds) == [120, 120, 30, 240, 120, 90])
+        #expect(points.map(\.coordinate) == [
+            Coordinate(lat: 40.7, lon: -74), Coordinate(lat: 40.70125, lon: -73.9985), Coordinate(lat: 40.702, lon: -73.999),
+            Coordinate(lat: 40.7505, lon: -73.9935), Coordinate(lat: 40.701, lon: -74.013), Coordinate(lat: 40.719, lon: -74.043),
+        ])
+        #expect(points.map(\.segment) == [5, 7, 11, 13, 17, 19])
+        #expect(points.map(\.fraction) == [0.25, 0.5, 0.75, 0.125, 1, 0])
+        #expect(points.map(\.snapDecimeters) == [12, 30, 0, 55, 1000, 5])
+
+        #expect(links.stationLinkCount == 6)
+        func rows(_ list: StationStopLinks) -> [[Int]] { list.map { [$0.index, $0.enterSeconds ?? -1, $0.exitSeconds ?? -1] } }
+        #expect(rows(links.stops(nearStation: 0)) == [[3, 60, -1], [1, 100, 110], [2, 150, -1]])
+        #expect(rows(links.stops(nearStation: 1)) == [[5, 300, 310], [7, -1, 200]])
+        #expect(rows(links.stops(nearStation: 2)) == [[1, 90, 95]])
+        #expect(rows(links.stations(nearStop: 1)) == [[2, 90, 95], [0, 100, 110]])
+        #expect(rows(links.stations(nearStop: 7)) == [[1, -1, 200]] && rows(links.stations(nearStop: 3)) == [[0, 60, -1]])
+        #expect(rows(links.stations(nearStop: 8)).isEmpty)
+
+        #expect(links.extensions.ids == [1])
+        let hops = try #require(links.hops)
+        #expect(hops.parameters == LinkHopParameters(minRideSeconds: 300, maxRideSeconds: 1500, minSpeedMmPerSecond: 3040,
+                                                     maxSpeedMmPerSecond: 5141, rankSpeedMmPerSecond: 4470, unlockSeconds: 90,
+                                                     dockSeconds: 60, pickupsPerHop: 2, docksPerHop: 2))
+        #expect(hops.count == 2)
+        let out = try #require(hops.hops(fromParent: 0).first), back = try #require(hops.hops(fromParent: 5).first)
+        #expect(hops.hops(fromParent: 0).count == 1 && hops.hops(fromParent: 5).count == 1)
+        #expect(out.target == 5 && out.pickups == [2, 0] && out.docks == [1] && Array(out.dockSlots) == [1, 0xFFFF] && out.row == 0)
+        #expect(out.minDecameters == 130 && out.minWalkSeconds == 395 && out.flags == [])
+        #expect(back.target == 0 && back.pickups == [1] && Array(back.pickupSlots) == [1, 0xFFFF] && back.docks == [2, 0])
+        #expect(back.minDecameters == 140 && back.minWalkSeconds == 400 && back.flags == .oneSeatRideExists && back.row == 1)
+        #expect([1, 2, 3, 4, 6, 7, 8].allSatisfy { hops.hops(fromParent: $0).isEmpty })
+    }
+
+    @Test(.disabled(if: V1Fixtures.regenerating, "rewriting the v1 fixtures"))
+    func rejectsTheCommittedFileUnderAnyOtherFormatVersion() throws {
+        let file = try V1Fixtures.data(Self.fixtureName)
+        for version: UInt16 in [0, 2] {
+            #expect(throws: LinksFormatError.unsupportedFormatVersion(version)) { try reader(V1Fixtures.withFormatVersion(version, file)) }
+        }
+    }
+
+    /// Rewrites `Tests/Fixtures/v1/links.bin` from ``HandBuiltLinks``. Only with
+    /// `BR_WRITE_V1_FIXTURES=1`; see ``V1Fixtures`` for when that is right.
+    @Test(.enabled(if: V1Fixtures.regenerating, "set BR_WRITE_V1_FIXTURES=1 to rewrite the v1 fixtures"))
+    func writeV1Fixture() throws {
+        let file = HandBuiltLinks.artifact()
+        _ = try reader(file)
+        try V1Fixtures.write(file, to: Self.fixtureName)
     }
 }

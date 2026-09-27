@@ -1,4 +1,4 @@
-// BRConfig: the `config` artifact (kind 9, draft format 0). Layout, JSON schema and
+// BRConfig: the `config` artifact (kind 9, format 1). Layout, JSON schema and
 // compatibility rules: "config" in docs/formats.md.
 //
 // - ``ConfigDocument`` and the `Config*` types: the JSON document (wire types).
@@ -15,9 +15,9 @@ import Foundation
 public enum ConfigFormat {
     /// The first four payload bytes, `CNFG`.
     public static let payloadMagic: [UInt8] = Array("CNFG".utf8)
-    /// The payload's `u32` revision slot. While the format is the draft 0 it counts draft
-    /// layouts (1: magic, revision, JSON bytes, extension tail); readers reject any other value.
-    /// It becomes `1` of format 1 at the freeze.
+    /// The payload's `u32` revision: `1` in format 1, and readers require exactly this value
+    /// (`docs/formats.md`, "Compatibility"). The format-0 draft had one layout, revision 1 (magic,
+    /// revision, JSON bytes, extension tail), which froze unchanged as format 1 on 2026-09-27.
     public static let payloadRevision: UInt32 = 1
 }
 

@@ -62,13 +62,14 @@ A reader rejects a file whose magic, layout, kind, lengths or padding do not che
 | 4 | `tt-bus` | 1 | Frozen 2026-09-26 (S1) |
 | 5 | `tt-lirr` | 1 | Frozen 2026-09-26 (S1) |
 | 6 | `tt-ferry` | 1 | Frozen 2026-09-26 (S1) |
-| 7 | `links` | 0 (draft) | Freezes at v1 in M1 |
-| 8 | `flows` | 0 (draft) | Freezes at v1 in M1 |
-| 9 | `config` | 0 (draft) | Freezes at v1 in M1 |
+| 7 | `links` | 1 | Frozen 2026-09-27 (M1) |
+| 8 | `flows` | 1 | Frozen 2026-09-27 (M1) |
+| 9 | `config` | 1 | Frozen 2026-09-27 (M1) |
 | 10 | `tt-path` | 1 | Frozen 2026-09-26 (S1) |
 
 Codes are permanent and never reused. Format `0` marks an unfrozen draft that may change without a
-bump. After a format freezes, any change a current reader cannot parse bumps its formatVersion.
+bump; every kind above has left it. After a format freezes, any change a current reader cannot
+parse bumps its formatVersion.
 The versions a build writes and reads are `ArtifactKind.currentFormatVersion` and
 `supportedFormatVersions` (`Sources/BRData/ArtifactKind.swift`).
 
@@ -82,17 +83,19 @@ builds that can't update in step with the pipeline, and because an in-progress t
   value a new meaning, adding an enum value, or making a new section or bit something readers must
   honor to stay correct. Everything else is added *within* the format, as below.
 - **Readers accept the versions they know.** A reader lists the formatVersions it can read
-  (`ArtifactKind.supportedFormatVersions`: for now exactly 1, and a draft only its own 0) and
-  rejects the rest with `unsupportedFormatVersion`. A later reader keeps accepting format 1 while
-  pinned sets can still hold it.
-- **Fixed-layout payloads (`streets`, `stations`, `links`) end in an extension tail.** After the
-  last fixed array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes, ids strictly
-  ascending, and nothing after the tail (`ExtensionTable` in `Sources/BRData/ExtensionTail.swift`).
-  Readers skip ids they don't know. Each kind's section lists its ids, and what a reader assumes
-  when one is absent. Writers of format 1 write an empty tail (`count = 0`) until an id is defined.
-- **Sectioned payloads (`tt-*`) grow by sections.** Readers ignore section ids they don't know. A
-  section added within a format is optional, with its default when absent documented next to it.
-  The `info` array may gain entries at its end; readers ignore entries past the ones they know.
+  (`ArtifactKind.supportedFormatVersions`: for now exactly 1, for every kind; a draft would
+  accept only its own 0) and rejects the rest with `unsupportedFormatVersion`. A later reader
+  keeps accepting format 1 while pinned sets can still hold it.
+- **Fixed-layout payloads (`streets`, `stations`, `links`, `config`) end in an extension tail.**
+  After the last fixed array: `u32 count`, then `count` entries of `u32 id` + `array<u8>` bytes,
+  ids strictly ascending, and nothing after the tail (`ExtensionTable` in
+  `Sources/BRData/ExtensionTail.swift`). Readers skip ids they don't know. Each kind's section
+  lists its ids, and what a reader assumes when one is absent. Writers of format 1 write an empty
+  tail (`count = 0`) until an id is defined.
+- **Sectioned payloads (`tt-*`, `flows`) grow by sections.** Readers ignore section ids they don't
+  know. A section added within a format is optional, with its default when absent documented next
+  to it. The `info` array may gain entries at its end; readers ignore entries past the ones they
+  know.
 - **Flag bits.** Writers write undefined bits as `0`; readers ignore them. A new bit may be defined
   within a format only if a reader that ignores it still behaves correctly (a hint, not a rule).
 - **Enum values are strict.** A value a reader doesn't know is an error when the file is opened,
@@ -106,19 +109,26 @@ builds that can't update in step with the pipeline, and because an in-progress t
 - **Goldens hash the payload, not the file.** The header embeds `builderSwiftVersion`, so a
   toolchain upgrade changes every file's `rawSha256` and the whole `builtAgainst` chain even when
   payloads are identical. Format goldens compare payload bytes; cache keys include the Swift version.
-  `StreetsV1Tests`, `StationsV1Tests` and `TimetableV1Tests` pin the SHA-256 of the writer's payload
-  for small hand-built inputs: not compiled from OSM, GBFS or GTFS, with every parameter spelled out
-  (no tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
+  `StreetsV1Tests`, `StationsV1Tests`, `TimetableV1Tests`, `LinksV1Tests` (hops included),
+  `FlowsV1Tests` and `ConfigV1Tests` pin the SHA-256 of the writer's payload for small hand-built
+  inputs: not compiled from OSM, GBFS, GTFS or trip data, with every parameter spelled out (no
+  tunable defaults), and chosen so no platform-dependent floating point reaches the bytes, so the
   digests are the same on macOS and Linux. A layout change never re-pins them: it needs a new
-  formatVersion. `LinksV1Tests` pins the draft `links` payload (hops included) the same way; the
-  links freeze re-pins it once, for the revision bytes.
+  formatVersion (or, for the links hops, a new extension id). The links freeze re-pinned its
+  digest once, for the revision bytes (draft 3 → 1); the flows and config drafts were already
+  revision 1 and froze with their digests unchanged.
 - **Committed v1 files.** `Tests/Fixtures/v1` holds `streets.bin`, `stations.bin` and
-  `tt-sample.bin` (a `tt-ferry` file), written by the format-1 writer from those same hand-typed
-  inputs. None is compiled from a real extract or feed: the streets and stations are made up, and
-  the timetable sample is two Staten Island Ferry terminals and two trips typed by hand (the
-  terminal names and coordinates are the real ones). They are never rebuilt when the writer
-  changes: every later reader must open them, validated, and read the values the tests list.
-  `BR_WRITE_V1_FIXTURES=1` rewrites them, for a deliberate reason only.
+  `tt-sample.bin` (a `tt-ferry` file), written on 2026-09-26, and `links.bin`, `flows.bin` and
+  `config.bin`, written on 2026-09-27, each by the format-1 writer from those same hand-typed
+  inputs. None is compiled from a real extract, feed or trip file: the streets, stations and links
+  are made up; the timetable sample is two Staten Island Ferry terminals and two trips typed by
+  hand (the terminal names and coordinates are the real ones); the flows sample is three keys in
+  the forms Citi Bike's short_names take (two are current station short_names) with made-up
+  coordinates, capacities, day counts and cells; the config is a small hand-typed document with
+  made-up ids.
+  They are never rebuilt when the writer changes: every later reader must open them, validated,
+  and read the values the tests list. `BR_WRITE_V1_FIXTURES=1 swift test --filter <suite>`
+  rewrites a suite's file (a bare `--filter V1` rewrites all six), for a deliberate reason only.
 
 ## Integrity and compression
 
@@ -134,12 +144,10 @@ builds that can't update in step with the pipeline, and because an in-progress t
 
 ## Payload layouts
 
-<!-- M1: flows and config are placeholders at the end of this section. -->
-
 Each payload layout is documented here. A draft (format `0`) may change without a version bump;
 the payload revision (a draft's revision number) tells readers which draft they hold. From format
-1 on (`streets`, `stations` and `tt-*` since 2026-09-26), the Compatibility rules above apply and
-the payload revision is `1`.
+1 on (`streets`, `stations` and `tt-*` since 2026-09-26; `links`, `flows` and `config` since
+2026-09-27), the Compatibility rules above apply and the payload revision is `1`.
 
 ### `streets` (kind 1, format 1, payload revision 1)
 
@@ -478,7 +486,7 @@ is present exactly when its snapped flag is set, and fractions lie in [0, 1]; th
 the profile values are finite and positive; the tail. Undefined flag bits are not rejected;
 `MappedStations.flags(_:)` masks them off.
 
-### `links` (kind 7, format 0, payload revision 3)
+### `links` (kind 7, format 1, payload revision 1)
 
 Footpaths between transit stops, each stop's street access points, and walk links between stops
 and Citi Bike stations. Writer: `LinksArtifactWriter`, filled by `LinksCompiler` /
@@ -555,12 +563,12 @@ L station links.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `LNKS` |
-| payloadRevision | `u32` | `3`. Readers reject any other. Format-0 draft history: revision 2 added PATH; revision 3 added the extension tail (with the rail bike hops as id 1) and made readers ignore undefined flag bits. The format-1 freeze sets it to `1` |
+| payloadRevision | `u32` | `1`. Readers reject any other. Format-0 draft history: revision 2 added PATH; 3 added the extension tail (with the rail bike hops as id 1) and made readers ignore undefined flag bits; frozen as format 1, revision 1 |
 | maxFootpathWalkSeconds | `u32` | 480. At most 3,600 |
 | minTransferSeconds | `u32` | 30 |
 | walkSpeed | `f64` | m/s (3.5 mph) |
 | stationLinkMaxWalkMeters | `f64` | 350 |
-| systemStopCounts | `array<u32>`, 5 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path (0 when not linked); T is their sum |
+| systemStopCounts | `array<u32>`, 5 | Stops of tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path (0 when not linked); T is their sum. Always exactly 5: a sixth system (NYC Ferry, say) is a new formatVersion |
 | systemAccessSeconds | `array<u32>`, 5 | Station access per system, same order |
 | stopFlags | `array<u8>`, T | Bit 0 routable, 1 an access point allows entry from the street, 2 one allows exit to it. Bits 3–7 are undefined: written 0, ignored by readers |
 | footpathStart | `array<u32>`, T + 1 | Footpaths of stop p: `[start[p], start[p + 1])` |
@@ -687,7 +695,7 @@ routable platform of B an enter link from every stored dock (true by constructio
 platforms share its access points), and reports the hop counts in its report's `hops` (by system
 pair; dropped by the window and by the one-seat rule; hops with fewer than kP pickups or kD docks).
 
-### `flows` (kind 8, format 0, draft revision 1)
+### `flows` (kind 8, format 1, payload revision 1)
 
 Per Citi Bike station, 15-minute bin, day type, direction and bike type: the mean and variance of
 the number of trips, from the newest three months of Citi Bike's public trip data. Writer:
@@ -795,7 +803,8 @@ is raised one binary16 step at a time, when needed, until it covers the exact su
 rounded means (17% of the any-type cells for 2026-06…08, where φ̂ = 1 makes the unrounded
 variance equal that sum).
 
-**Payload.** ASCII `FLOW`, `u32` payloadRevision (draft revision 1; readers require exactly it),
+**Payload.** ASCII `FLOW`, `u32` payloadRevision (`1`; readers require exactly it. The format-0
+draft had one revision, also 1, and froze unchanged as format 1, revision 1),
 `u32` section count, `u32` 0, then that many 24-byte table-of-contents entries (`u32` section id,
 `u32` element size, `u64` byte offset from the payload start, `u64` element count), then the
 sections. As in `tt-*`: each section is one array of one scalar type, 8-aligned and zero padded to
@@ -883,7 +892,7 @@ publish gate shows it as a warning (`docs/publish.md`).
 Size, 2026-06…08: 2,520 keys, 9.75 MB raw, 5.51 MB xz (without `varianceAny`: 7.82 MB raw,
 4.06 MB xz; the three-month window has far fewer empty cells than one month).
 
-### `config` (kind 9, format 0, draft payload revision 1)
+### `config` (kind 9, format 1, payload revision 1)
 
 Fares, change times, the `links` build parameters, the bike-share filter and the alert keyword
 table: every value the engine and the links builder took from Swift literals before M1, as one
@@ -900,7 +909,7 @@ from it anyway. JSON keeps the reviewed diffs readable and lets the format grow 
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | `bytes[4]` | ASCII `CNFG` |
-| payloadRevision | `u32` | `1` (draft revision 1). Readers reject any other |
+| payloadRevision | `u32` | `1`. Readers reject any other. The format-0 draft had one layout, revision 1, and froze unchanged as format 1, revision 1 |
 | json | `array<u8>` | The document, UTF-8 JSON (below) |
 | extensions | extension tail | No ids are defined: writers write an empty tail; readers skip every id |
 
@@ -911,9 +920,9 @@ whitespace. Values are integers, booleans, strings, arrays and objects: no float
 anywhere, so no platform number formatting reaches the bytes. Arrays that are sets are written
 sorted by the UTF-8 bytes of their key (named per array below) with no repeats; ordered arrays
 say so. No Swift `Set` and no dictionary keyed by anything but a string are wire types. The
-payload golden (`ConfigFormatTests`) pins the bytes of a hand-built document on macOS and Linux.
+payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macOS and Linux.
 
-**Compatibility of the JSON** (these hold from format 1 on; the draft follows them already):
+**Compatibility of the JSON** (these hold from format 1 on; the format-0 draft followed them too):
 
 - Readers ignore keys they don't know, at any depth. A key added within a format is optional, and
   its default is a *format* default written next to it here ("absent = off", "absent = none"),
@@ -1043,7 +1052,7 @@ to the zone fare.
 | `excludedRegions` | array of `region_id` | Known non-service regions (Citi Bike's test regions); sorted, disjoint from `regions` |
 | `vehicleTypes` | {`classic`, `ebike`}, arrays of `vehicle_type_id` | Sorted; disjoint |
 | `maxStatusAgeSeconds` | int | A station whose status is older is not used |
-| `valet` | array of {`stationID`, `latE6`, `lonE6`} | Valet stations by GBFS `station_id`, with the position they were matched at; sorted by `stationID`. May be empty (it is in v1: see `Data/config/bikeshare/SOURCES.md`). The element shape is draft until the freeze |
+| `valet` | array of {`stationID`, `latE6`, `lonE6`} | Valet stations by GBFS `station_id`, with the position they were matched at; sorted by `stationID`. May be empty (it is in v1: see `Data/config/bikeshare/SOURCES.md`). The element shape is frozen with format 1: a new field is an optional key |
 
 `alerts.pathKeywords`: ordered rules {`keywords`, `severity`}. PATH alert titles have no type;
 the first rule with a keyword the lowercased title contains gives the severity, and no match is
@@ -1051,7 +1060,8 @@ the first rule with a keyword the lowercased title contains gives the severity, 
 `severity`: `noService`, `suspended`, `partSuspended`, `detour`, `reroute`, `stopsSkipped`,
 `severeDelays`, `expressToLocal`, `delays`, `reducedService`, `plannedWork` or `info`.
 
-**Not in the draft yet**, each to arrive as an optional key with the default named here: the
+**Not in format 1**, each to arrive within it as an optional key with the default named here: the
 availability, rules, weather, pace, speeds and overheads sections of M2c (absent = bike planning
-off), the realtime matcher tunables (their absent default is fixed when they are defined), and the rail bike-hop
-build parameters under `transit.links` (added with the hops, while config is still the draft).
+off), the realtime matcher tunables (their absent default is fixed when they are defined), and the
+rail bike-hop tunables under `transit.links` (absent = `HopOptions`' own values; of the hop
+inputs, only the change after the bike and the holidays come from config today).

@@ -5,12 +5,12 @@ import BRCore
 public enum LinksFormat {
     /// The first four payload bytes, `LNKS`.
     public static let payloadMagic: [UInt8] = Array("LNKS".utf8)
-    /// The payload revision (`docs/formats.md`, "Compatibility"). While the artifact's
-    /// formatVersion is still 0 it is bumped on every layout change, and readers reject any other
-    /// value. Draft history: 2 added PATH as the fifth system (``systems``); 3 added the
-    /// extension tail (with the rail bike hops as id ``hopsExtensionID``) and flag masking. The
-    /// format-1 freeze sets it to 1.
-    public static let payloadRevision: UInt32 = 3
+    /// The payload's `u32` revision: `1` in format 1, and a reader requires exactly this value
+    /// (`docs/formats.md`, "Compatibility"). The format-0 drafts counted it up on every layout
+    /// change (2 added PATH as the fifth system, ``systems``; 3 added the extension tail, with the
+    /// rail bike hops as id ``hopsExtensionID``, and flag masking) until the format froze at 1 on
+    /// 2026-09-27.
+    public static let payloadRevision: UInt32 = 1
     /// Extension-tail id of the rail bike-hop block (``LinkHops``). A reader that skips it has no
     /// hops, which is still correct; a revised hop layout takes a new id.
     public static let hopsExtensionID: UInt32 = 1

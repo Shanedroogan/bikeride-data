@@ -44,6 +44,9 @@ func sha256Hex(_ data: Data) throws -> String {
 
 /// A small `flows` file typed by hand: three keys, every parameter spelled out, and every cell a
 /// dyadic fraction that binary16 holds exactly, so no platform floating point reaches the bytes.
+/// Nothing is compiled from trip data or GBFS. The keys take the forms Citi Bike's short_names do
+/// (two of them are current ones); every coordinate, capacity, day count, flag and cell is made
+/// up. The payload golden and the committed v1 file (``FlowsV1Tests``) are made from it.
 enum HandBuiltFlows {
     static let keys = ["3576.1", "5329.08", "JC115"]
     static let window = FlowWindow(start: date("20260601"), dayCount: 92)
@@ -93,6 +96,44 @@ enum HandBuiltFlows {
 
     static func artifact(_ data: FlowsData = data(), dataVersion: String = "hand-built") throws -> Data {
         try data.artifactBytes(dataVersion: dataVersion)
+    }
+}
+
+/// The committed v1 files in `Tests/Fixtures/v1` (see the stations tests' `V1Fixtures`):
+/// `flows.bin` was written from ``HandBuiltFlows`` when the format froze (2026-09-27), and every
+/// later reader must still open it. It is frozen, not regenerated when the writer changes:
+/// `BR_WRITE_V1_FIXTURES=1 swift test --filter FlowsV1Tests` rewrites it (and skips the tests that
+/// read it), for a deliberate reason only.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+
+    /// Lowercase-hex SHA-256 of the payload alone (the bytes from headerLength on): the header
+    /// embeds builderSwiftVersion, so the file's own hash changes with every toolchain.
+    static func payloadSHA256(_ file: Data) throws -> String {
+        try sha256Hex(Data(ArtifactHeader.decode(from: file).payload))
     }
 }
 

@@ -52,7 +52,7 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
         case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
             1 // Frozen 2026-09-26 (S1).
         case .links, .flows, .config:
-            0 // TODO(M1): freeze at 1.
+            1 // Frozen 2026-09-27 (M1).
         }
     }
 
@@ -63,10 +63,8 @@ public enum ArtifactKind: UInt16, CaseIterable, Sendable {
     /// here. A draft accepts only itself.
     public var supportedFormatVersions: [UInt16] {
         switch self {
-        case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath:
+        case .streets, .stations, .ttSubway, .ttBus, .ttLirr, .ttFerry, .ttPath, .links, .flows, .config:
             [1]
-        case .links, .flows, .config:
-            [0]
         }
     }
 }

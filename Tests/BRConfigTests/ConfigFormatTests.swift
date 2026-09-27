@@ -4,26 +4,9 @@ import BRData
 import Foundation
 import Testing
 
-/// The `config` envelope and JSON reader (docs/formats.md, "config").
+/// The `config` envelope and JSON reader (docs/formats.md, "config"). The payload golden, the
+/// committed v1 file and the format gates are in ``ConfigV1Tests``.
 @Suite struct ConfigFormatTests {
-    /// SHA-256 of the writer's payload for ``HandBuiltConfig`` (the header is left out: it embeds
-    /// builderSwiftVersion). Every test run is a fresh process with a fresh `Hasher` seed, so this
-    /// golden passing run after run, on macOS and Linux, is the cross-process determinism check.
-    /// While the format is the draft 0 a deliberate layout or schema change re-pins it; from
-    /// format 1 on a change that moves it needs a new formatVersion.
-    static let payloadGolden = "4bd407281fa1e40f6c091141f400a2b1ddddeb381989b48aa7f7a61a924b864f"
-
-    @Test func payloadMatchesTheGolden() throws {
-        let payload = try ConfigArtifactWriter.payload(HandBuiltConfig.document)
-        let digest = try sha256Hex(payload)
-        print("CONFIG hand-built payload \(payload.count) bytes, sha256 \(digest)")
-        #expect(digest == Self.payloadGolden)
-        let file = try HandBuiltConfig.artifact()
-        #expect(Data(try ArtifactHeader.decode(from: file).payload) == payload)
-        // The header's dataVersion does not reach the payload.
-        #expect(try sha256Hex(Data(ArtifactHeader.decode(from: HandBuiltConfig.artifact(dataVersion: "other")).payload)) == digest)
-    }
-
     @Test func theJSONIsCanonical() throws {
         let json = try ConfigArtifactWriter.json(HandBuiltConfig.document)
         let text = try #require(String(data: json, encoding: .utf8))
@@ -41,7 +24,7 @@ import Testing
     @Test func roundTripsThroughTheReader() throws {
         let config = try MappedConfig(fileBytes: HandBuiltConfig.artifact())
         #expect(config.document == HandBuiltConfig.document)
-        #expect(config.header.kind == .config && config.header.formatVersion == 0 && config.header.builtAgainst.isEmpty)
+        #expect(config.header.kind == .config && config.header.formatVersion == 1 && config.header.builtAgainst.isEmpty)
         #expect(config.extensions == .empty)
         #expect(config.json == (try ConfigArtifactWriter.json(HandBuiltConfig.document)))
         #expect(ConfigValidation.canonicalIssues(HandBuiltConfig.document).isEmpty)
@@ -145,8 +128,8 @@ import Testing
             }
         }
 
-        // The draft reader accepts only format 0.
-        for version: UInt16 in [1, 2] {
+        // The format-1 reader accepts only format 1.
+        for version: UInt16 in [0, 2] {
             var other = header
             other.formatVersion = version
             #expect(throws: ConfigFormatError.unsupportedFormatVersion(version)) {
@@ -167,7 +150,7 @@ import Testing
         }
 
         // Not JSON.
-        let garbage = ArtifactHeader(kind: .config, formatVersion: 0, dataVersion: "x", builderSwiftVersion: "6.4")
+        let garbage = ArtifactHeader(kind: .config, formatVersion: 1, dataVersion: "x", builderSwiftVersion: "6.4")
             .assemble(payload: ConfigArtifactWriter.payload(json: Data("{not json".utf8)))
         #expect(throws: ConfigFormatError.self) { try MappedConfig(fileBytes: garbage) }
     }
@@ -179,7 +162,7 @@ import Testing
         writer.append(ConfigFormat.payloadRevision)
         writer.append(array: [UInt8](json))
         writer.appendExtensions([(id: 7, bytes: [1, 2, 3])])
-        let header = ArtifactHeader(kind: .config, formatVersion: 0, dataVersion: "x", builderSwiftVersion: "6.4")
+        let header = ArtifactHeader(kind: .config, formatVersion: 1, dataVersion: "x", builderSwiftVersion: "6.4")
         let config = try MappedConfig(fileBytes: header.assemble(payload: writer.data))
         #expect(config.document == HandBuiltConfig.document)
         #expect(config.extensions.ids == [7] && config.extensions[7] == Data([1, 2, 3]))

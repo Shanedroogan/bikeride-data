@@ -90,15 +90,18 @@ func linksPayloadSHA256(_ file: Data) throws -> String {
     #endif
 }
 
-/// The committed v1 files in `Tests/Fixtures/v1` (see the stations tests' `V1Fixtures`). `links`
-/// has none yet: the P2c freeze writes `links.bin` from ``HandBuiltLinks`` with
-/// `BR_WRITE_V1_FIXTURES=1`, and every later reader must open it.
+/// The committed v1 files in `Tests/Fixtures/v1` (see the stations tests' `V1Fixtures`):
+/// `links.bin` was written from ``HandBuiltLinks`` when the format froze (2026-09-27), and every
+/// later reader must still open it. It is frozen, not regenerated when the writer changes:
+/// `BR_WRITE_V1_FIXTURES=1 swift test --filter LinksV1Tests` rewrites it (and skips the tests that
+/// read it), for a deliberate reason only.
 enum V1Fixtures {
     static let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .appendingPathComponent("Fixtures")
         .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
     static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
 
     static func data(_ name: String) throws -> Data {

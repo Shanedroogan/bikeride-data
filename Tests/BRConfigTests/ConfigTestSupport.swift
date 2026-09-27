@@ -4,7 +4,8 @@ import BRData
 import Foundation
 
 /// A small config document with every key spelled out (no value comes from `Data/`), so the
-/// payload golden doesn't move when the reviewed sources do.
+/// payload golden doesn't move when the reviewed sources do. The stop, route and station ids are
+/// made up. The payload golden and the committed v1 file (``ConfigV1Tests``) are made from it.
 enum HandBuiltConfig {
     static let document = ConfigDocument(
         minAppFormat: 1,
@@ -108,6 +109,44 @@ enum HandBuiltConfig {
 
     static func json(_ tree: [String: Any]) throws -> Data {
         try JSONSerialization.data(withJSONObject: tree, options: [.sortedKeys])
+    }
+}
+
+/// The committed v1 files in `Tests/Fixtures/v1` (see the stations tests' `V1Fixtures`):
+/// `config.bin` was written from ``HandBuiltConfig`` when the format froze (2026-09-27), and every
+/// later reader must still open it. It is frozen, not regenerated when the writer changes:
+/// `BR_WRITE_V1_FIXTURES=1 swift test --filter ConfigV1Tests` rewrites it (and skips the tests
+/// that read it), for a deliberate reason only.
+enum V1Fixtures {
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent("v1")
+    static let dataVersion = "v1-fixture"
+    static let regenerating = ProcessInfo.processInfo.environment["BR_WRITE_V1_FIXTURES"] == "1"
+
+    static func data(_ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    static func write(_ bytes: Data, to name: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try bytes.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// `file` with its header's formatVersion (the `u16` at byte 8) replaced.
+    static func withFormatVersion(_ version: UInt16, _ file: Data) -> Data {
+        var copy = Data(file)
+        copy[copy.startIndex + 8] = UInt8(version & 0xFF)
+        copy[copy.startIndex + 9] = UInt8(version >> 8)
+        return copy
+    }
+
+    /// Lowercase-hex SHA-256 of the payload alone (the bytes from headerLength on): the header
+    /// embeds builderSwiftVersion, so the file's own hash changes with every toolchain.
+    static func payloadSHA256(_ file: Data) throws -> String {
+        try sha256Hex(Data(ArtifactHeader.decode(from: file).payload))
     }
 }
 

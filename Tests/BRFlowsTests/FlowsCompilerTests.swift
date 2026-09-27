@@ -99,7 +99,7 @@ private struct SyntheticTrips {
 
         let file = fixture.out.appendingPathComponent(MappedFlows.fileName)
         let flows = try MappedFlows(contentsOf: file)
-        #expect(flows.header.builtAgainst.isEmpty && flows.header.formatVersion == 0)
+        #expect(flows.header.builtAgainst.isEmpty && flows.header.formatVersion == 1)
         #expect(flows.header.dataVersion.hasPrefix("trips=202606-202608 JC202606:etag-JC-202606-citibike-tripdata.csv.zip:"))
         #expect(FlowsArtifactWriter.tripPins(ofDataVersion: flows.header.dataVersion)?.count == 6)
         #expect(flows.count == 4 && flows.key(0) == "5343.10" && flows.capacity(2) == 0)

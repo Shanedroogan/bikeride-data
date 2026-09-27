@@ -279,7 +279,7 @@ struct PublishSetTests {
         // The previous set also had flows and config, which this job does not build.
         var previous = first
         let flows = SetManifest.Artifact(sha: String(repeating: "f", count: 64), bytes: 3_600_000, rawBytes: 9_700_000,
-                                         rawSha256: String(repeating: "a", count: 64), formatVersion: 0, dataVersion: "trips=202606-202608", builtAgainst: [:])
+                                         rawSha256: String(repeating: "a", count: 64), formatVersion: 1, dataVersion: "trips=202606-202608", builtAgainst: [:])
         // links names the config it was built from, so the carried config must be that one.
         let config = try #require(first.artifacts["config"])
         previous.artifacts["flows"] = flows
@@ -344,7 +344,7 @@ struct PublishSetTests {
         // A carried artifact built against inputs the set no longer has.
         var stale = first
         stale.artifacts["flows"] = .init(sha: String(repeating: "f", count: 64), bytes: 1, rawBytes: 1, rawSha256: String(repeating: "a", count: 64),
-                                         formatVersion: 0, dataVersion: "", builtAgainst: ["stations": String(repeating: "d", count: 64)])
+                                         formatVersion: 1, dataVersion: "", builtAgainst: ["stations": String(repeating: "d", count: 64)])
         let staleURL = try writePrevious(stale, sidecar: sidecar, to: set.scratch.url.appendingPathComponent("prev-flows"))
         let staleGate = try set.gate(previous: staleURL)
         #expect(staleGate.check("artifacts")?.failures.contains { $0.hasPrefix("flows: built against stations dddddddddddd") } == true)

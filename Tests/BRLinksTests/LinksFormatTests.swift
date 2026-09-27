@@ -63,7 +63,7 @@ import Testing
     @Test func writesAnEmptyExtensionTailAndNothingAfterIt() throws {
         #expect(layout.tail == payload.count - 4 && payload.value(UInt32.self, at: layout.tail) == 0)
         #expect(try original.extensions == .empty)
-        #expect(payload.value(UInt32.self, at: 4) == LinksFormat.payloadRevision && LinksFormat.payloadRevision == 3)
+        #expect(payload.value(UInt32.self, at: 4) == LinksFormat.payloadRevision && LinksFormat.payloadRevision == 1)
     }
 
     @Test func ignoresUndefinedFlagBits() throws {

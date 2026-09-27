@@ -4,29 +4,17 @@ import BRData
 import Foundation
 import Testing
 
+/// The `flows` writer and reader (docs/formats.md, "flows"). The payload golden, the committed v1
+/// file and the format gates are in ``FlowsV1Tests``.
 @Suite struct FlowsFormatTests {
-    /// SHA-256 of the writer's payload for ``HandBuiltFlows`` (the header is left out: it embeds
-    /// builderSwiftVersion). Format 0 is a draft, so a layout change may re-pin it (and must bump
-    /// ``FlowsFormat/payloadRevision``); from the freeze on, a layout change is a new formatVersion.
-    static let payloadGolden = "0e64b0013d3ee4b2f8c75380960cf6ae488169f440dd69ad38f96d3f240fd983"
-
     func reader(_ file: Data, validate: Bool = true) throws -> MappedFlows {
         try MappedFlows(artifact: MappedArtifact(fileBytes: file, expecting: .flows), validate: validate)
     }
 
     /// The payload bytes of `data` without validation, assembled into a file.
     func unchecked(_ data: FlowsData) -> Data {
-        ArtifactHeader(kind: .flows, formatVersion: 0, dataVersion: "x", builderSwiftVersion: "6.4").assemble(payload: data.encodedSections())
-    }
-
-    @Test func payloadMatchesTheGolden() throws {
-        let file = try HandBuiltFlows.artifact()
-        let payload = Data(try ArtifactHeader.decode(from: file).payload)
-        let digest = try sha256Hex(payload)
-        #expect(digest == Self.payloadGolden, "payload sha256 \(digest)")
-        #expect(payload.count == 16 + 10 * 24 + 8 * 15 + 8 + 16 + 16 + 24 + 16 + 8 + 24 + 8 + 3 * FlowsFormat.cellsPerKey * 2)
-        let header = try ArtifactHeader.decode(from: file).header
-        #expect(header.kind == .flows && header.formatVersion == 0 && header.builtAgainst.isEmpty && header.dataVersion == "hand-built")
+        ArtifactHeader(kind: .flows, formatVersion: ArtifactKind.flows.currentFormatVersion, dataVersion: "x", builderSwiftVersion: "6.4")
+            .assemble(payload: data.encodedSections())
     }
 
     @Test func roundTripsEveryValue() throws {
@@ -157,7 +145,7 @@ import Testing
         let file = try HandBuiltFlows.artifact()
         let (header, payload) = try ArtifactHeader.decode(from: file)
         let payloadData = Data(payload)
-        for version: UInt16 in [1, 2] {
+        for version: UInt16 in [0, 2] {
             var copy = file
             copy[copy.startIndex + 8] = UInt8(version)
             #expect(throws: FlowsFormatError.unsupportedFormatVersion(version)) { try reader(copy) }
@@ -249,7 +237,7 @@ import Testing
         var sections = FlowsSectionWriter()
         var info = [Int64](repeating: 0, count: FlowsInfoField.allCases.count)
         let reference = data.encodedSections()
-        let base = try reader(ArtifactHeader(kind: .flows, formatVersion: 0, dataVersion: "x", builderSwiftVersion: "6.4").assemble(payload: reference))
+        let base = try reader(ArtifactHeader(kind: .flows, formatVersion: 1, dataVersion: "x", builderSwiftVersion: "6.4").assemble(payload: reference))
         info[FlowsInfoField.departureWindowStartDay.rawValue] = Int64(data.departureWindow.start.daysSinceEpoch)
         info[FlowsInfoField.departureWindowDayCount.rawValue] = 92
         info[FlowsInfoField.arrivalWindowStartDay.rawValue] = Int64(data.arrivalWindow.start.daysSinceEpoch)
@@ -278,7 +266,7 @@ import Testing
         sections.add(.stationActiveDays, data.stations.flatMap(\.activeDays))
         sections.add(.stationFlags, data.stations.map { $0.flags.rawValue | 0x80 }) // undefined bit 7
         sections.add(.cells, data.cells)
-        let flows = try reader(ArtifactHeader(kind: .flows, formatVersion: 0, dataVersion: "x", builderSwiftVersion: "6.4").assemble(payload: sections.payload()))
+        let flows = try reader(ArtifactHeader(kind: .flows, formatVersion: 1, dataVersion: "x", builderSwiftVersion: "6.4").assemble(payload: sections.payload()))
         #expect(flows.count == base.count && flows.flags == [.customerTripsOnly] && flows.flags(1) == [.inGBFS])
         #expect(flows.value(2, .weekend, .arrivals, .varianceAny, bin: 17) == base.value(2, .weekend, .arrivals, .varianceAny, bin: 17))
     }

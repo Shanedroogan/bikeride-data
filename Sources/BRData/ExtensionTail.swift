@@ -1,7 +1,7 @@
 import Foundation
 
-/// The optional sections at the end of a fixed-layout payload (streets, stations): how a frozen
-/// format gains fields without a formatVersion bump. Layout, after the payload's last fixed array:
+/// The optional sections at the end of a fixed-layout payload (streets, stations, links, config):
+/// how a frozen format gains fields without a formatVersion bump. Layout, after the payload's last fixed array:
 ///
 ///     u32 count
 ///     count × { u32 id, array<u8> bytes }    // ids strictly ascending

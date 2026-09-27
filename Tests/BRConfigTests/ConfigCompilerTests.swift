@@ -31,7 +31,7 @@ import Testing
         #expect(config.document == document)
         #expect(config.header.dataVersion == "config:\(first.jsonSha256)" && config.header.builtAgainst.isEmpty)
         #expect(try sha256Hex(Data(ArtifactHeader.decode(from: bytes).payload)) == first.payloadSha256)
-        #expect(first.artifact?.formatVersion == 0 && first.artifact?.payloadRevision == 1)
+        #expect(first.artifact?.formatVersion == 1 && first.artifact?.payloadRevision == 1)
 
         // With no data directory every cross-artifact check is skipped, with a warning; the build
         // still succeeds.

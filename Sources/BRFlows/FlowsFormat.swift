@@ -9,8 +9,9 @@ import BRCore
 public enum FlowsFormat {
     /// ASCII `FLOW`, the first four payload bytes.
     public static let magic: [UInt8] = Array("FLOW".utf8)
-    /// The draft revision (format 0). Readers require exactly this value; it counts breaking
-    /// changes until the format freezes at 1 (then it is `1`, see "Compatibility").
+    /// The payload's `u32` revision: `1` in format 1, and readers require exactly this value
+    /// (`docs/formats.md`, "Compatibility"). The format-0 draft had one revision, also 1, and froze
+    /// unchanged as format 1 on 2026-09-27.
     public static let payloadRevision: UInt32 = 1
     /// `magic`, `u32 payloadRevision`, `u32 sectionCount`, `u32 0`.
     static let preambleSize = 16
