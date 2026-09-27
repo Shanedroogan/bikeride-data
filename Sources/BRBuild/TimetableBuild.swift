@@ -78,8 +78,9 @@ public struct TimetableBuild: Sendable {
             if system == .subway {
                 entrances = loadEntrances(warnings: &warnings, log: log)
             }
+            let versions = try sourceVersions(specs, fetcher: fetcher, log: log)
             let parseStart = Date()
-            let parsed = try parseFeeds(specs, fetcher: fetcher)
+            let parsed = try parseFeeds(versions)
             let parseSeconds = Date().timeIntervalSince(parseStart)
             log("  \(system): parsed \(parsed.count) feeds in \(String(format: "%.1f", parseSeconds)) s")
 
@@ -256,17 +257,67 @@ public struct TimetableBuild: Sendable {
         return specs
     }
 
-    /// Parses a system's feeds in parallel. Missing zips are an error.
-    func parseFeeds(_ specs: [GTFSFeedSpec], fetcher: GTFSFetcher) throws -> [GTFSFeed] {
-        for spec in specs where !FileManager.default.fileExists(atPath: fetcher.archiveURL(for: spec).path) {
-            throw GTFSError.missingFile(feed: fetcher.archiveURL(for: spec).path, file: "(zip)")
+    /// Every version of the selected feeds to parse: each feed's current zip, followed by the
+    /// archived versions (``GTFSSourceArchive``) that differ from it and can still be selected on
+    /// some date of the window, named `<feed>@<key8>` with the feed's slot and priority and
+    /// `publishedAt` from their Last-Modified. The compiler then picks the newest covering
+    /// version per date. Without archived versions this is exactly the selected feeds, as before.
+    /// Online, archived versions that can no longer be selected are deleted; offline, the sources
+    /// are only read.
+    func sourceVersions(_ specs: [GTFSFeedSpec], fetcher: GTFSFetcher,
+                        log: (String) -> Void) throws -> [GTFSSourceVersion] {
+        var versions: [GTFSSourceVersion] = []
+        for spec in specs {
+            let currentZip = fetcher.archiveURL(for: spec)
+            let current = fetcher.sourceInfo(for: spec)
+            versions.append(GTFSSourceVersion(spec: spec, zip: currentZip, source: current, archiveKey: nil))
+            guard let archive = fetcher.archive else { continue }
+            let records = try archive.records(feed: spec.name)
+            guard !records.isEmpty else { continue }
+            // The current zip is normally archived too; that copy is not a separate version.
+            let currentSHA = try Self.sha256(of: currentZip, runner: runner)
+            let others = records.filter { $0.sha256 != currentSHA }
+            guard !others.isEmpty else { continue }
+            let currentCoverage = try GTFSSourceArchive.coverage(of: ZipGTFSFeed(archive: currentZip, runner: runner))
+            let useful = GTFSSourceArchive.usefulVersions(
+                current: .init(publishedAt: current.publishedAt, coverage: currentCoverage),
+                archived: others.map { .init(publishedAt: $0.publishedAt, coverage: $0.coverageDays) },
+                windowStart: Int32(windowStart.daysSinceEpoch))
+            let chosen = useful.map { others[$0] }
+            let shortKeys = chosen.map { String($0.key.prefix(8)) }
+            let unique = Set(shortKeys).count == shortKeys.count
+            for (record, short) in zip(chosen, shortKeys) {
+                let name = "\(spec.name)@\(unique ? short : record.key)"
+                versions.append(GTFSSourceVersion(
+                    spec: spec, zip: archive.zipURL(feed: spec.name, key: record.key),
+                    source: GTFSSourceInfo(name: name, slot: spec.slot, priority: spec.priority, publishedAt: record.publishedAt, etag: record.etag),
+                    archiveKey: record.key))
+                log("  \(spec.name): archived version \(record.key) (\(record.calendarStart ?? "?")–\(record.calendarEnd ?? "?")) is a candidate")
+            }
+            let dropped = others.indices.filter { !useful.contains($0) }.map { others[$0] }
+            for record in dropped {
+                if offline {
+                    log("  \(spec.name): archived version \(record.key) is superseded on every date; not used")
+                } else {
+                    try archive.remove(record)
+                    log("  \(spec.name): deleted archived version \(record.key), superseded on every date from \(windowStart.yyyymmdd)")
+                }
+            }
         }
-        let results = ParallelResults<GTFSFeed>(count: specs.count)
+        return versions
+    }
+
+    /// Parses a system's feed versions in parallel. Missing zips are an error.
+    func parseFeeds(_ versions: [GTFSSourceVersion]) throws -> [GTFSFeed] {
+        for version in versions where !FileManager.default.fileExists(atPath: version.zip.path) {
+            throw GTFSError.missingFile(feed: version.zip.path, file: "(zip)")
+        }
+        let results = ParallelResults<GTFSFeed>(count: versions.count)
         let runner = self.runner
-        DispatchQueue.concurrentPerform(iterations: specs.count) { index in
-            let spec = specs[index]
+        DispatchQueue.concurrentPerform(iterations: versions.count) { index in
+            let version = versions[index]
             results.set(index, Result {
-                try GTFSFeed.parse(try ZipGTFSFeed(archive: fetcher.archiveURL(for: spec), runner: runner), source: fetcher.sourceInfo(for: spec))
+                try GTFSFeed.parse(try ZipGTFSFeed(archive: version.zip, runner: runner), source: version.source)
             })
         }
         return try results.values()

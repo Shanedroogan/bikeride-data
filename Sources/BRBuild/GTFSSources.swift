@@ -70,15 +70,23 @@ public struct GTFSDownloadRecord: Codable, Sendable, Equatable {
 }
 
 /// Downloads feeds with conditional GETs (ETag, then If-Modified-Since) through `curl`.
+///
+/// `<directory>/<feed>.zip` is the current version. With an ``archive`` (the default,
+/// `<directory>/archive`), every version the fetcher has held is kept there too: the current zip
+/// is added before a download replaces it and the new one right after, so an older version stays
+/// available for the dates a newer one no longer covers (``GTFSSourceArchive``).
 public struct GTFSFetcher: Sendable {
     public static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 bikeride-data"
 
     public let runner: any ToolRunner
     public let directory: URL
+    /// Where versions are kept; `nil` keeps only the current zip.
+    public var archive: GTFSSourceArchive?
 
     public init(runner: any ToolRunner, directory: URL) {
         self.runner = runner
         self.directory = directory
+        self.archive = GTFSSourceArchive(directory: directory.appendingPathComponent("archive", isDirectory: true), runner: runner)
     }
 
     public func archiveURL(for feed: GTFSFeedSpec) -> URL {
@@ -103,6 +111,10 @@ public struct GTFSFetcher: Sendable {
         let headers = directory.appendingPathComponent("\(feed.name).zip.headers")
         let etagFile = directory.appendingPathComponent("\(feed.name).zip.etag")
         let haveArchive = FileManager.default.fileExists(atPath: archive.path)
+        let previous = self.record(for: feed)
+        // The zip about to be replaced must already be in the archive (it is, unless it was
+        // downloaded before the archive existed).
+        if haveArchive { try archiveCurrent(feed, record: previous, now: now) }
         var args = ["-sS", "-L", "--fail", "-R", "-A", Self.userAgent, "--retry", "2",
                     "-o", partial.path, "-D", headers.path, "-w", "%{http_code}"]
         if haveArchive {
@@ -150,6 +162,7 @@ public struct GTFSFetcher: Sendable {
             record.downloadedAt = iso.string(from: now)
             record.bytes = (try? FileManager.default.attributesOfItem(atPath: archive.path)[.size] as? Int) ?? 0
             record.notModified = false
+            try archiveCurrent(feed, record: record, now: now)
         default:
             try? FileManager.default.removeItem(at: newETag)
             throw GTFSFetchError.unexpectedStatus(feed: feed.name, status: status)
@@ -158,6 +171,18 @@ public struct GTFSFetcher: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(record).write(to: recordURL(for: feed))
         return record
+    }
+
+    /// Adds the current `<feed>.zip` to ``archive`` unless a version with its ETag and size, or
+    /// (after hashing) its SHA-256, is already there.
+    func archiveCurrent(_ feed: GTFSFeedSpec, record: GTFSDownloadRecord?, now: Date) throws {
+        guard let archive else { return }
+        let zip = archiveURL(for: feed)
+        guard FileManager.default.fileExists(atPath: zip.path) else { return }
+        let bytes = (try FileManager.default.attributesOfItem(atPath: zip.path)[.size] as? Int) ?? 0
+        let etag = record?.etag ?? ""
+        if !etag.isEmpty, try archive.records(feed: feed.name).contains(where: { $0.etag == etag && $0.bytes == bytes }) { return }
+        try archive.add(zip: zip, feed: feed.name, url: feed.url, etag: etag, lastModified: record?.lastModified ?? "", now: now)
     }
 
     /// The value of the last occurrence of `name` (after redirects) in a curl `-D` dump.
