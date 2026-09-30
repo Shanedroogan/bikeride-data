@@ -52,7 +52,12 @@ yet: M6's backtest and ride logs tune them.
   the e-bike saves < 2 min, so the leg rides the slower classic, which can miss a connection or
   lose to another dock. That made three plans worse: od080 (the −8 min bike + D option is gone),
   od089 member (−5 min $2.16 became −4 min $3.24) and od008 (same arrival, +$0.81–1.23, lowest P
-  100% → 91.7%, via a one-bike pickup that took the search's slot).
+  100% → 91.7%, via a one-bike pickup that took the search's slot). The engine answers them (the
+  app's b3-engine, 2026-09-30): the e-bike rule now weighs the whole trip (rules.json below), so
+  od080's −8 min e-bike + D is back, and od089 member rides the lone classic (−4 min, $0.00: the
+  e-bike to its own nearest dock is under 2 min sooner); od008 was the direct bike's one slot, not
+  the type rule, and other direct rides within a minute of it are now offered too, so its P 100%
+  ride is recommended again.
 - Past 20 min (and for depart-at), pooled: the target plus up to 2 more filtered stations within
   300 m, discounted 30%, with the 5–20 min band's counts (pickup ≥ 1, drop-off ≥ 2).
 - During a ride, re-route when P < 70% with τ ≥ 2 min.
@@ -68,6 +73,11 @@ yet: M6's backtest and ride logs tune them.
 - Every bike ride is at least 5 min; pickups and docks within a 10-min walk.
 - E-bike per leg: saves ≥ 2 min **and** costs at most **$2.00 more per minute saved** than the
   classic (`ebikeAllowanceCentsPerMinute` 200), each type timed at the rider's own learned speed.
+  The saving is the whole trip's (the rider's decision of 2026-09-30): how much sooner the journey
+  arrives with the e-bike than with the classic in its place (the same pickup at the same time,
+  everything after re-timed), so an e-bike that catches a connection the classic misses wins, and
+  one that waits for the same train, or docks nearer only to walk further, saves nothing. The
+  thresholds are unchanged.
   The rider's decision of 2026-09-27: e-bikes are judged more loosely than the journey guardrail,
   through a key of their own (the plan's text had the guardrail's $1/min; at $1/min an e-bike
   almost never replaced an available classic, M2c review).
