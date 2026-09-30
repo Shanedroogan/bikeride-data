@@ -676,7 +676,9 @@ public final class Timetable: @unchecked Sendable {
         return stop(gtfsID: String(id.gtfsID))
     }
 
-    /// The patterns that call at `stop`, with the stop's position in each.
+    /// The patterns that call at `stop`, with the stop's position in each: ascending by pattern, then
+    /// by position, so a pattern that calls at the stop twice lists both calls together, earlier
+    /// first. Opening a timetable checks this order.
     public func patterns(servingStop stop: Int) -> StopPatternRefs {
         let range = Int(raw.stopPatternStart[stop])..<Int(raw.stopPatternStart[stop + 1])
         return StopPatternRefs(
@@ -1305,11 +1307,20 @@ extension Timetable {
 
         try offsets(raw.stopPatternStart, count: stops, total: raw.stopPatternRef.count, "stopPatternStart")
         try check(raw.stopPatternPosition.count == raw.stopPatternRef.count, "stop pattern arrays differ in length")
+        // Each stop's refs ascend by pattern, then by position, with no repeats: the order the writer
+        // emits, which the real-time matchers rely on when they walk one pattern's run at a time.
+        var stop = 0
         for index in 0..<raw.stopPatternRef.count {
             let pattern = Int(raw.stopPatternRef[index])
+            let position = raw.stopPatternPosition[index]
             try check(pattern < patterns, "stopPatternRef out of range")
-            try check(raw.stopPatternPosition[index] < raw.patternStopStart[pattern + 1] - raw.patternStopStart[pattern],
+            try check(position < raw.patternStopStart[pattern + 1] - raw.patternStopStart[pattern],
                       "stopPatternPosition out of range")
+            while Int(raw.stopPatternStart[stop + 1]) <= index { stop += 1 }
+            if index > Int(raw.stopPatternStart[stop]) {
+                let previous = (Int(raw.stopPatternRef[index - 1]), raw.stopPatternPosition[index - 1])
+                try check(previous < (pattern, position), "stop pattern refs out of order")
+            }
         }
 
         let transfers = raw.transferFromStop.count

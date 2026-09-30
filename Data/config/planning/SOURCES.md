@@ -40,6 +40,19 @@ yet: M6's backtest and ride logs tune them.
   whose b0 ≥ 2 floor refused it (and P(≥ 2) could not reach 90% with one bike). So the band now
   asks one bike, like the bands on either side; P(≥ 1) ≥ 90% still applies. The drop-off side of
   the band (d0 ≥ 2, P(≥ 2 docks)) is unchanged: the decision was about bikes.
+  The band is τ_eff 120–300 s, so the rule reaches up to 4:59 away with a fresh report (3:59 with
+  one a minute old); from 5 min the next band already asked one bike with no floor, so before
+  this a lone bike failed at 4:59 and could pass at 5:00.
+  What it does to plans (am-peak capture, 160 ODs × 3 riders, 17 recommendations changed): a lone
+  bike now passing also changes the leg's type, since the per-leg rule only compares types that
+  both pass. A lone e-bike beside classics now replaces the classic where it saves ≥ 2 min within
+  the $2/min allowance (faster, pricier: od071, od098). New one-bike pickups also take places
+  among the search's kept alternatives, and a cheaper option can drop out (od077's bus + classic
+  different option). A lone classic beside e-bikes ends the "standalone" e-bike: on a short leg
+  the e-bike saves < 2 min, so the leg rides the slower classic, which can miss a connection or
+  lose to another dock. That made three plans worse: od080 (the −8 min bike + D option is gone),
+  od089 member (−5 min $2.16 became −4 min $3.24) and od008 (same arrival, +$0.81–1.23, lowest P
+  100% → 91.7%, via a one-bike pickup that took the search's slot).
 - Past 20 min (and for depart-at), pooled: the target plus up to 2 more filtered stations within
   300 m, discounted 30%, with the 5–20 min band's counts (pickup ≥ 1, drop-off ≥ 2).
 - During a ride, re-route when P < 70% with τ ≥ 2 min.

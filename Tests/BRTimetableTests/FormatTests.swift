@@ -415,6 +415,40 @@ import Testing
         }
     }
 
+    /// Each stop's pattern refs ascend by pattern, then position (the real-time matchers walk one
+    /// pattern's run at a time and take its first call at or after a cursor); the writer and the
+    /// reader refuse any other order.
+    @Test func rejectsStopPatternRefsOutOfOrder() throws {
+        // The sample's pattern made a loop, St. George → Whitehall → St. George: stop 0 at positions 0 and 2.
+        var data = Self.sample()
+        data.patternStopStart = [0, 3]
+        data.patternStopIndex = [0, 1, 0]
+        data.patternStopFlags = [3, 3, 3]
+        data.patternStopShapeVertex = [0, 1, 0]
+        data.departures = [0, 1500, 3000, 1800, 3300, 4800]
+        data.rebuildIndexes()
+        try data.validate()
+        let header = ArtifactHeader(kind: .ttFerry, formatVersion: ArtifactKind.ttFerry.currentFormatVersion, dataVersion: "test",
+                                    builderSwiftVersion: BuildInfo.swiftVersion)
+        func open(_ data: TimetableData) throws -> Timetable {
+            try Timetable(artifact: MappedArtifact(fileBytes: header.assemble(payload: data.encodedSections())))
+        }
+        let timetable = try open(data)
+        let refs = timetable.patterns(servingStop: 0)
+        #expect(refs.map(\.pattern) == [0, 0] && refs.map(\.position) == [0, 2])
+        #expect(timetable.patterns(servingStop: 1).map(\.position) == [1])
+        // The later call first, and the same call twice.
+        for positions: [UInt32] in [[2, 0], [0, 0]] {
+            var edited = data
+            edited.stopPatternPosition[0] = positions[0]
+            edited.stopPatternPosition[1] = positions[1]
+            #expect(throws: TimetableData.ValidationError.inconsistent("stop 0's pattern refs are not in ascending pattern, position order")) {
+                try edited.validate()
+            }
+            #expect(throws: TimetableFormatError.inconsistent("stop pattern refs out of order")) { _ = try open(edited) }
+        }
+    }
+
     @Test func rejectsNonZeroPadding() throws {
         let (header, sections) = try Self.samplePayload()
         let good = Self.file(header, sections)

@@ -389,7 +389,7 @@ station's (or platform's) calls on one day view, in departure order, filtered by
 | 95 | tripDirection | `u8` | trips | `direction_id` 0 or 1, or 255 (absent; the compiler also maps other feed values to 255); readers reject any other value |
 | 96 | tripFlags | `u8` | trips | Bit 0 peak (LIRR `trips.txt` `peak_offpeak` = 1); 0 where a feed has no such column. Other bits are written 0 and ignored by readers |
 | 100 | stopPatternStart | `u32` | stops + 1 | CSR into stopPattern* |
-| 101, 102 | stopPatternRef, stopPatternPosition | `u32` | pattern stops | Each pattern calling at the stop, and the stop's position in it |
+| 101, 102 | stopPatternRef, stopPatternPosition | `u32` | pattern stops | Each pattern calling at the stop, and the stop's position in it. Each stop's rows sorted by pattern, then position, no repeats (a pattern calling twice lists both, earlier first); readers reject any other order |
 | 110, 111 | transferFromStop, transferToStop | `u32` | transfers | Stop indices (parent-level rows keep their station ids; PATH's synthesized rows are platform-level) |
 | 112, 113 | transferFromTrip, transferToTrip | `u32` | transfers | Trip indices, or none |
 | 114 | transferType | `u8` | transfers | GTFS `transfer_type` 0–5 (the compiler drops rows with any other value); 1 with both trips = guaranteed (LIRR); readers reject any other value |

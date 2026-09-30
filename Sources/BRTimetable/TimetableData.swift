@@ -283,6 +283,14 @@ public struct TimetableData: Sendable {
             try check(Int(pattern) < patterns, "stopPatternRef out of range")
             try check(position < patternStopStart[Int(pattern) + 1] - patternStopStart[Int(pattern)], "stopPatternPosition out of range")
         }
+        // Each stop's refs ascend by pattern, then by position (``rebuildIndexes()`` writes them so).
+        for stop in 0..<stops {
+            let range = Int(stopPatternStart[stop])..<Int(stopPatternStart[stop + 1])
+            for at in range.dropFirst() {
+                try check((stopPatternRef[at - 1], stopPatternPosition[at - 1]) < (stopPatternRef[at], stopPatternPosition[at]),
+                          "stop \(stop)'s pattern refs are not in ascending pattern, position order")
+            }
+        }
 
         let transfers = transferFromStop.count
         try check([transferToStop.count, transferFromTrip.count, transferToTrip.count, transferType.count,
