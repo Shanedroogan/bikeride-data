@@ -22,14 +22,13 @@
       "classicPerMinuteCents": 41,
       "ebikePerMinuteCents": 41,
       "planPriceCents": 2500,
-      "verified": false
+      "verified": true
     },
     "reducedFare": {
       "unlockFeeCents": 0,
       "classicIncludedMinutes": 45,
       "classicPerMinuteCents": 27,
-      "ebikePerMinuteCents": 27,
-      "ebikeManhattanCap": { "amountCents": 540, "maxRideMinutes": 45 },
+      "ebikePerMinuteCents": 14,
       "verified": false
     }
   },

@@ -62,7 +62,10 @@ import Testing
         let member = ConfigCitiBikePlan(unlockFeeCents: 0, classicIncludedMinutes: 45, classicPerMinuteCents: 27, ebikePerMinuteCents: 27,
                                         ebikeManhattanCap: ConfigManhattanCap(amountCents: 540, maxRideMinutes: 45), planPriceCents: 23_900,
                                         verified: true)
+        // Reduced Fare: the member's classic terms, $0.14/min e-bikes, no Manhattan cap, no plan price.
         var reducedFare = member
+        reducedFare.ebikePerMinuteCents = 14
+        reducedFare.ebikeManhattanCap = nil
         reducedFare.planPriceCents = nil
         reducedFare.verified = false
         #expect(document.fares.citiBike == ConfigCitiBikeFares(
@@ -71,7 +74,7 @@ import Testing
                                               ebikePerMinuteCents: 41, verified: true),
                 member: member,
                 dayPass: ConfigCitiBikePlan(unlockFeeCents: 0, classicIncludedMinutes: 30, classicPerMinuteCents: 41,
-                                            ebikePerMinuteCents: 41, planPriceCents: 25_00, verified: false),
+                                            ebikePerMinuteCents: 41, planPriceCents: 25_00, verified: true),
                 reducedFare: reducedFare
             ),
             taxConfirmed: false
