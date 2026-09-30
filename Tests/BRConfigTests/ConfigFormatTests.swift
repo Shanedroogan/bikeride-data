@@ -225,6 +225,45 @@ import Testing
         #expect(issues { $0.transit.links.streetAccessOnlyInsideServiceArea = [.path, .bus] }.count == 1)
     }
 
+    /// `fares.lirr.farRockawayTicket.excludedDestinations`, added within format 1: absent = none
+    /// (every v1 document written before it), present = those stations get the zone fare.
+    @Test func theFarRockawayExclusionIsAnOptionalKey() throws {
+        #expect(HandBuiltConfig.document.fares.lirr.farRockawayTicket.excludedDestinations == nil)
+        #expect(!String(decoding: try ConfigArtifactWriter.json(HandBuiltConfig.document), as: UTF8.self).contains("excludedDestinations"))
+        var document = HandBuiltConfig.document
+        document.fares.lirr.farRockawayTicket.excludedDestinations = ["L:1"]
+        let config = try MappedConfig(fileBytes: HandBuiltConfig.artifact(document))
+        #expect(config.document == document)
+        #expect(String(decoding: config.json, as: UTF8.self)
+            .contains(#""farRockawayTicket":{"destinationZone":1,"excludedDestinations":["L:1"],"offPeakCents":525,"peakCents":725}"#))
+        #expect(ConfigValidation.canonicalIssues(document).isEmpty)
+        // null reads as absent.
+        var tree = try HandBuiltConfig.tree(document)
+        tree.set("fares.lirr.farRockawayTicket.excludedDestinations", NSNull())
+        #expect(try MappedConfig(fileBytes: HandBuiltConfig.file(json: HandBuiltConfig.json(tree))).document == HandBuiltConfig.document)
+
+        // The reader rejects a stop listed twice; the rest are the writer's rules.
+        document.fares.lirr.farRockawayTicket.excludedDestinations = ["L:1", "L:1"]
+        #expect(throws: ConfigFormatError.invalidDocument(["fares.lirr.farRockawayTicket.excludedDestinations: stop L:1 listed twice"])) {
+            try MappedConfig(fileBytes: HandBuiltConfig.artifact(document))
+        }
+        func canonical(_ excluded: [StopID]) -> [String] {
+            var document = HandBuiltConfig.document
+            document.fares.lirr.farRockawayTicket.excludedDestinations = excluded
+            return ConfigValidation.canonicalIssues(document)
+        }
+        let key = "fares.lirr.farRockawayTicket.excludedDestinations"
+        #expect(canonical([]) == ["\(key): empty (omit the key for none)"])
+        #expect(canonical(["L:2"]) == ["\(key): L:2 is not a station in zone 1, the ticket's destination zone"])
+        #expect(canonical(["S:1"]) == ["\(key): S:1 is not a L:… id", "\(key): S:1 is not a station in zone 1, the ticket's destination zone"])
+        var two = HandBuiltConfig.document
+        two.fares.lirr.stations.insert(ConfigLIRRStation(stop: "L:0", zone: 1, cityFare: .cityTicket), at: 0)
+        two.fares.lirr.farRockawayTicket.excludedDestinations = ["L:1", "L:0"]
+        #expect(ConfigValidation.canonicalIssues(two).count == 1)
+        two.fares.lirr.farRockawayTicket.excludedDestinations = ["L:0", "L:1"]
+        #expect(ConfigValidation.canonicalIssues(two).isEmpty)
+    }
+
     @Test func stationPairsOrderTheirIDs() throws {
         let pair = ConfigStationPair("S:B08", "S:629")
         #expect(pair.first == "S:629" && pair.second == "S:B08")

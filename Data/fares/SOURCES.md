@@ -9,6 +9,11 @@ The values were transcribed on 2026-09-27 from the app's 2026 literals (`FareCon
 `CitiBikePricing.swift` in BikeRideKit), which were taken from the plan's "Fares (2026)" and
 "Citi Bike pricing (2026)" facts, researched 2026-09-24. They are unchanged by the move.
 
+LIRR, one change since: the Far Rockaway Ticket does not go to Mets-Willets Point, confirmed by
+the user in TrainTime, 2026-09-29, as MTA's archived 2024 CityTicket page had it
+(https://web.archive.org/web/20250317191428id_/https://www.mta.info/fares/cityticket). Details in
+`lirr/SOURCES.md`.
+
 ## mta.json
 
 | Value | Source | State |

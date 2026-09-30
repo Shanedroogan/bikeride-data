@@ -87,6 +87,9 @@ public enum ConfigValidation {
                             "farRockawayTicket.peakCents": lirr.farRockawayTicket.peakCents,
                             "farRockawayTicket.offPeakCents": lirr.farRockawayTicket.offPeakCents], "fares.lirr")
         issues.check(lirr.farRockawayTicket.destinationZone > 0, "fares.lirr.farRockawayTicket.destinationZone: must be positive")
+        if let excluded = lirr.farRockawayTicket.excludedDestinations {
+            issues.unique(excluded.map(\.rawValue), "fares.lirr.farRockawayTicket.excludedDestinations", what: "stop")
+        }
         for (key, window) in [("terminalArrivals", lirr.peakRule.terminalArrivals), ("terminalDepartures", lirr.peakRule.terminalDepartures)] {
             issues.check(window.startMinute >= 0 && window.startMinute < window.endMinute && window.endMinute <= 24 * 60,
                          "fares.lirr.peakRule.\(key): needs 0 ≤ startMinute < endMinute ≤ 1440")
@@ -330,6 +333,15 @@ public enum ConfigValidation {
         issues.check(lirr.stations.contains { $0.cityFare == .farRockaway }, "fares.lirr.stations: no farRockaway station sells the ticket")
         issues.ascending(lirr.nycTerminals.map { [$0.rawValue] }, "fares.lirr.nycTerminals")
         let zoneOf = Dictionary(lirr.stations.map { ($0.stop, $0.zone) }, uniquingKeysWith: { a, _ in a })
+        if let excluded = lirr.farRockawayTicket.excludedDestinations {
+            let key = "fares.lirr.farRockawayTicket.excludedDestinations"
+            issues.check(!excluded.isEmpty, "\(key): empty (omit the key for none)")
+            issues.ascending(excluded.map { [$0.rawValue] }, key)
+            issues.qualified(excluded, .lirr, key)
+            for stop in excluded where zoneOf[stop] != lirr.farRockawayTicket.destinationZone {
+                issues.add("\(key): \(stop) is not a station in zone \(lirr.farRockawayTicket.destinationZone), the ticket's destination zone")
+            }
+        }
         for terminal in lirr.nycTerminals where zoneOf[terminal] != 1 {
             issues.add("fares.lirr.nycTerminals: \(terminal) is not a zone 1 station")
         }

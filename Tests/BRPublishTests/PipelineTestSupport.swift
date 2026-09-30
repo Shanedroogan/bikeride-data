@@ -347,6 +347,10 @@ struct SyntheticSources {
         try write("fares/lirr/lirr-zone-fares-2026.csv", "from_zone,to_zone,peak_cents,offpeak_cents\n1,1,725,525\n1,4,1350,1000\n4,4,375,375\n")
         var lirr = try JSONSerialization.jsonObject(with: Data(contentsOf: configSources.appendingPathComponent("fares/lirr/lirr.json"))) as! [String: Any]
         lirr["nycTerminals"] = [["stop": "L:LA", "note": "synthetic terminal"]]
+        // The synthetic network has no Mets-Willets Point to exclude from the Far Rockaway Ticket.
+        var ticket = lirr["farRockawayTicket"] as! [String: Any]
+        ticket["excludedDestinations"] = nil
+        lirr["farRockawayTicket"] = ticket
         try JSONSerialization.data(withJSONObject: lirr, options: [.prettyPrinted, .sortedKeys]).write(to: configSources.appendingPathComponent("fares/lirr/lirr.json"))
         var mta = try JSONSerialization.jsonObject(with: Data(contentsOf: configSources.appendingPathComponent("fares/mta.json"))) as! [String: Any]
         mta["outOfSystemTransfers"] = [["stations": ["S:SB", "S:SC"], "note": "synthetic: Beta and Gamma"]]

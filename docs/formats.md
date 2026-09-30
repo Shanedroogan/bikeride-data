@@ -963,7 +963,7 @@ both are present), valet windows inside 0–1440 on ISO weekdays 1–7. The comp
 rules (`canonicalIssues`), which a reader does not enforce so that a later writer convention
 never locks out an older app: sorted set-like arrays, system-qualified ids of the right system,
 holidays Monday–Friday, CityTicket stations only in zones 1 and 3, `nycTerminals` in zone 1,
-the Far Rockaway destination zone in use, lowercase alert keywords without surrounding
+the Far Rockaway destination zone in use, Far Rockaway exclusions in that zone, lowercase alert keywords without surrounding
 whitespace, each in one rule and none containing an earlier rule's keyword, which would make it
 unreachable (PATH and weather alike; a class or severity has one rule, and no weather rule has
 the class `unknown`),
@@ -1029,7 +1029,7 @@ ignores the keys and never planned bikes.
 | `stations` | array of {`stop`, `zone`, `cityFare`} | Sorted by `stop`. `cityFare`: `none` (zone fares only), `cityTicket`, `farRockaway` (sells the Far Rockaway Ticket) |
 | `zoneFares` | array of {`fromZone`, `toZone`, `peakCents`, `offPeakCents`} | One row per unordered pair, `fromZone ≤ toZone`, ascending by (fromZone, toZone); complete over the zones `stations` use |
 | `cityTicket` | {`peakCents`, `offPeakCents`} | Between two `cityTicket` stations |
-| `farRockawayTicket` | {`peakCents`, `offPeakCents`, `destinationZone`} | One-way from a `farRockaway` station to a station in `destinationZone` |
+| `farRockawayTicket` | {`peakCents`, `offPeakCents`, `destinationZone`, optional `excludedDestinations`} | One-way from a `farRockaway` station to a station in `destinationZone`, except the stations in `excludedDestinations` (array of stop id, each in `destinationZone`; sorted). Absent = none excluded (added within format 1; the compiler writes it only when it lists a station) |
 | `peakRule` | {`terminalArrivals`, `terminalDepartures`}, each {`startMinute`, `endMinute`} | Minutes after local midnight, start included, end excluded. Peak: a Monday–Friday train, not on an `lirrOffPeak` holiday, arriving at an NYC terminal inside `terminalArrivals` or departing one inside `terminalDepartures`. Used only for trains whose timetable has no peak flag |
 | `nycTerminals` | array of stop id | Where `peakRule` is evaluated; sorted |
 

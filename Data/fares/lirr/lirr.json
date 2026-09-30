@@ -2,7 +2,12 @@
   "stationsFile": "lirr-stations-2026.csv",
   "zoneFaresFile": "lirr-zone-fares-2026.csv",
   "cityTicket": { "peakCents": 725, "offPeakCents": 525 },
-  "farRockawayTicket": { "peakCents": 725, "offPeakCents": 525, "destinationZone": 1 },
+  "farRockawayTicket": {
+    "peakCents": 725, "offPeakCents": 525, "destinationZone": 1,
+    "excludedDestinations": [
+      { "stop": "L:199", "note": "Mets-Willets Point (Port Washington Branch): not a Far Rockaway Ticket destination, confirmed by the user in TrainTime, 2026-09-29" }
+    ]
+  },
   "peakRule": {
     "terminalArrivals": { "startMinute": 360, "endMinute": 600 },
     "terminalDepartures": { "startMinute": 960, "endMinute": 1200 }

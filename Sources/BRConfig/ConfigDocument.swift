@@ -347,16 +347,21 @@ public struct ConfigPeakFare: Sendable, Equatable, Codable {
 }
 
 /// One-way, sold only at ``ConfigLIRRCityFare/farRockaway`` stations, valid to stations in
-/// ``destinationZone``.
+/// ``destinationZone`` except ``excludedDestinations``.
 public struct ConfigFarRockawayTicket: Sendable, Equatable, Codable {
     public var peakCents: Int
     public var offPeakCents: Int
     public var destinationZone: Int
+    /// Stations in ``destinationZone`` the ticket doesn't go to (Mets-Willets Point, on another
+    /// branch). Optional within format 1: absent = none. The compiler writes it only when it lists
+    /// a station, each in ``destinationZone``, sorted.
+    public var excludedDestinations: [StopID]?
 
-    public init(peakCents: Int, offPeakCents: Int, destinationZone: Int) {
+    public init(peakCents: Int, offPeakCents: Int, destinationZone: Int, excludedDestinations: [StopID]? = nil) {
         self.peakCents = peakCents
         self.offPeakCents = offPeakCents
         self.destinationZone = destinationZone
+        self.excludedDestinations = excludedDestinations
     }
 }
 

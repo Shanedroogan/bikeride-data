@@ -5,16 +5,24 @@ independent pass (`VERIFY.md`): every station zone and all 36 zone-pair fares ma
 chart effective 2026-01-04. Belmont Park (zone 4, no service in feed GO202_26) was appended by hand
 after `build.py` ran, so a future feed that serves it still prices.
 
-Known engine gap (from `VERIFY.md` D1/D2): the Far Rockaway Ticket is valid only between Far
-Rockaway and Zone 1 stations, and can only be bought at Far Rockaway (or in TrainTime near it), so a
-trip *to* Far Rockaway, or from it to a zone 3 station, pays the zone fare.
+The Far Rockaway Ticket (from `VERIFY.md` D1/D2) is valid only from Far Rockaway, where it is
+sold (or in TrainTime near it), to Zone 1 stations other than Mets-Willets Point, so a trip *to*
+Far Rockaway, from it to a zone 3 station, or from it to Mets-Willets Point pays the zone fare.
+
+Mets-Willets Point (`L:199`) is excluded (`farRockawayTicket.excludedDestinations` in `lirr.json`):
+confirmed by the user in TrainTime, 2026-09-29 (Mets-Willets Point is on the Port Washington
+Branch, and the ticket does not offer it). This agrees with MTA's archived 2024 CityTicket page,
+https://web.archive.org/web/20250317191428id_/https://www.mta.info/fares/cityticket ("Updated Sep
+4, 2024", captured 2025-03-17), whose Far Rockaway Ticket destinations are the Zone 1 stations
+other than Mets-Willets Point. The 2026 fares page says only "Zone 1". So Far Rockaway →
+Mets-Willets Point costs the zone 4↔1 fare, $13.50 peak / $10.00 off-peak.
 
 Outputs in this folder:
 
 - `lirr-stations-2026.csv`: `stop_id,gtfs_name,zone,city_fare,source_note`. 125 rows, one for each public LIRR station with service in the GTFS fixture.
 - `lirr-zone-fares-2026.csv`: `from_zone,to_zone,peak_cents,offpeak_cents`. One-way adult fares for 36 rows, which are all unordered pairs of the 8 zones in use (1, 3, 4, 7, 9, 10, 12, 14), including same-zone pairs. `from_zone <= to_zone`. `FareEngine.ZonePair` normalizes to (min, max) when it looks a fare up (FareEngine.swift:188-194), so one row per pair is enough.
 - `build.py`: regenerates both CSVs from `raw/` and the GTFS zip. All checks below are asserts in this script.
-- `lirr.json`: the rest of `fares.lirr` in the `config` artifact: which CSVs hold the station zones and zone fares (so a new fare year adds new CSVs and points here), CityTicket and the Far Rockaway Ticket ($7.25 peak / $5.25 off-peak; the Far Rockaway Ticket only to Zone 1), the peak rule (NYC terminal arrivals 06:00–10:00, departures 16:00–20:00, from the fares page quoted below) and the NYC terminals it is evaluated at (Penn Station, Grand Central Madison, Atlantic Terminal, Hunterspoint Avenue, Long Island City; all zone 1). `bikeride-data config` checks every station with boarding or alighting service in `tt-lirr` is zoned.
+- `lirr.json`: the rest of `fares.lirr` in the `config` artifact: which CSVs hold the station zones and zone fares (so a new fare year adds new CSVs and points here), CityTicket and the Far Rockaway Ticket ($7.25 peak / $5.25 off-peak; the Far Rockaway Ticket only to Zone 1, excluding Mets-Willets Point), the peak rule (NYC terminal arrivals 06:00–10:00, departures 16:00–20:00, from the fares page quoted below) and the NYC terminals it is evaluated at (Penn Station, Grand Central Madison, Atlantic Terminal, Hunterspoint Avenue, Long Island City; all zone 1). `bikeride-data config` checks every station with boarding or alighting service in `tt-lirr` is zoned.
 - `raw/`: the source PDFs as downloaded (`doc194866.pdf`, `doc186866.pdf`), their `pdftotext` output, and a 60 dpi render of the fare chart (`map60-1.png`).
 
 ## Sources
@@ -75,6 +83,8 @@ Stations per zone in the CSV: z1 11, z3 14, z4 30, z7 29, z9 11, z10 15, z12 4, 
 - Every other served station was placed from both documents, and the two agree.
 
 ## Where the data and FareEngine disagree (repo is read-only, so this is not fixed)
+
+(Settled since: the engine offers the Far Rockaway Ticket only from Far Rockaway to Zone 1, and not to Mets-Willets Point; the paragraph at the top of this file.)
 
 1. **The Far Rockaway Ticket covers Zone 1 only.** The MTA wording is "between Far Rockaway and LIRR stations in Zone 1". `FareEngine.lirrFare` offers it for any `(.farRockaway, .cityTicket)` pair, which also includes the zone 3 stations. For example, Far Rockaway ↔ Jamaica should cost the 4↔3 zone fare, 900 peak / 675 off-peak. The engine would charge 725 / 525 instead. The `CityFare` enum has no way to say "Zone 1 only". Two possible fixes: a separate flag, or limiting the pairing to zone-1 stations.
 2. **CityTicket never wins under the engine's tie rule.** In 2026, 1↔1 and 1↔3 cost 725/525, the same as CityTicket, and 3↔3 is cheaper at 600/450. Ties go to the zone ticket, so the engine never picks CityTicket. It only ever picks the zone fare or, for Far Rockaway ↔ Zone 1, the Far Rockaway Ticket (725/525 against a zone fare of 1350/1000). The prices come out right; only the ticket label is affected.

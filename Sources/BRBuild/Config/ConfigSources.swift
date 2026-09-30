@@ -218,7 +218,14 @@ public struct ConfigSources: Sendable {
             stations: stations.sorted(by: Self.bytes(\.stop.rawValue)),
             zoneFares: zoneFares.sorted { ($0.fromZone, $0.toZone) < ($1.fromZone, $1.toZone) },
             cityTicket: source.cityTicket,
-            farRockawayTicket: source.farRockawayTicket,
+            farRockawayTicket: ConfigFarRockawayTicket(
+                peakCents: source.farRockawayTicket.peakCents, offPeakCents: source.farRockawayTicket.offPeakCents,
+                destinationZone: source.farRockawayTicket.destinationZone,
+                // Written only when it lists a station, so a source without it compiles as before.
+                excludedDestinations: source.farRockawayTicket.excludedDestinations.flatMap { list in
+                    list.isEmpty ? nil : list.map(\.stop).sorted(by: Self.bytes(\.rawValue))
+                }
+            ),
             peakRule: source.peakRule,
             nycTerminals: source.nycTerminals.map(\.stop).sorted(by: Self.bytes(\.rawValue))
         )
@@ -520,9 +527,18 @@ struct LIRRSource: Codable {
     var stationsFile: String
     var zoneFaresFile: String
     var cityTicket: ConfigPeakFare
-    var farRockawayTicket: ConfigFarRockawayTicket
+    var farRockawayTicket: FarRockawayTicketSource
     var peakRule: ConfigLIRRPeakRule
     var nycTerminals: [NotedStop]
+}
+
+/// `farRockawayTicket` in `lirr.json`: the config's, with each excluded destination noted.
+struct FarRockawayTicketSource: Codable {
+    var peakCents: Int
+    var offPeakCents: Int
+    var destinationZone: Int
+    /// Absent or empty: none.
+    var excludedDestinations: [NotedStop]?
 }
 
 /// `config/transit.json`: the transit section without `links.fixedTransfers` (a CSV).

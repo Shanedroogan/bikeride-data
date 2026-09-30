@@ -39,9 +39,11 @@ import Testing
 
         let lirr = document.fares.lirr
         // FareConfig.swift:172, 229-230 (CityTicket; the Far Rockaway Ticket costs the same);
-        // FareEngine.swift:55 (farRockawayTicketZone).
+        // FareEngine.swift:55 (farRockawayTicketZone). Not to Mets-Willets Point (L:199): the
+        // user's TrainTime check, 2026-09-29.
         #expect(lirr.cityTicket == ConfigPeakFare(peakCents: 725, offPeakCents: 525))
-        #expect(lirr.farRockawayTicket == ConfigFarRockawayTicket(peakCents: 725, offPeakCents: 525, destinationZone: 1))
+        #expect(lirr.farRockawayTicket == ConfigFarRockawayTicket(peakCents: 725, offPeakCents: 525, destinationZone: 1,
+                                                                  excludedDestinations: ["L:199"]))
         // LIRRPeakRule.swift:36-39 (weekdayCommute).
         #expect(lirr.peakRule == ConfigLIRRPeakRule(terminalArrivals: ConfigMinuteWindow(startMinute: 6 * 60, endMinute: 10 * 60),
                                                     terminalDepartures: ConfigMinuteWindow(startMinute: 16 * 60, endMinute: 20 * 60)))
@@ -315,6 +317,48 @@ import Testing
         #expect(terminal == .invalidDocument(["fares.lirr.nycTerminals: L:1 is not a zone 1 station"]))
         let duplicate = try loadError("config/bikeshare/bikeshare.json") { $0.replacingOccurrences(of: #"["70", "311"]"#, with: #"["70", "311", "71"]"#) }
         #expect(duplicate == .invalidDocument(["bikeShare.regions: region 71 listed twice"]))
+    }
+
+    @Test func farRockawayExclusionsAreOptionalAndChecked() throws {
+        let key = #""excludedDestinations""#
+        func withExclusions(_ list: String?) -> (String) -> String {
+            { text in
+                let start = text.range(of: key)!.lowerBound
+                let end = text.range(of: "]", range: start..<text.endIndex)!.upperBound
+                guard let list else {
+                    // Also drops the comma before the key.
+                    let comma = text[..<start].lastIndex(of: ",")!
+                    return String(text[..<comma]) + String(text[end...])
+                }
+                return text.replacingCharacters(in: start..<end, with: "\(key): \(list)")
+            }
+        }
+        func load(_ list: String?) throws -> ConfigDocument {
+            let scratch = try ScratchDirectory()
+            let root = try RepositoryData.copy(into: scratch)
+            let url = root.appendingPathComponent("fares/lirr/lirr.json")
+            try withExclusions(list)(String(contentsOf: url, encoding: .utf8)).write(to: url, atomically: true, encoding: .utf8)
+            return try ConfigSources(root: root).load()
+        }
+        // Absent or empty: none, and the document is otherwise the same, so it is written as
+        // before the key existed.
+        var none = document
+        none.fares.lirr.farRockawayTicket.excludedDestinations = nil
+        #expect(try load(nil) == none)
+        #expect(try load("[]") == none)
+        #expect(!String(decoding: try ConfigArtifactWriter.json(none), as: UTF8.self).contains("excludedDestinations"))
+        // Written sorted, whatever the source order.
+        let two = try load(#"[{ "stop": "L:237" }, { "stop": "L:199", "note": "x" }]"#)
+        #expect(two.fares.lirr.farRockawayTicket.excludedDestinations == ["L:199", "L:237"])
+        // Only stations in the destination zone (Jamaica is zone 3), each once.
+        #expect(try loadError("fares/lirr/lirr.json", withExclusions(#"[{ "stop": "L:102" }]"#))
+            == .invalidDocument(["fares.lirr.farRockawayTicket.excludedDestinations: L:102 is not a station in zone 1, the ticket's destination zone"]))
+        let twice = try loadError("fares/lirr/lirr.json", withExclusions(#"[{ "stop": "L:199" }, { "stop": "L:199" }]"#))
+        guard case .invalidDocument(let issues)? = twice else { Issue.record("\(String(describing: twice))"); return }
+        #expect(issues.contains("fares.lirr.farRockawayTicket.excludedDestinations: stop L:199 listed twice"))
+        // Strict like every source key.
+        #expect(try loadError("fares/lirr/lirr.json") { $0.replacingOccurrences(of: key, with: #""excludedDestination""#) }
+            == .unknownKey(file: "fares/lirr/lirr.json", path: "$.farRockawayTicket.excludedDestination"))
     }
 
     @Test func aMissingFileFailsTheBuild() throws {
