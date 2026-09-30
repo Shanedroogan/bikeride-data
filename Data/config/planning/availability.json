@@ -4,7 +4,7 @@
   "tightMinPercent": 70,
   "bands": [
     { "fromSeconds": 0, "pickupMinBikes": 1, "dropoffMinDocks": 1, "pickupFloorBikes": 0, "dropoffFloorDocks": 1 },
-    { "fromSeconds": 120, "pickupMinBikes": 2, "dropoffMinDocks": 2, "pickupFloorBikes": 2, "dropoffFloorDocks": 2 },
+    { "fromSeconds": 120, "pickupMinBikes": 1, "dropoffMinDocks": 2, "pickupFloorBikes": 1, "dropoffFloorDocks": 2 },
     { "fromSeconds": 300, "pickupMinBikes": 1, "dropoffMinDocks": 2, "pickupFloorBikes": 0, "dropoffFloorDocks": 0 }
   ],
   "pooled": { "afterSeconds": 1200, "radiusMeters": 300, "discountPercent": 30, "maxStations": 3, "pickupMinBikes": 1, "dropoffMinDocks": 2 },

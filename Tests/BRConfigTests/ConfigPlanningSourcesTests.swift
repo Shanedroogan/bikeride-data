@@ -47,7 +47,8 @@ import Testing
             targetPercent: 90, itineraryMinPercent: 80, tightMinPercent: 70,
             bands: [
                 ConfigAvailabilityBand(fromSeconds: 0, pickupMinBikes: 1, dropoffMinDocks: 1, pickupFloorBikes: 0, dropoffFloorDocks: 1),
-                ConfigAvailabilityBand(fromSeconds: 120, pickupMinBikes: 2, dropoffMinDocks: 2, pickupFloorBikes: 2, dropoffFloorDocks: 2),
+                // Pickups ask one bike of the type here since the user's 2026-09-29 decision.
+                ConfigAvailabilityBand(fromSeconds: 120, pickupMinBikes: 1, dropoffMinDocks: 2, pickupFloorBikes: 1, dropoffFloorDocks: 2),
                 ConfigAvailabilityBand(fromSeconds: 300, pickupMinBikes: 1, dropoffMinDocks: 2, pickupFloorBikes: 0, dropoffFloorDocks: 0),
             ],
             pooled: ConfigAvailabilityPooled(afterSeconds: 1200, radiusMeters: 300, discountPercent: 30, maxStations: 3, pickupMinBikes: 1,

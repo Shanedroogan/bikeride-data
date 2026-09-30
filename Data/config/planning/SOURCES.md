@@ -30,9 +30,16 @@ yet: M6's backtest and ride logs tune them.
 - A station passes at P ≥ 90%; an itinerary at a product ≥ 80%; "Tight" is 70–90%.
 - Bands by τ (time to arrival plus the station report's age), the plan's threshold table: under
   2 min, P(≥ 1 bike) and P(≥ 1 dock), with at least 1 open dock reported now (d0 ≥ 1); 2–5 min,
-  P(≥ 2) both ways, with at least 2 bikes of the chosen type and 2 docks reported now; 5–20 min,
-  P(≥ 1 bike) and P(≥ 2 docks), no floor. Staleness comes from each station's last_reported, and
-  the pickup floor counts the requested bike type (M2c review).
+  P(≥ 1 bike) with at least 1 bike of the chosen type reported now (b0 ≥ 1), and P(≥ 2 docks)
+  with at least 2 docks reported now (d0 ≥ 2); 5–20 min, P(≥ 1 bike) and P(≥ 2 docks), no floor.
+  Staleness comes from each station's last_reported, and the pickup floor counts the requested
+  bike type (M2c review).
+- The 2–5 min pickup was P(≥ 2 bikes) with b0 ≥ 2 (the plan's table) until the user's decision of
+  2026-09-29: a station with exactly one bike of the rider's type, 1–3 minutes away, is accepted.
+  With a report about a minute old (the feed's usual age), 1–3 min away is τ 2–4 min, this band,
+  whose b0 ≥ 2 floor refused it (and P(≥ 2) could not reach 90% with one bike). So the band now
+  asks one bike, like the bands on either side; P(≥ 1) ≥ 90% still applies. The drop-off side of
+  the band (d0 ≥ 2, P(≥ 2 docks)) is unchanged: the decision was about bikes.
 - Past 20 min (and for depart-at), pooled: the target plus up to 2 more filtered stations within
   300 m, discounted 30%, with the 5–20 min band's counts (pickup ≥ 1, drop-off ≥ 2).
 - During a ride, re-route when P < 70% with τ ≥ 2 min.
