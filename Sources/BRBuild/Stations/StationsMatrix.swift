@@ -236,7 +236,7 @@ public enum StationsBuilder {
         }
         let seeds: [[SearchSeed]] = points.map { $0?.searchSeeds(in: graph, profile: profile, direction: .forward) ?? [] }
         let output = SharedBuffer<UInt16>(count: n * n, repeating: StationsFormat.unreachable)
-        let rowStats = LockedCollector<(reachable: Int, sameSegment: Int, maxDecameters: Int, sumMeters: Double)>()
+        let rowStats = LockedCollector<(row: Int, reachable: Int, sameSegment: Int, maxDecameters: Int, sumMeters: Double)>()
 
         graph.withView { view in
             let costs = (0..<view.edgeCount).map { profile.costMs(ofEdge: $0, in: view) ?? CSRGraph.unusable }
@@ -295,7 +295,7 @@ public enum StationsBuilder {
                         maxDecameters = max(maxDecameters, Int(decameters))
                         sumMeters += meters
                     }
-                    rowStats.append((reachable, sameSegment, maxDecameters, sumMeters))
+                    rowStats.append((i, reachable, sameSegment, maxDecameters, sumMeters))
                 }
             }
         }
@@ -305,7 +305,8 @@ public enum StationsBuilder {
         stats.pairs = n * max(0, n - 1)
         stats.threads = max(1, min(threads, n))
         var sumMeters = 0.0
-        let rows = rowStats.drain()
+        // In row order, not the order the workers finished: the sum of doubles depends on it.
+        let rows = rowStats.drain().sorted { $0.row < $1.row }
         for row in rows {
             stats.reachablePairs += row.reachable
             stats.sameSegmentPairs += row.sameSegment

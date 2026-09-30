@@ -787,7 +787,9 @@ struct PieceNetwork {
             walking.union(Int(first(piece)), Int(last(piece)))
         }
         let walkMeasured = measure { keep[$0] && attributes[$0].walk ? walking.find(Int(first($0))) : nil }
-        let allWalkMeters = walkMeasured.meters.values.reduce(0, +)
+        // Summed in key order: a Dictionary's order changes per process, and so would the last
+        // digit of walkIslandShare.
+        let allWalkMeters = walkMeasured.meters.keys.sorted().reduce(0.0) { $0 + walkMeasured.meters[$1]! }
         let walkRoots = largeRoots(walkMeasured)
         for piece in 0..<pieceCount where keep[piece] && attributes[piece].walk
             && !walkRoots.contains(walking.find(Int(first(piece)))) {
