@@ -115,7 +115,8 @@ public struct StreetsCompiler: Sendable {
                                                    warnings: &warnings, log: log)
             log("  \(njOSM.status), \(njOSM.bytes) bytes")
             log("fetching \(Self.boroughsURL)")
-            let boroughs = try Self.fetchBoroughs(to: config.boroughsFile, fetcher: fetcher, warnings: &warnings, log: log)
+            let boroughs = try Self.fetchBoroughs(to: config.boroughsFile, fetcher: fetcher, toleranceMeters: config.boroughToleranceMeters,
+                                                  warnings: &warnings, log: log)
             log("  \(boroughs.status), \(boroughs.bytes) bytes")
             return (osm, njOSM, boroughs)
         }
@@ -236,12 +237,15 @@ public struct StreetsCompiler: Sendable {
         )
     }
 
-    /// The borough boundaries: refreshed unless offline; when the download fails, the cached
-    /// file (the last good copy, which CI restores from R2) is used with a warning. There is no
-    /// build without them, so with no cached file the error stands.
-    static func fetchBoroughs(to file: URL, fetcher: SourceFetcher, warnings: inout [String], log: (String) -> Void) throws -> SourceRecord {
+    /// The borough boundaries: refreshed unless offline; when the download fails, or answers 200
+    /// with a body that is not a feature collection of boroughs (``checkBoroughs(_:toleranceMeters:)``,
+    /// run before the body replaces the file), the cached file (the last good copy, which CI
+    /// restores from R2) is used with a warning. There is no build without them, so with no cached
+    /// file the error stands.
+    static func fetchBoroughs(to file: URL, fetcher: SourceFetcher, toleranceMeters: Double = 10, warnings: inout [String],
+                              log: (String) -> Void) throws -> SourceRecord {
         do {
-            return try fetcher.fetch(boroughsURL, to: file)
+            return try fetcher.fetch(boroughsURL, to: file) { try checkBoroughs($0, toleranceMeters: toleranceMeters) }
         } catch {
             guard !fetcher.offline, FileManager.default.fileExists(atPath: file.path) else { throw error }
             warnings.append("borough boundaries not refreshed (\(error)); using the cached file")
@@ -249,6 +253,19 @@ public struct StreetsCompiler: Sendable {
             var record = try SourceFetcher(runner: fetcher.runner, offline: true).fetch(boroughsURL, to: file)
             record.status = "cached"
             return record
+        }
+    }
+
+    /// Why a downloaded borough boundaries file was refused.
+    struct BoroughsUnusable: Error, CustomStringConvertible {
+        var description: String { "no boroughs in the feature collection" }
+    }
+
+    /// A downloaded borough boundaries file must read as the build reads it and name at least one
+    /// borough.
+    static func checkBoroughs(_ file: URL, toleranceMeters: Double) throws {
+        guard try !GeoJSONAreas.boroughs(from: Data(contentsOf: file), simplifyToleranceMeters: toleranceMeters).isEmpty else {
+            throw BoroughsUnusable()
         }
     }
 

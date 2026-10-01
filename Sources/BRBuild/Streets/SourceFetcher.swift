@@ -9,7 +9,8 @@ public struct SourceRecord: Codable, Sendable, Equatable {
     public var etag: String?
     public var lastModified: String?
     /// `downloaded`, `not-modified` (conditional GET answered 304), `offline` (not checked) or
-    /// `cached` (the download failed and the file already there was used).
+    /// `cached` (the download failed, or answered with a body its check refused, and the file
+    /// already there was used).
     public var status: String
     public var checkedAt: String
 
@@ -43,11 +44,15 @@ public struct SourceFetcher: Sendable {
     public enum FetchError: Error, Equatable, CustomStringConvertible {
         case missingOffline(path: String)
         case unexpectedStatus(url: String, status: String)
+        /// A 200 whose body the caller's check refused (an empty export, an error page, a changed
+        /// header). It was not saved: the file already there, if any, is untouched.
+        case unusableBody(url: String, reason: String)
 
         public var description: String {
             switch self {
             case .missingOffline(let path): "\(path) is missing and --offline forbids downloading it"
             case .unexpectedStatus(let url, let status): "\(url) answered HTTP \(status)"
+            case .unusableBody(let url, let reason): "\(url) answered HTTP 200 with an unusable body (\(reason)); not saved"
             }
         }
     }
@@ -61,7 +66,13 @@ public struct SourceFetcher: Sendable {
     }
 
     /// Ensures `file` holds the current `url`, returning its record.
-    public func fetch(_ url: String, to file: URL) throws -> SourceRecord {
+    ///
+    /// `validate`, when given, checks a downloaded body before it replaces `file`: curl's `--fail`
+    /// only catches 4xx and 5xx, so a server that answers 200 with an empty export or an error
+    /// page would otherwise overwrite the last good copy. When it throws, the body is discarded,
+    /// `file` and its ETag and record are left as they were, and ``FetchError/unusableBody(url:reason:)``
+    /// is thrown, so a caller's fallback to the cached file works as for a failed download.
+    public func fetch(_ url: String, to file: URL, validate: ((URL) throws -> Void)? = nil) throws -> SourceRecord {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let metaURL = URL(fileURLWithPath: file.path + ".source.json")
@@ -104,6 +115,14 @@ public struct SourceFetcher: Sendable {
         )
         switch status {
         case "200":
+            if let validate {
+                do {
+                    try validate(partial)
+                } catch {
+                    try? fileManager.removeItem(at: partial)
+                    throw FetchError.unusableBody(url: url, reason: "\(error)")
+                }
+            }
             if fileManager.fileExists(atPath: file.path) { try fileManager.removeItem(at: file) }
             try fileManager.moveItem(at: partial, to: file)
         case "304":

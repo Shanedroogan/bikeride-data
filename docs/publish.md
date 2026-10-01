@@ -28,7 +28,9 @@ error (64), on `manifest --job` too. `--accept-trip-count-change LIST` (systems,
 spaces, as strict as the workflow's check) is passed to `gate`: see `tripCounts` below.
 `--strict-sources` is passed to `timetables`, where it makes "built without entrances" an error:
 with neither a fresh download nor a usable cached `<sources>/nyc/subway-entrances.csv` (an empty
-one counts as none), the subway is not built and the run stops. CI passes it.
+one counts as none), the subway is not built and the run stops. CI passes it. A download whose
+body has no usable rows (data.ny.gov answering 200 with an empty export or a changed header) is
+refused before it is saved, so the cached copy is kept and used, as for a failed download.
 
 Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
 `--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that

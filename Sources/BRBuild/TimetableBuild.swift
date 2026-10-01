@@ -195,16 +195,24 @@ public struct TimetableBuild: Sendable {
         }
     }
 
-    /// The subway entrances: refreshed unless offline; on failure the cached file is used, and
-    /// without one the subway is built without entrances (with a warning; ``strictSources`` makes
-    /// that an error).
+    /// Why a downloaded subway entrances file was refused.
+    struct EntrancesUnusable: Error, CustomStringConvertible {
+        var description: String { "no usable rows" }
+    }
+
+    /// The subway entrances: refreshed unless offline; when the download fails, or answers 200 with
+    /// a body that has no usable rows (checked before it replaces the file, so a bad answer never
+    /// overwrites the last good copy), the cached file is used, and without one the subway is built
+    /// without entrances (with a warning; ``strictSources`` makes that an error).
     func loadEntrances(warnings: inout [String], log: (String) -> Void)
         -> (list: [SubwayEntrance], report: TimetableSystemReport.AuxiliarySource)?
     {
         var status = "cached"
         var version = ""
         do {
-            let record = try SourceFetcher(runner: runner, offline: offline).fetch(SubwayEntrances.url, to: entrancesFile)
+            let record = try SourceFetcher(runner: runner, offline: offline).fetch(SubwayEntrances.url, to: entrancesFile) {
+                guard try !SubwayEntrances.parse(fileAt: $0).entrances.isEmpty else { throw EntrancesUnusable() }
+            }
             status = record.status
             version = record.versionTag
             log("  fetch \(SubwayEntrances.fileName): \(record.status)")

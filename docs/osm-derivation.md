@@ -26,8 +26,11 @@ files served normally), the same extract is taken from Geofabrik's dated copy of
 then of the day before that, in UTC: `new-york-YYMMDD.osm.pbf`, `new-jersey-YYMMDD.osm.pbf`
 (`GeofabrikExtract`). The build then reads it as usual; the report's source record names the URL
 it came from and a warning says so. When those fail too the build fails. When the borough
-boundaries cannot be downloaded, the copy already in `--sources` (the last good one, which CI
-restores) is used, with a warning and the record's status `cached`; without one the build fails.
+boundaries cannot be downloaded, or the server answers 200 with something that does not read as a
+feature collection of boroughs (an empty export, an error page), the copy already in `--sources`
+(the last good one, which CI restores) is used, with a warning and the record's status `cached`;
+without one the build fails. A refused body is checked before it is saved, so it never replaces
+that copy (`SourceFetcher.fetch(_:to:validate:)`).
 
 The water-included boundaries are used rather than the shoreline-clipped ones (`tqmj-j8zm`) so
 that points on piers, at the water's edge and on bridges land in a borough; borough lines run

@@ -149,9 +149,112 @@ final class CurlStub: ToolRunner, @unchecked Sendable {
     @Test func aWorkingDownloadIsUsed() throws {
         let scratch = try ScratchDirectory()
         let file = scratch.file("nyc/b.geojson")
-        let runner = CurlStub { _ in false }
+        let fixture = try StreetsFixtures.data("boroughs-fixture.geojson")
+        let runner = CurlStub(body: fixture) { _ in false }
         var warnings: [String] = []
         let record = try StreetsCompiler.fetchBoroughs(to: file, fetcher: SourceFetcher(runner: runner, offline: false), warnings: &warnings, log: { _ in })
-        #expect(try record.status == "downloaded" && warnings.isEmpty && Data(contentsOf: file) == Data("fresh".utf8))
+        #expect(try record.status == "downloaded" && warnings.isEmpty && Data(contentsOf: file) == fixture)
+    }
+
+    /// The server answers 200 with something that is not the boundaries (an empty object, an
+    /// empty collection, an error page): the body never replaces the last good copy, which is used
+    /// as for a failed download; with no cached copy the error stands.
+    @Test(arguments: ["{}", #"{"type":"FeatureCollection","features":[]}"#, "<html>Service unavailable</html>"])
+    func anUnusableBodyKeepsTheCachedFile(body: String) throws {
+        let scratch = try ScratchDirectory()
+        let file = scratch.file("nyc/borough-boundaries-water-included.geojson")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let fixture = try StreetsFixtures.data("boroughs-fixture.geojson")
+        try fixture.write(to: file)
+        let runner = CurlStub(body: Data(body.utf8)) { _ in false }
+        var warnings: [String] = []
+        let record = try StreetsCompiler.fetchBoroughs(to: file, fetcher: SourceFetcher(runner: runner, offline: false), warnings: &warnings, log: { _ in })
+        #expect(record.status == "cached" && record.bytes == fixture.count && runner.requested == [StreetsCompiler.boroughsURL])
+        #expect(try Data(contentsOf: file) == fixture)
+        #expect(warnings.count == 1 && warnings[0].hasPrefix("borough boundaries not refreshed (\(StreetsCompiler.boroughsURL) answered HTTP 200 with an unusable body (")
+                && warnings[0].hasSuffix("); not saved); using the cached file"), "\(warnings)")
+        #expect(try GeoJSONAreas.boroughs(from: Data(contentsOf: file), simplifyToleranceMeters: 10).count == 2)
+
+        let empty = scratch.file("fresh/b.geojson")
+        #expect {
+            try StreetsCompiler.fetchBoroughs(to: empty, fetcher: SourceFetcher(runner: runner, offline: false), warnings: &warnings, log: { _ in })
+        } throws: { error in
+            guard case .unusableBody(StreetsCompiler.boroughsURL, _) = error as? SourceFetcher.FetchError else { return false }
+            return true
+        }
+        #expect(!FileManager.default.fileExists(atPath: empty.path))
+    }
+}
+
+@Suite struct UnusableBodyTests {
+    /// A body the check refuses is discarded before it touches the cached file, and neither the
+    /// ETag nor the source record is written for it, so the next conditional request is still
+    /// made against the last good copy.
+    @Test func aRefusedBodyLeavesTheFileAndItsRecordAlone() throws {
+        let scratch = try ScratchDirectory()
+        let file = scratch.file("nyc/data.csv")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("good".utf8).write(to: file)
+        struct Refused: Error {}
+        let runner = CurlStub(body: Data("bad".utf8)) { _ in false }
+        #expect(throws: SourceFetcher.FetchError.unusableBody(url: "https://example.test/data.csv", reason: "Refused()")) {
+            try SourceFetcher(runner: runner, offline: false).fetch("https://example.test/data.csv", to: file) { _ in throw Refused() }
+        }
+        #expect(try Data(contentsOf: file) == Data("good".utf8))
+        let left = try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path)
+        #expect(left == ["data.csv"], "\(left)")
+
+        // A body the check accepts replaces the file as before.
+        let record = try SourceFetcher(runner: runner, offline: false).fetch("https://example.test/data.csv", to: file) { _ in }
+        #expect(try record.status == "downloaded" && Data(contentsOf: file) == Data("bad".utf8))
+    }
+}
+
+/// The subway entrances online: a 200 whose CSV has no usable rows (an empty export, a changed
+/// header) never replaces the cached copy.
+@Suite struct SubwayEntrancesFallbackTests {
+    static let header = "Division,Line,Borough,Stop Name,Complex ID,Constituent Station Name,Station ID,GTFS Stop ID,Daytime Routes,"
+        + "Entrance Type,Entry Allowed,Exit Allowed,Entrance Latitude,Entrance Longitude,entrance_georeference\n"
+    static let good = header + "IRT,Test,M,Alpha,1,Alpha,1,SA,1,Stair,YES,YES,40.7,-74.0,\n"
+
+    static func build(_ scratch: ScratchDirectory, body: String) -> (TimetableBuild, CurlStub) {
+        let curl = CurlStub(body: Data(body.utf8)) { _ in false }
+        let build = TimetableBuild(sourcesDirectory: scratch.file("sources"), outputDirectory: scratch.file("data"), reportURL: nil,
+                                   systems: [.subway], offline: false, today: ServiceDate(yyyymmdd: "20261006")!, runner: curl)
+        return (build, curl)
+    }
+
+    @Test(arguments: [header, "Station,Lat,Lon\nAlpha,40.7,-74.0\n", ""])
+    func anUnusableBodyKeepsTheCachedFile(body: String) throws {
+        let scratch = try ScratchDirectory()
+        let (build, curl) = Self.build(scratch, body: body)
+        try FileManager.default.createDirectory(at: build.entrancesFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(Self.good.utf8).write(to: build.entrancesFile)
+        var warnings: [String] = []
+        let loaded = try #require(build.loadEntrances(warnings: &warnings, log: { _ in }))
+        #expect(curl.requested == [SubwayEntrances.url])
+        #expect(loaded.list.count == 1 && loaded.report.status == "cached" && loaded.report.rows == 1)
+        #expect(try String(contentsOf: build.entrancesFile, encoding: .utf8) == Self.good)
+        #expect(warnings.count == 1 && warnings[0].hasPrefix("subway entrances not refreshed (\(SubwayEntrances.url) answered HTTP 200 with an unusable body (")
+                && warnings[0].hasSuffix("; using the cached file"), "\(warnings)")
+    }
+
+    /// With no cached copy the subway goes without entrances, worded as the workflow's check
+    /// expects ("built without entrances"), and the bad body is not kept.
+    @Test func withoutACachedFileTheSubwayGoesWithout() throws {
+        let scratch = try ScratchDirectory()
+        let (build, _) = Self.build(scratch, body: Self.header)
+        var warnings: [String] = []
+        #expect(build.loadEntrances(warnings: &warnings, log: { _ in }) == nil)
+        #expect(warnings.count == 1 && warnings[0].hasPrefix("subway entrances unavailable (") && warnings[0].hasSuffix("; built without entrances"))
+        #expect(!FileManager.default.fileExists(atPath: build.entrancesFile.path))
+    }
+
+    @Test func aGoodBodyIsUsed() throws {
+        let scratch = try ScratchDirectory()
+        let (build, _) = Self.build(scratch, body: Self.good)
+        var warnings: [String] = []
+        let loaded = try #require(build.loadEntrances(warnings: &warnings, log: { _ in }))
+        #expect(loaded.list.count == 1 && loaded.report.status == "downloaded" && warnings.isEmpty)
     }
 }
