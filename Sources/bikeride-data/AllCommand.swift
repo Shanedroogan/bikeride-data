@@ -45,7 +45,8 @@ let allUsage = """
                             Systems whose trip-count change a person reviewed and accepts for this run
                             (subway, bus, lirr, ferry, path; comma-separated, no spaces), passed to
                             the gate: their trip-count changes beyond the limit are accepted
-                            warnings, not failures, and gate.json records the list
+                            warnings, not failures (except a drop of more than 90 %, to none
+                            included), and gate.json records the list
       --strict-sources      Passed to timetables: the subway is not built without entrances (no
                             download and no usable cached file is an error, not a warning). CI
                             passes it; a fresh runner has only the copy the restore step put there

@@ -29,8 +29,10 @@ let gateUsage = """
                        Systems whose trip-count change a person reviewed and accepts for this run
                        (subway, bus, lirr, ferry, path; comma-separated, no spaces): their dates
                        beyond the limit are warnings ("accepted: …"), not failures, and the list is
-                       recorded in gate.json as acceptedTripCountChange. Every other check, and a
-                       previous build whose trip counts cannot be used, still fails
+                       recorded in gate.json as acceptedTripCountChange. Every other check, a date
+                       whose trips fall by more than maxAcceptedDropPercent (thresholds.json, 90 %;
+                       to none included) and a previous build whose trip counts cannot be used
+                       still fail
 
     Exit status: 0 pass or soft failure, 3 hard failure (publish nothing), 1 error, 64 usage.
     """

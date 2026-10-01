@@ -27,10 +27,17 @@ public struct GateConfiguration: Sendable, Equatable {
             /// Day, which run weekday service (subway +51 %, bus +44 % and +57 %, PATH +86 % against
             /// the Sunday median in the 2026-09-26 build).
             public var holidayProfiles: [HolidayProfile]
+            /// The bound on `--accept-trip-count-change`: a date whose trips fall by more than this
+            /// (to none included) fails even for an accepted system. A feed cut to almost nothing is
+            /// broken or truncated, not a schedule pick a person reviewed. Rises are not bounded: a
+            /// new pick may double a system's service.
+            public var maxAcceptedDropPercent: Double
 
-            public init(maxChangePercent: Double, holidayProfiles: [HolidayProfile] = HolidayProfile.allCases) {
+            public init(maxChangePercent: Double, holidayProfiles: [HolidayProfile] = HolidayProfile.allCases,
+                        maxAcceptedDropPercent: Double = 90) {
                 self.maxChangePercent = maxChangePercent
                 self.holidayProfiles = holidayProfiles
+                self.maxAcceptedDropPercent = maxAcceptedDropPercent
             }
         }
 
@@ -404,7 +411,8 @@ public struct Gate {
                 current: try currentTripCounts(context), previous: previousTripCounts(context), holidays: configuration.holidays,
                 maxChangePercent: configuration.thresholds.tripCounts.maxChangePercent,
                 holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles,
-                accepted: Set(acceptedTripCountChange.map(SetSystems.name)))
+                accepted: Set(acceptedTripCountChange.map(SetSystems.name)),
+                maxAcceptedDropPercent: configuration.thresholds.tripCounts.maxAcceptedDropPercent)
         }
         timed("streets") { try streetsCheck(context) }
         timed("snapping") { try snappingCheck(context) }

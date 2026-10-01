@@ -90,13 +90,16 @@ public enum GateChecks {
     ///
     /// `accepted` names the systems whose change a person reviewed and accepted for this run
     /// (`--accept-trip-count-change`, the workflow's `accept_trip_count_change`): their dates
-    /// beyond the limit are warnings (`accepted: …`), not failures. Everything else about them is
-    /// checked as usual, and naming a system that had nothing to accept is a warning too, so an
-    /// override left in a dispatch shows up.
+    /// beyond the limit are warnings (`accepted: …`), not failures, except a date whose trips fall
+    /// by more than `maxAcceptedDropPercent` (to none included), which fails all the same: the
+    /// override is for a schedule pick a person reviewed, not for a broken or truncated feed (the
+    /// rerun downloads the feeds again, so it may not be the change that was reviewed). Everything
+    /// else about them is checked as usual, and naming a system that had nothing to accept is a
+    /// warning too, so an override left in a dispatch shows up.
     public static func tripCounts(current: [String: [ServiceDate: Int]], previous: [String: [ServiceDate: Int]]?,
                                   holidays: Set<ServiceDate>, maxChangePercent: Double,
                                   holidayProfiles: [GateConfiguration.Thresholds.TripCounts.HolidayProfile] = [.weekday, .saturday, .sunday],
-                                  accepted: Set<String> = [])
+                                  accepted: Set<String> = [], maxAcceptedDropPercent: Double = 90)
         -> GateCheckResult {
         let acceptedNames = accepted.sorted()
         guard let previous else {
@@ -156,7 +159,9 @@ public enum GateChecks {
                 let line = String(format: "%@ %@: %d trips vs %.0f (%@), %+.1f%%", system, SetSystems.isoDay(date), trips, reference, basis, delta * 100)
                 if worst == nil || abs(delta) > abs(worst!.delta) { worst = (delta, line) }
                 if abs(delta) * 100 > maxChangePercent {
-                    if accepted.contains(system) {
+                    if accepted.contains(system), -delta * 100 > maxAcceptedDropPercent {
+                        failures.append("\(line): a drop beyond \(Int(maxAcceptedDropPercent))% is not accepted (--accept-trip-count-change)")
+                    } else if accepted.contains(system) {
                         warnings.append("accepted: \(line)")
                         beyondAccepted += 1
                     } else {

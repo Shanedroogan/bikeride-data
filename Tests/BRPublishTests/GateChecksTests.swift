@@ -119,6 +119,27 @@ import Testing
                                        "path: --accept-trip-count-change had nothing to accept (no previous trip counts)"])
     }
 
+    /// The override has a floor: an accepted system's date that falls by more than
+    /// `maxAcceptedDropPercent` (to no trips at all, as a broken or truncated feed would) still
+    /// fails; smaller drops are accepted as before.
+    @Test func anAcceptedSystemStillFailsADropToNothing() {
+        let previous = Self.counts("20261001", "20261031")
+        let cut = Self.counts("20261005", "20261010", weekday: 400, saturday: 300,
+                              overrides: ["20261006": 0, "20261007": 50, "20261008": 110])
+        let result = GateChecks.tripCounts(current: ["bus": cut], previous: ["bus": previous], holidays: [], maxChangePercent: 35,
+                                           accepted: ["bus"], maxAcceptedDropPercent: 90)
+        #expect(result.status == .fail)
+        #expect(result.failures == [
+            "bus 2026-10-06: 0 trips vs 1000 (the previous build's same date), -100.0%: a drop beyond 90% is not accepted (--accept-trip-count-change)",
+            "bus 2026-10-07: 50 trips vs 1000 (the previous build's same date), -95.0%: a drop beyond 90% is not accepted (--accept-trip-count-change)",
+        ])
+        #expect(result.warnings.filter { $0.hasPrefix("accepted: bus ") }.count == 4 && result.metrics["bus.acceptedDates"] == 4)
+        #expect(result.warnings.contains("accepted: bus 2026-10-08: 110 trips vs 1000 (the previous build's same date), -89.0%"))
+
+        // The thresholds file sets the floor; the default matches it.
+        #expect(GateConfiguration.Thresholds.TripCounts(maxChangePercent: 35).maxAcceptedDropPercent == 90)
+    }
+
     // MARK: Coverage
 
     @Test func shortCoverageFailsSoftAndKeepsTheDates() {
