@@ -812,10 +812,71 @@ prune_run
 expect_status 0
 expect_err "data/manifest.json is not a manifest these scripts accept: nothing was pruned"
 expect_no_call "delete-object"
+# A manifest the check accepts, but with sources that would protect no version.
+for sources in null '[]' '{"tt-bus": {}}' '{"tt-bus": [{"feed": "gtfs_bus", "etag": 1}]}'; do
+  jq -c --argjson s "$sources" '.sources = $s' "$work/setA/manifest.json" >"$bucket/data/manifest.json"
+  : >"$FAKE_AWS_LOG"
+  prune_run
+  expect_status 0
+  expect_err "the sources of data/manifest.json are not a list of versions per timetable: nothing was pruned"
+  expect_no_call "delete-object"
+done
 rm "$bucket/data/manifest.json"
 prune_run
 expect_status 0
 [[ ! -e $bucket/sources/gtfs_bus/v1.zip ]] || fail "v1 not pruned once every read succeeded"
+
+begin "sources prune: a newer version only in R2 counts once its zip HEADs whole; a failed read of it keeps everything"
+prune_fixture p11
+# v3 is in R2 only (an earlier run's), newer than v1; v2, local only, confirms nothing.
+make_record "$bucket/sources" gtfs_bus v3 20261231 "bus v3" 2026-10-02T07:20:00Z "Wed, 30 Sep 2026 22:00:00 GMT"
+for rule in "get-object:sources/gtfs_bus/v3.json:500" "head-object:sources/gtfs_bus/v3.zip:500" "head-object:sources/gtfs_bus/v3.zip:403"; do
+  : >"$FAKE_AWS_LOG"
+  GITHUB_STEP_SUMMARY="$work/files/p11.md" FAKE_AWS_FAIL="$rule" prune_run
+  expect_status 0
+  expect_no_call "delete-object"
+  expect_err "nothing was pruned"
+  grep -q "nothing was pruned" "$work/files/p11.md" || fail "$rule: no warning in the step summary"
+  rm -f "$work/files/p11.md"
+done
+: >"$FAKE_AWS_LOG"
+FAKE_AWS_FAIL="head-object:sources/gtfs_bus/v3.zip:short" prune_run
+expect_status 0
+expect_no_call "delete-object"
+expect_err "kept gtfs_bus/v1 (pruned by this build): no copy of gtfs_bus at least as new is confirmed in R2"
+: >"$FAKE_AWS_LOG"
+prune_run
+expect_status 0
+expect_call "head-object --bucket test-bucket --key sources/gtfs_bus/v3.zip"
+[[ ! -e $bucket/sources/gtfs_bus/v1.zip && ! -e $bucket/sources/gtfs_bus/v1.json ]] || fail "v1 not pruned once v3 confirmed"
+[[ -f $bucket/sources/gtfs_bus/v3.zip && -f $bucket/sources/gtfs_bus/v3.json ]] || fail "v3 gone"
+
+begin "sources prune: two versions in the plan do not vouch for each other"
+reset_bucket
+# v0 past its calendar and v1 dropped by the build, archived in the same second with no
+# Last-Modified (a tie); v2, newer, is local only, as after a failed upload.
+make_record "$bucket/sources" gtfs_bus v0 20260801 "bus v0" 2026-10-01T03:20:00Z
+make_record "$bucket/sources" gtfs_bus v1 20261031 "bus v1" 2026-10-01T03:20:00Z
+d=$(fresh p12)
+restore --job timetables --prev "$d/prev" --sources "$d/sources" --data "$d/data" --allow-first-run; expect_status 0
+grep -q $'^gtfs_bus/v0\t20260801\t' "$d/prev/sources-restored.txt" || fail "v0 not listed: $(cat "$d/prev/sources-restored.txt")"
+make_record "$d/sources/gtfs/archive" gtfs_bus v2 20261231 "bus v2" 2026-10-07T07:20:00Z
+rm -f "$d/sources/gtfs/archive/gtfs_bus/v1.zip" "$d/sources/gtfs/archive/gtfs_bus/v1.json"
+: >"$FAKE_AWS_LOG"
+GITHUB_STEP_SUMMARY="$work/files/p12.md" prune_run
+expect_status 0
+expect_no_call "delete-object"
+expect_err "kept gtfs_bus/v0 (calendar ended 20260801): no copy of gtfs_bus at least as new is confirmed in R2"
+expect_err "kept gtfs_bus/v1 (pruned by this build): no copy of gtfs_bus at least as new is confirmed in R2"
+grep -q "kept 2 source versions" "$work/files/p12.md" || fail "no warning in the step summary: $(cat "$work/files/p12.md")"
+remaining=$(cd "$bucket/sources" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')
+[[ $remaining == "gtfs_bus/v0.json gtfs_bus/v0.zip gtfs_bus/v1.json gtfs_bus/v1.zip " ]] || fail "left: $remaining"
+# Once v2 is in R2, both go.
+run "$scripts/sync-sources.sh" upload --sources "$d/sources"; expect_status 0
+prune_run
+expect_status 0
+remaining=$(cd "$bucket/sources" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')
+[[ $remaining == "gtfs_bus/v2.json gtfs_bus/v2.zip " ]] || fail "left: $remaining"
 
 begin "sources aux: the last good copy is replaced only when it changed, and only the files named"
 reset_bucket

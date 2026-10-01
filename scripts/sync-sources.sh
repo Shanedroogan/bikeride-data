@@ -241,10 +241,14 @@ guard() {
       jq -e "$MANIFEST_CHECK" "$work/live-manifest.json" >/dev/null 2>&1 ||
         { keep_all "data/manifest.json is not a manifest these scripts accept"; return 1; }
       # Every version the live set names, as current or as an archived <feed>@<key8>: the feed
-      # and the ETag (as JSON, so it stays one field).
-      jq -r '.sources // {} | objects | .[] | arrays | .[] | objects
-          | select((.feed | type == "string") and (.etag | type == "string") and .etag != "")
-          | "\(.feed)\t\(.etag | @json)"' "$work/live-manifest.json" >"$work/live" 2>/dev/null ||
+      # and the ETag (as JSON, so it stays one field). Sources in another shape would protect no
+      # version, so they keep everything (an empty ETag, a feed sent without one, names none).
+      jq -e '.sources | type == "object" and all(.[]; type == "array"
+          and all(.[]; type == "object" and (.feed | type == "string") and (.etag | type == "string")))' \
+        "$work/live-manifest.json" >/dev/null 2>&1 ||
+        { keep_all "the sources of data/manifest.json are not a list of versions per timetable"; return 1; }
+      jq -r '.sources[][] | select(.etag != "") | "\(.feed)\t\(.etag | @json)"' \
+        "$work/live-manifest.json" >"$work/live" 2>/dev/null ||
         { keep_all "cannot read the sources of data/manifest.json"; return 1; }
       ;;
     "$R2_NOT_FOUND") log "no data/manifest.json: no live set to keep a version for" ;;

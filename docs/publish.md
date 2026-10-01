@@ -355,13 +355,18 @@ planner crash). One run at a time (`concurrency: data-publish`).
 
 The prune deletes only after a publish, and never a feed's last copy. The upload before it is
 add-only and does not hold back the set, so the newer version that made the build drop an older
-one may not be in R2 (its upload failed); deleting the older one would leave the archive fallback
-nothing to fall back to. So a version the plan names (dropped by this build, or 30 days past its
-calendar) is deleted only when:
+one may not be in R2 (its upload failed). The fallback cannot use the older one while the live set
+names that newer version (it uses no copy older than the live version, and none at all while the
+live version is missing from the archive), so keeping it does not restore the fallback; that waits
+for the newer version's upload. What it keeps is the version a rollback to the previous set
+names, and a copy for a run with no live set. So a version the plan names (dropped by this build,
+or 30 days past its calendar) is deleted only when:
 
 - the live set (`data/manifest.json`, read after the publish) does not name it in `sources`, as
   current or as an archived `<feed>@<key8>`, by its record's ETag: the fallback finds the live
-  version by ETag and uses no copy without it (404: no live set, nothing to keep for it);
+  version by ETag and uses no copy without it (404: no live set, nothing to keep for it; a
+  `sources` that is not a list of versions with a string `feed` and `etag` per timetable deletes
+  nothing);
 - R2 holds another version of the feed, not itself in the plan and not older (Last-Modified,
   then `archivedAt`, the compiler's order; a tie counts, since a feed with no Last-Modified has
   its current and new zip archived in the same second), confirmed whole: one in this build's
