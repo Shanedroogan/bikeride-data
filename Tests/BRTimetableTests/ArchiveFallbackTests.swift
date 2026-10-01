@@ -18,10 +18,15 @@ private let unzipInstalled = ProcessToolRunner().locate("unzip") != nil
 
     static func at(_ iso: String) -> Date { ISO8601DateFormatter().date(from: iso)! }
 
-    /// A sources tree holding only an archived copy of ``version``, first archived at `archivedAt`.
-    static func restored(_ scratch: ScratchDirectory, archivedAt: String) throws -> (VersionedSources, GTFSSourceArchive.Record) {
+    static let newerEtag = "\"n-etag\""
+    static let newerLastModified = "Mon, 05 Oct 2026 12:00:00 GMT"
+
+    /// A sources tree holding only an archived copy of `files` (``version`` by default), first
+    /// archived at `archivedAt`.
+    static func restored(_ scratch: ScratchDirectory, archivedAt: String,
+                         files: [String: String] = version) throws -> (VersionedSources, GTFSSourceArchive.Record) {
         let tree = try VersionedSources(root: scratch.url.appendingPathComponent("sources"))
-        let record = try tree.archive(version, etag: etag, lastModified: lastModified, now: at(archivedAt))
+        let record = try tree.archive(files, etag: etag, lastModified: lastModified, now: at(archivedAt))
         return (tree, record)
     }
 
@@ -55,7 +60,7 @@ private let unzipInstalled = ProcessToolRunner().locate("unzip") != nil
         #expect(source.publishedAt == "2026-10-04T12:00:00Z")
         #expect(ferry.warnings.count == 1)
         #expect(ferry.warnings[0].hasPrefix("ferry_test not refreshed (curl exited with status 22"))
-        #expect(ferry.warnings[0].hasSuffix("; using the archived copy v-etag, first archived 2026-10-03T12:00:00Z"))
+        #expect(ferry.warnings[0].hasSuffix("; using the archived copy v-etag, first archived 2026-10-03T12:00:00Z; no previous set to compare it with"))
         // The archived copy is read where it is: nothing under the sources changes.
         #expect(try tree.listing() == before)
 
@@ -73,8 +78,8 @@ private let unzipInstalled = ProcessToolRunner().locate("unzip") != nil
     @Test func theLastGoodCopyIsTheNewestThatPasses() throws {
         let scratch = try ScratchDirectory()
         let (tree, older) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z")
-        let newer = try tree.archive(VersionedSources.feed(trip: "N1", from: "20261005", to: "20261025"), etag: "\"n-etag\"",
-                                     lastModified: "Mon, 05 Oct 2026 12:00:00 GMT", now: Self.at("2026-10-05T12:00:00Z"))
+        let newer = try tree.archive(VersionedSources.feed(trip: "N1", from: "20261005", to: "20261025"), etag: Self.newerEtag,
+                                     lastModified: Self.newerLastModified, now: Self.at("2026-10-05T12:00:00Z"))
         let newerZip = tree.archiveStore.zipURL(feed: "ferry_test", key: newer.key)
         try Self.flipOneByte(newerZip)
 
@@ -87,20 +92,104 @@ private let unzipInstalled = ProcessToolRunner().locate("unzip") != nil
         #expect(FileManager.default.fileExists(atPath: newerZip.path))
     }
 
-    @Test func aCopyOverTheAgeLimitIsNotUsed() throws {
-        // 15 days before the build day: refused, and the run fails as before the fallback.
+    /// Of two good copies the newer by Last-Modified is the current version, under the feed's own
+    /// name; the older one is still a candidate for the window day only it covers.
+    @Test func theNewestOfTwoGoodCopiesIsUsed() throws {
         let scratch = try ScratchDirectory()
-        let (tree, _) = try Self.restored(scratch, archivedAt: "2026-09-21T23:59:59Z")
+        let (tree, older) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z",
+                                              files: VersionedSources.feed(trip: "V1", from: "20261001", to: "20261020"))
+        let newer = try tree.archive(VersionedSources.feed(trip: "N1", from: "20261006", to: "20261025"), etag: Self.newerEtag,
+                                     lastModified: Self.newerLastModified, now: Self.at("2026-10-05T12:00:00Z"))
+
+        let (timetable, report, _) = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]))
+        let sources = (0..<timetable.sourceCount).map { (timetable.source($0).name, timetable.source($0).etag) }
+        #expect(sources.first { $0.0 == "ferry_test" }?.1 == Self.newerEtag)
+        #expect(sources.first { $0.0 == "ferry_test@v-etag" }?.1 == Self.etag)
+        let ferry = try #require(report.systems["tt-ferry"])
+        let current = try #require(ferry.stats.sources.first { $0.name == "ferry_test" })
+        #expect(current.status == "cached" && current.archiveKey == newer.key && current.publishedAt == "2026-10-05T12:00:00Z")
+        #expect(older.key == "v-etag")
+        let candidate = try #require(ferry.stats.sources.first { $0.name == "ferry_test@v-etag" })
+        #expect(candidate.status == nil && candidate.publishedAt == "2026-10-04T12:00:00Z")
+        #expect(ferry.warnings.count == 1 && ferry.warnings[0].contains("using the archived copy n-etag, first archived 2026-10-05T12:00:00Z"))
+    }
+
+    /// When a copy was first archived does not matter: a feed that has not changed upstream keeps
+    /// its first date (the bus feeds, the subway and the ferry, first archived 2026-09-27), and its
+    /// copy is still the current version.
+    @Test func aCopyFirstArchivedLongAgoIsUsed() throws {
+        let scratch = try ScratchDirectory()
+        let (tree, record) = try Self.restored(scratch, archivedAt: "2026-06-01T12:00:00Z",
+                                               files: VersionedSources.feed(trip: "V1", from: "20260601", to: "20270102"))
+        let (_, report, _) = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]),
+                                            liveSources: ["ferry_test": Self.etag])
+        let ferry = try #require(report.systems["tt-ferry"])
+        #expect(ferry.stats.sources.map(\.status) == ["cached"] && ferry.stats.sources.map(\.archiveKey) == [record.key])
+        #expect(ferry.warnings.count == 1 && ferry.warnings[0].hasSuffix("; using the archived copy v-etag, first archived 2026-06-01T12:00:00Z"))
+    }
+
+    /// A copy must have service on at least 3 days from the build day (the gate's minDays):
+    /// 10-06 to 10-07 is refused, 10-06 to 10-08 is used.
+    @Test func aCopyWithUnderThreeDaysLeftIsNotUsed() throws {
+        let scratch = try ScratchDirectory()
+        let (tree, _) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z",
+                                          files: VersionedSources.feed(trip: "V1", from: "20261001", to: "20261007"))
         Self.expectNoArchivedCopy({
             _ = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]))
-        }, reason: "archived copy v-etag was first archived 2026-09-21T23:59:59Z, 15 days before 20261006: over the 14-day limit")
+        }, reason: "archived copy v-etag has service to 20261007, under 3 days from 20261006: not used")
         #expect(!FileManager.default.fileExists(atPath: scratch.url.appendingPathComponent("out/tt-ferry.bin").path))
 
-        // 14 days: used.
         let edge = try ScratchDirectory()
-        let (edgeTree, _) = try Self.restored(edge, archivedAt: "2026-09-22T00:00:00Z")
+        let (edgeTree, _) = try Self.restored(edge, archivedAt: "2026-10-03T12:00:00Z",
+                                              files: VersionedSources.feed(trip: "V1", from: "20261001", to: "20261008"))
         let (_, report, _) = try edgeTree.build(scratch: edge, offline: false, runner: FakeCurlRunner(responses: [.fail]))
         #expect(report.systems["tt-ferry"]?.stats.sources.first?.status == "cached")
+    }
+
+    /// The live set was built from the newer version, whose archived copy is damaged: the older
+    /// copy would publish a schedule older than the live one, so it is not used.
+    @Test func aCopyOlderThanTheLiveVersionIsNotUsed() throws {
+        let scratch = try ScratchDirectory()
+        let (tree, _) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z")
+        let newer = try tree.archive(VersionedSources.feed(trip: "N1", from: "20261005", to: "20261025"), etag: Self.newerEtag,
+                                     lastModified: Self.newerLastModified, now: Self.at("2026-10-05T12:00:00Z"))
+        try Self.flipOneByte(tree.archiveStore.zipURL(feed: "ferry_test", key: newer.key))
+        Self.expectNoArchivedCopy({
+            _ = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]),
+                               liveSources: ["ferry_test": Self.newerEtag])
+        }, reason: "archived copies older than n-etag, the version the live set was built from, are not used")
+    }
+
+    /// The live set was built from a version the archive does not hold (its sources upload
+    /// failed): the copies cannot be placed against it, so none is used.
+    @Test func aLiveVersionMissingFromTheArchiveStopsTheFallback() throws {
+        let scratch = try ScratchDirectory()
+        let (tree, _) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z")
+        Self.expectNoArchivedCopy({
+            _ = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]),
+                               liveSources: ["ferry_test": Self.newerEtag])
+        }, reason: "the live set was built from ferry_test with ETag \"n-etag\", which the archive does not hold")
+    }
+
+    /// A copy newer than the live version is used; so is the live version's own copy, and a
+    /// previous set without the feed only says so.
+    @Test func theLiveVersionOrANewerCopyIsUsed() throws {
+        func build(live: [String: String]) throws -> TimetableSystemReport {
+            let scratch = try ScratchDirectory()
+            let (tree, _) = try Self.restored(scratch, archivedAt: "2026-10-03T12:00:00Z")
+            try tree.archive(VersionedSources.feed(trip: "N1", from: "20261005", to: "20261025"), etag: Self.newerEtag,
+                             lastModified: Self.newerLastModified, now: Self.at("2026-10-05T12:00:00Z"))
+            let (_, report, _) = try tree.build(scratch: scratch, offline: false, runner: FakeCurlRunner(responses: [.fail]), liveSources: live)
+            return try #require(report.systems["tt-ferry"])
+        }
+        for live in [Self.etag, Self.newerEtag] {
+            let ferry = try build(live: ["ferry_test": live])
+            #expect(ferry.stats.sources.first?.archiveKey == "n-etag", "\(live)")
+            #expect(ferry.warnings.count == 1 && ferry.warnings[0].hasSuffix("; using the archived copy n-etag, first archived 2026-10-05T12:00:00Z"))
+        }
+        let other = try build(live: ["other_feed": Self.etag])
+        #expect(other.stats.sources.first?.archiveKey == "n-etag")
+        #expect(other.warnings.count == 1 && other.warnings[0].hasSuffix("; the previous set has no ferry_test to compare it with"))
     }
 
     @Test func aTruncatedCopyIsNotUsed() throws {

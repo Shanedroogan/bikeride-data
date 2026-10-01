@@ -182,23 +182,34 @@ unused 19 MB zips.
 
 The archive is also the fallback for a failed download. A feed whose slot has a fallback spec
 (PATH's Trillium feed) uses that, as before. Any other feed is built from its last good archived
-copy: the newest by Last-Modified that was first archived at most 14 days before the build day
-(`TimetableBuild.maxArchivedCopyAgeDays`), whose zip has its record's size and SHA-256 and whose
-calendar reads. In CI that is a copy `restore-state.sh` put there from R2's `sources/`. The copy is
-read in place, under the feed's own name with its ETag and Last-Modified, so it builds the same
-bytes as when that version was downloaded, and the sources tree is not changed. Its row in the
-report's source table (`reports/timetables.json`, `systems.<tt>.stats.sources`) has `status:
-"cached"`, `archivedAt` and `archiveKey`, the system gets a warning, and the step summary lists it
-(`set-summary.sh --sources`). Newer copies refused on the way (too old, or not matching their
+copy: the newest by Last-Modified that is not older than the version the live set was built from,
+whose calendar runs at least 3 days from the build day (`TimetableBuild.minArchivedCopyDaysLeft`),
+whose zip has its record's size and SHA-256 and whose calendar reads. In CI that is a copy
+`restore-state.sh` put there from R2's `sources/`. The copy is read in place, under the feed's own
+name with its ETag and Last-Modified, so it builds the same bytes as when that version was
+downloaded, and the sources tree is not changed. Its row in the report's source table
+(`reports/timetables.json`, `systems.<tt>.stats.sources`) has `status: "cached"`, `archivedAt` and
+`archiveKey`, the system gets a warning, and the step summary lists it (`set-summary.sh
+--sources`). Newer copies refused on the way (too little service left, or not matching their
 record) are named in the warning, not passed to the compiler, and not deleted. With no usable copy
 the run stops as before (`SourceError.noArchivedCopy`, naming why each copy was refused), and the
 next slot retries.
 
-14 days is the plan's coverage alarm (job 7 pages under 14 days of coverage): a copy first seen
-longer ago has outlived what the plan tolerates before a person looks for a successor feed. The
-archive records when a version was first seen, not when it was last confirmed current, so a feed
-that has not changed for over 14 days (the ferry, say) has no usable copy and fails as
-before: the safe direction.
+The live version is the feed's source in `--previous`'s manifest (`sources`, the entry named after
+the feed rather than `<feed>@<key8>`), found in the archive by its ETag. `all` passes `--previous`
+on to `timetables`. The sources upload is add-only and does not hold back a set, so the live
+version can be missing from the restored archive (its upload failed, or its calendar ended before
+yesterday and `restore-state.sh` left it out); then no copy can be placed against it and none is
+used, rather than one that may be older than what phones already have. Without
+`--previous` (a first run, or a local run with no earlier set) the copy is not compared, and the
+warning says so.
+
+3 days is the gate's `coverage.minDays`: a copy with less left would publish a system the gate
+marks `noSchedule`, where failing the run keeps the live set. When a copy was first archived is
+not a limit: a version is archived when first seen and not again, so a feed that has not changed
+upstream (most bus feeds, the subway and the ferry go weeks between versions) keeps its first date
+while its copy is still the current version. The gate's coverage check and job 7 bound how stale a
+published schedule can get.
 
 ## R2 (M4)
 
@@ -321,9 +332,10 @@ planner crash). One run at a time (`concurrency: data-publish`).
 ### Failures
 
 - A gate, config or manifest failure writes nothing; the previous set stays current.
-- A failed feed download: the slot's fallback spec, else the feed's last good archived copy (at
-  most 14 days old; "Source archive" above), with a warning in the step summary; with neither,
-  the run fails and the next slot retries.
+- A failed feed download: the slot's fallback spec, else the feed's last good archived copy (not
+  older than the live set's version and with at least 3 days of service left; "Source archive"
+  above), with a warning in the step summary; with neither, the run fails and the next slot
+  retries.
 - Two callers racing: the re-read guard stops the later one; its next run builds on the new set.
 - A publish torn between PUTs: before the dated copy, it leaves only blobs (and perhaps the
   sidecar), which GC removes after 48 h. At the re-read guard or after it (a race, or a failed

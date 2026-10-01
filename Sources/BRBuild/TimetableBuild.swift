@@ -33,14 +33,20 @@ public struct TimetableBuild: Sendable {
     /// cached file, the subway is not built rather than built without entrances. CI passes it,
     /// because a fresh runner has no cache unless the restore step put the last good copy there.
     public var strictSources = false
-    /// The oldest an archived copy may be, in days from when it was first archived to the build
-    /// day, for a feed whose download failed to be built from it (``archivedCopy(of:fetcher:reasons:)``).
-    /// 14 is the plan's coverage alarm: job 7 pages when a system has under 14 days of coverage,
-    /// and a copy first seen longer ago than that has outlived what the plan tolerates before a
-    /// human looks for a successor feed. The gate's 3 days (`coverage.minDays`) would refuse most
-    /// bus copies, which change less often, for no gain: the coverage check and job 7 still bound
-    /// how stale a published schedule can get.
-    public var maxArchivedCopyAgeDays = 14
+    /// The fewest service days an archived copy must have left, counting the build day, for a feed
+    /// whose download failed to be built from it (``archivedCopy(of:fetcher:reasons:)``): its
+    /// calendar must run to at least the build day plus this minus one. 3 is the gate's
+    /// `coverage.minDays` (Failure policy 4): a copy with less left would only publish a system
+    /// the gate marks `noSchedule`, where failing the run keeps the live set. When a copy was
+    /// first archived says nothing about whether it is still current (a feed that has not changed
+    /// keeps its first date), so it is not a limit.
+    public var minArchivedCopyDaysLeft = 3
+    /// The version of each feed the live set was built from: feed name to the ETag of its source
+    /// named after the feed (not an archived `<feed>@<key8>`) in `--previous`'s manifest
+    /// (``liveSources(of:)``). An archived copy older than that version is not used, so a fallback
+    /// never publishes a schedule older than the one already live. Nil when there is no previous
+    /// set, and a feed it does not name is not compared.
+    public var liveSources: [String: String]?
 
     public init(sourcesDirectory: URL, outputDirectory: URL, reportURL: URL?, systems: [TransitSystem] = TransitSystem.allCases,
                 offline: Bool, today: ServiceDate, compress: Bool = true, runner: any ToolRunner) {
@@ -219,8 +225,8 @@ public struct TimetableBuild: Sendable {
     }
 
     /// The archived copy a feed is built from when its download failed, and the other archived
-    /// versions it was preferred over because they were refused (too old, or not matching their
-    /// record): those are not passed to the compiler either.
+    /// versions it was preferred over because they were refused (too little service left, or not
+    /// matching their record): those are not passed to the compiler either.
     struct ArchivedCopy {
         var record: GTFSSourceArchive.Record
         var refusedKeys: Set<String>
@@ -305,8 +311,11 @@ public struct TimetableBuild: Sendable {
                             throw SourceError.noArchivedCopy(feed: spec.name, download: "\(error)", reasons: reasons)
                         }
                         archivedCopies[spec.name] = copy
+                        // Without a live version to compare with, the copy could be older than the live set's.
+                        let uncompared = liveSources == nil ? "; no previous set to compare it with"
+                            : liveSources?[spec.name] == nil ? "; the previous set has no \(spec.name) to compare it with" : ""
                         warn("\(spec.name) not refreshed (\(error)); using the archived copy \(copy.record.key), first archived \(copy.record.archivedAt)"
-                            + (reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"))
+                            + uncompared + (reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"))
                         specs.append(spec)
                         continue
                     }
@@ -341,12 +350,12 @@ public struct TimetableBuild: Sendable {
 
     /// The last good archived copy of `spec` (``GTFSSourceArchive``; in CI, what restore-state.sh
     /// put there from R2's `sources/`), for when its download failed: the newest version by
-    /// Last-Modified (the compiler's order) that was first archived at most
-    /// ``maxArchivedCopyAgeDays`` before the build day, whose zip has its record's size and
-    /// SHA-256, and whose calendar reads. Each version refused on the way is named in `reasons`;
-    /// nil when none is left. The archive's date is the only one it has: a version is archived
-    /// when first seen and not again, so a feed that has not changed for longer than the limit
-    /// has no usable copy, and fails as it did before the archive was a fallback.
+    /// Last-Modified (the compiler's order) that is not older than the version the live set was
+    /// built from (``liveSources``), whose calendar runs at least ``minArchivedCopyDaysLeft`` days
+    /// from the build day, whose zip has its record's size and SHA-256, and whose calendar reads.
+    /// Each version refused on the way is named in `reasons`; nil when none is left. When the
+    /// live set names a version the archive does not hold (its upload failed, say), no copy can
+    /// be placed against it and none is used: the run fails as it did before the fallback.
     func archivedCopy(of spec: GTFSFeedSpec, fetcher: GTFSFetcher, reasons: inout [String]) -> ArchivedCopy? {
         guard let archive = fetcher.archive else {
             reasons.append("the build keeps no archive")
@@ -364,21 +373,33 @@ public struct TimetableBuild: Sendable {
             return nil
         }
         // Newest first, as the compiler ranks versions of one feed; then the later archived.
-        let ordered = records.sorted { ($0.publishedAt, $0.archivedAt) > ($1.publishedAt, $1.archivedAt) }
+        func newer(_ a: GTFSSourceArchive.Record, _ b: GTFSSourceArchive.Record) -> Bool {
+            (a.publishedAt, a.archivedAt) > (b.publishedAt, b.archivedAt)
+        }
+        let ordered = records.sorted(by: newer)
+        // The version the live set was built from: no copy older than it is used.
+        var live: GTFSSourceArchive.Record?
+        if let etag = liveSources?[spec.name] {
+            guard !etag.isEmpty, let record = ordered.first(where: { $0.etag == etag }) else {
+                reasons.append("the live set was built from \(spec.name) with ETag \(etag.isEmpty ? "(none)" : etag), which the archive "
+                    + "does not hold, so a copy could be older than it")
+                return nil
+            }
+            live = record
+        }
+        let lastDay = today.adding(days: max(minArchivedCopyDaysLeft, 1) - 1)
         var refused = Set<String>()
         for record in ordered {
+            if let live, newer(live, record) {
+                reasons.append("archived copies older than \(live.key), the version the live set was built from, are not used")
+                break
+            }
             func refuse(_ why: String) {
                 reasons.append("archived copy \(record.key) \(why)")
                 refused.insert(record.key)
             }
-            guard let archived = Self.isoDate(record.archivedAt) else {
-                refuse("has no readable archive date (\(record.archivedAt))")
-                continue
-            }
-            // Whole days in UTC, the zone archivedAt is written in.
-            let age = today.daysSinceEpoch - Int((archived.timeIntervalSince1970 / 86_400).rounded(.down))
-            guard age <= maxArchivedCopyAgeDays else {
-                refuse("was first archived \(record.archivedAt), \(age) days before \(today.yyyymmdd): over the \(maxArchivedCopyAgeDays)-day limit")
+            guard let end = record.calendarEnd.flatMap(ServiceDate.init(yyyymmdd:)), end.daysSinceEpoch >= lastDay.daysSinceEpoch else {
+                refuse("has service to \(record.calendarEnd ?? "(no calendar)"), under \(minArchivedCopyDaysLeft) days from \(today.yyyymmdd): not used")
                 continue
             }
             let zip = archive.zipURL(feed: spec.name, key: record.key)
@@ -402,11 +423,15 @@ public struct TimetableBuild: Sendable {
         return nil
     }
 
-    static func isoDate(_ text: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: text) { return date }
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: text)
+    /// ``liveSources`` from the live set's manifest: per timetable, the source named after its
+    /// feed is the version that timetable was built from as current (the others are archived
+    /// versions, `<feed>@<key8>`, chosen only for dates the current one does not cover).
+    public static func liveSources(of manifest: SetManifest) -> [String: String] {
+        var sources: [String: String] = [:]
+        for source in manifest.sources.values.joined() where source.name == source.feed {
+            sources[source.feed] = source.etag
+        }
+        return sources
     }
 
     /// Every version of the selected feeds to parse: each feed's current zip, followed by the

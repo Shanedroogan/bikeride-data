@@ -21,9 +21,11 @@ let allUsage = """
       --trips DIR           Citi Bike trip-zip cache and saved listing for flows (default build/trips)
       --months LIST         Flows months instead of the newest three (YYYYMM-YYYYMM or YYYYMM,YYYYMM,…)
       --config-sources DIR  Reviewed config sources (default ./Data, else ./Vendor/bikeride-data/Data)
-      --previous FILE       The previous set's manifest.json: the gate compares trip counts with it, and
-                            gate and manifest carry forward the kinds missing from --out. It may be
-                            <out>/manifest.json (read where it is moved to)
+      --previous FILE       The previous set's manifest.json: the gate compares trip counts with it,
+                            gate and manifest carry forward the kinds missing from --out, and
+                            timetables builds a feed whose download failed from no archived copy
+                            older than the version it was built from. It may be <out>/manifest.json
+                            (read where it is moved to)
       --offline             Use the sources and trip data already downloaded
       --no-xz               Skip compression; nothing can be published, so gate, manifest and heartbeat
                             are skipped
@@ -160,7 +162,8 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         case .streets:
             status = runStreetsCommand(["--sources", sources, "--out", out.path] + offline + noXZ + cachedExtracts)
         case .timetables:
-            status = runTimetablesCommand(["--sources", sources, "--out", out.path] + offline + noXZ + todayArgument + strictSources)
+            status = runTimetablesCommand(["--sources", sources, "--out", out.path] + offline + noXZ + todayArgument + strictSources
+                + previousArgument)
         case .stations:
             status = runStationsCommand(["--sources", sources, "--out", out.path] + offline + noXZ)
         case .config:

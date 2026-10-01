@@ -5,7 +5,7 @@ import Foundation
 let timetablesUsage = """
     USAGE: bikeride-data timetables [--sources <dir>] [--out <dir>] [--report <file>] [--offline]
                                     [--systems subway,bus,lirr,ferry,path] [--today YYYYMMDD] [--no-xz]
-                                    [--strict-sources]
+                                    [--strict-sources] [--previous FILE]
 
     Downloads the GTFS feeds into <sources>/gtfs (conditional GET; skipped with --offline),
     compiles tt-subway, tt-bus, tt-lirr, tt-ferry and tt-path into <out> as raw artifacts plus .xz blobs,
@@ -21,6 +21,9 @@ let timetablesUsage = """
       --no-xz           Skip compression
       --strict-sources  Fail instead of building the subway without entrances when neither the
                         download nor the cached <sources>/nyc file is usable (CI passes it)
+      --previous FILE   The live set's manifest.json: a feed whose download failed is not built
+                        from an archived copy older than the version that set was built from
+                        (an unreadable file is an error, as it is for the gate)
     """
 
 /// `bikeride-data timetables …`. Returns the process exit status.
@@ -31,6 +34,7 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
     var offline = false
     var compress = true
     var strictSources = false
+    var previous: URL?
     var systems = TransitSystem.allCases
     var today = ServiceDate(containing: Date(), in: .nyc)
 
@@ -61,6 +65,9 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
             compress = false
         case "--strict-sources":
             strictSources = true
+        case "--previous":
+            guard let path = value() else { return usageError("--previous needs a file") }
+            previous = URL(fileURLWithPath: path)
         case "--systems":
             guard let list = value() else { return usageError("--systems needs a list") }
             var chosen: [TransitSystem] = []
@@ -93,6 +100,14 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
         offline: offline, today: today, compress: compress, runner: ProcessToolRunner()
     )
     build.strictSources = strictSources
+    if let previous {
+        do {
+            build.liveSources = TimetableBuild.liveSources(of: try SetManifest.load(previous))
+        } catch {
+            FileHandle.standardError.write(Data("bikeride-data timetables: previous manifest \(previous.path) unreadable (\(error))\n".utf8))
+            return 1
+        }
+    }
     do {
         let started = Date()
         try build.run { print($0) }

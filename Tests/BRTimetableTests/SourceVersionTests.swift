@@ -319,11 +319,13 @@ struct VersionedSources {
 
     /// Builds tt-ferry from these sources with build day 2026-10-06 (window from 10/05).
     func build(scratch: ScratchDirectory, output: String = "out", offline: Bool = true,
-               runner: any ToolRunner = ProcessToolRunner(), feeds: [GTFSFeedSpec] = [Self.spec]) throws -> (Timetable, TimetableBuildReport, URL) {
+               runner: any ToolRunner = ProcessToolRunner(), feeds: [GTFSFeedSpec] = [Self.spec],
+               liveSources: [String: String]? = nil) throws -> (Timetable, TimetableBuildReport, URL) {
         let out = scratch.url.appendingPathComponent(output)
         var build = TimetableBuild(sourcesDirectory: root, outputDirectory: out, reportURL: nil, systems: [.ferry],
                                    offline: offline, today: date("20261006"), compress: false, runner: runner)
         build.feeds = [.ferry: feeds]
+        build.liveSources = liveSources
         let report = try build.run()
         let file = out.appendingPathComponent("tt-ferry.bin")
         return (try Timetable(contentsOf: file), report, file)

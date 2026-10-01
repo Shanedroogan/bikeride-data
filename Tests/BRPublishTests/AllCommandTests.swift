@@ -168,6 +168,48 @@ struct AllCommandTests {
         #expect(cached.status == 1 && cached.subwayBuilt)
     }
 
+    /// `all --previous` reaches the timetables step, which reads the live version of each feed
+    /// from it (for the archive fallback). The subway is written under the NYC names as in
+    /// ``strictSourcesReachesTheTimetablesStep()``, with an entrances file, so the subway is built
+    /// and the bus stops the step; a previous manifest that does not read stops it before anything
+    /// is built, as the gate would.
+    @Test func previousReachesTheTimetablesStep() throws {
+        let sources = try SyntheticSources()
+        let previous = try PipelineTests.published(sources).keepAsPrevious("previous")
+
+        // The live versions are the sources named after their feed; archived ones are left out.
+        var manifest = try SetManifest.load(previous)
+        let current = manifest.sources.values.joined().filter { $0.name == $0.feed }
+        #expect(!current.isEmpty)
+        manifest.sources["tt-ferry", default: []].append(.init(name: "ferry_x@0123abcd", feed: "ferry_x", etag: "\"old\"", feedVersion: "",
+                                                               datesSelected: 1, firstSelected: nil, lastSelected: nil))
+        let live = TimetableBuild.liveSources(of: manifest)
+        #expect(live == Dictionary(uniqueKeysWithValues: current.map { ($0.feed, $0.etag) }))
+        #expect(live["ferry_x"] == nil)
+
+        let feed = StoredZip.make(SyntheticSources.feed(.subway, SyntheticSources.FeedOptions(), from: "20261005", to: "20261025"))
+        for spec in NYCFeeds.feeds(for: .subway) {
+            try feed.write(to: sources.gtfs.appendingPathComponent("\(spec.name).zip"))
+        }
+        let entrances = TimetableBuild(sourcesDirectory: sources.sources, outputDirectory: sources.root, reportURL: nil, offline: true,
+                                       today: SyntheticSources.today, runner: SyntheticSources.runner).entrancesFile
+        let alpha = SyntheticSources.coordinate(2, 2)
+        try Data((StrictSourcesTests.header + "IRT,Test,M,Alpha,1,Alpha,1,SA,1,Stair,YES,YES,\(alpha.lat),\(alpha.lon),\n").utf8).write(to: entrances)
+        let garbage = sources.root.appendingPathComponent("garbage/manifest.json")
+        try FileManager.default.createDirectory(at: garbage.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not a manifest".utf8).write(to: garbage)
+        func run(_ name: String, previous: URL) -> (status: Int32, subwayBuilt: Bool) {
+            let out = sources.root.appendingPathComponent("\(name)/data")
+            let status = runAllCommand(Self.common(sources) + ["--out", out.path, "--skip", "streets,stations,config,links,flows,gate,manifest",
+                                                               "--previous", previous.path])
+            return (status, FileManager.default.fileExists(atPath: out.appendingPathComponent(TimetableBuild.artifactFileName(.subway)).path))
+        }
+        let unreadable = run("unreadable", previous: garbage)
+        #expect(unreadable.status == 1 && !unreadable.subwayBuilt)
+        let readable = run("readable", previous: previous)
+        #expect(readable.status == 1 && readable.subwayBuilt)
+    }
+
     /// Both values are checked before anything runs, as strictly as the workflow's own check.
     @Test func aBadJobOrSystemListIsAUsageError() throws {
         let scratch = try PublishScratch()
