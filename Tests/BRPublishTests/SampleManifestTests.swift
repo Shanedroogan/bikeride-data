@@ -28,7 +28,7 @@ import Testing
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let again = try #require(JSONSerialization.jsonObject(with: encoder.encode(manifest)) as? NSDictionary)
         #expect(again == object)
-        #expect(manifest.schema == 1 && manifest.buildDay == "20260926" && manifest.gate.status == .pass)
+        #expect(manifest.schema == 1 && manifest.buildDay == "20260926" && manifest.gate.status == .pass && manifest.minAppFormat == 1)
         #expect(try manifest.setId == SetManifest.setId(manifest.artifacts))
         #expect(manifest.artifacts.keys.sorted() == SetManifest.coreKinds.map(\.name).sorted())
         #expect(manifest.artifacts["streets"]?.rawSha256 == "06af80ebc1cfdef901dcfbc498e9d3bb9d6dcc8ffc210a4791bf2bb9e2a5076f")

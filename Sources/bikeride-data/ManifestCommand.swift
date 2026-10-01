@@ -17,7 +17,7 @@ let manifestUsage = """
       --previous-heartbeat FILE  Its heartbeat (default heartbeat.json beside --previous)
       --today DATE               Build day (default today in New York)
       --now ISO8601              generatedAt / checkedAt (default now)
-      --job NAME                 Recorded in the heartbeat (default all)
+      --job NAME                 Recorded in the heartbeat: all (default), timetables, streets or flows
       --require-flows            A set without flows is refused (by default flows is optional)
       --no-heartbeat             Write the manifest only (`all` writes the heartbeat as its own last step)
       --timetables-not-run       This job did not build the timetables although tt-* files are in
@@ -40,6 +40,8 @@ func runManifestCommand(_ arguments: [String]) -> Int32 {
         let options = try CommandOptions(
             arguments, valued: ["--data", "--reports", "--previous", "--previous-heartbeat", "--today", "--now", "--job"],
             flags: ["--timetables-not-run", "--timetables-unchanged", "--require-flows", "--no-heartbeat"])
+        // Checked before anything is written, as `all` checks it.
+        let job = try options.values["--job"].map(Pipeline.job(named:)) ?? .all
         let notRun = options.flags.contains("--timetables-not-run"), unchanged = options.flags.contains("--timetables-unchanged")
         guard !(notRun && unchanged) else {
             throw CommandOptions.UsageError(description: "--timetables-not-run and --timetables-unchanged contradict each other")
@@ -70,10 +72,13 @@ func runManifestCommand(_ arguments: [String]) -> Int32 {
         let heartbeatURL = try writeHeartbeat(
             for: manifest, data: data,
             previousHeartbeat: options.values["--previous-heartbeat"].map(CommandOptions.absoluteURL) ?? previousHeartbeatURL(beside: previous),
-            now: now, job: options.values["--job"] ?? "all", notRun: notRun, unchanged: unchanged)
+            now: now, job: job.rawValue, notRun: notRun, unchanged: unchanged)
         print("manifest: \(heartbeatURL.path)")
         return 0
     } catch let error as CommandOptions.UsageError {
+        FileHandle.standardError.write(Data("bikeride-data manifest: \(error)\n\n\(manifestUsage)\n".utf8))
+        return 64
+    } catch let error as Pipeline.UsageError {
         FileHandle.standardError.write(Data("bikeride-data manifest: \(error)\n\n\(manifestUsage)\n".utf8))
         return 64
     } catch {
@@ -90,11 +95,8 @@ func previousHeartbeatURL(beside previousManifest: URL?) -> URL? {
 /// Writes `<data>/heartbeat.json` for `manifest` (written by this run), last. Returns its URL.
 func writeHeartbeat(for manifest: SetManifest, data: URL, previousHeartbeat: URL?, now: Date, job: String,
                     notRun: Bool, unchanged: Bool) throws -> URL {
-    let heartbeat = SetHeartbeat.after(manifest, now: now, job: job,
-                                       timetablesSucceeded: SetHeartbeat.timetablesSucceeded(manifest, notRun: notRun, unchanged: unchanged),
-                                       previous: previousHeartbeat.flatMap { try? SetHeartbeat.load($0) })
-    let url = data.appendingPathComponent(SetHeartbeat.fileName)
-    try heartbeat.write(to: url)
+    let heartbeat = try SetHeartbeat.write(for: manifest, data: data, previousHeartbeat: previousHeartbeat, now: now, job: job,
+                                           notRun: notRun, unchanged: unchanged)
     if heartbeat.lastTimetableSuccessAt == nil { logLine("manifest", "warning: no lastTimetableSuccessAt (no previous heartbeat)") }
-    return url
+    return data.appendingPathComponent(SetHeartbeat.fileName)
 }

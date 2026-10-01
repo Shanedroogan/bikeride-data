@@ -31,6 +31,13 @@ public struct StreetsCompiler: Sendable {
         public var boroughToleranceMeters = 10.0
         public var options = StreetBuildOptions()
         public var compress = true
+        /// The clock the Geofabrik dated fallback counts back from (UTC days; see
+        /// ``GeofabrikExtract``). Tests pin it.
+        public var now = Date()
+        /// `--cached-extracts`: when `-latest` and both dated Geofabrik copies fail, build from the
+        /// extract already in ``sourcesDirectory`` (status `cached`, with a warning) instead of
+        /// failing. For the Mac fallback with a seeded `--sources`; CI leaves it off.
+        public var cachedExtracts = false
 
         public init(sourcesDirectory: URL, outputDirectory: URL, workDirectory: URL? = nil) {
             self.sourcesDirectory = sourcesDirectory
@@ -69,6 +76,9 @@ public struct StreetsCompiler: Sendable {
         public var artifact: Artifact
         /// Seconds per phase.
         public var seconds: [String: Double]
+        /// Sources the build fell back on: a dated Geofabrik extract for a failed `-latest`, the
+        /// cached borough boundaries for a failed download. Empty when every download worked.
+        public var warnings: [String]
     }
 
     public let runner: any ToolRunner
@@ -98,15 +108,19 @@ public struct StreetsCompiler: Sendable {
 
         // 1. Sources.
         let fetcher = SourceFetcher(runner: runner, offline: config.offline)
+        var warnings: [String] = []
         let (osm, njOSM, boroughs) = try timed("download") {
             log("fetching \(Self.osmURL)")
-            let osm = try fetcher.fetch(Self.osmURL, to: config.osmFile)
+            let osm = try GeofabrikExtract.fetch(Self.osmURL, to: config.osmFile, fetcher: fetcher, now: config.now,
+                                                 useCached: config.cachedExtracts, warnings: &warnings, log: log)
             log("  \(osm.status), \(osm.bytes) bytes")
             log("fetching \(Self.njOSMURL)")
-            let njOSM = try fetcher.fetch(Self.njOSMURL, to: config.njOSMFile)
+            let njOSM = try GeofabrikExtract.fetch(Self.njOSMURL, to: config.njOSMFile, fetcher: fetcher, now: config.now,
+                                                   useCached: config.cachedExtracts, warnings: &warnings, log: log)
             log("  \(njOSM.status), \(njOSM.bytes) bytes")
             log("fetching \(Self.boroughsURL)")
-            let boroughs = try fetcher.fetch(Self.boroughsURL, to: config.boroughsFile)
+            let boroughs = try Self.fetchBoroughs(to: config.boroughsFile, fetcher: fetcher, toleranceMeters: config.boroughToleranceMeters,
+                                                  warnings: &warnings, log: log)
             log("  \(boroughs.status), \(boroughs.bytes) bytes")
             return (osm, njOSM, boroughs)
         }
@@ -222,8 +236,41 @@ public struct StreetsCompiler: Sendable {
             snapGridCells: graph.grid.cellCount,
             snapGridEntries: graph.gridEntryCount,
             artifact: artifact,
-            seconds: seconds
+            seconds: seconds,
+            warnings: warnings
         )
+    }
+
+    /// The borough boundaries: refreshed unless offline; when the download fails, or answers 200
+    /// with a body that is not a feature collection of boroughs (``checkBoroughs(_:toleranceMeters:)``,
+    /// run before the body replaces the file), the cached file (the last good copy, which CI
+    /// restores from R2) is used with a warning. There is no build without them, so with no cached
+    /// file the error stands.
+    static func fetchBoroughs(to file: URL, fetcher: SourceFetcher, toleranceMeters: Double = 10, warnings: inout [String],
+                              log: (String) -> Void) throws -> SourceRecord {
+        do {
+            return try fetcher.fetch(boroughsURL, to: file) { try checkBoroughs($0, toleranceMeters: toleranceMeters) }
+        } catch {
+            guard !fetcher.offline, FileManager.default.fileExists(atPath: file.path) else { throw error }
+            warnings.append("borough boundaries not refreshed (\(error)); using the cached file")
+            log("  warning: \(warnings.last!)")
+            var record = try SourceFetcher(runner: fetcher.runner, offline: true).fetch(boroughsURL, to: file)
+            record.status = "cached"
+            return record
+        }
+    }
+
+    /// Why a downloaded borough boundaries file was refused.
+    struct BoroughsUnusable: Error, CustomStringConvertible {
+        var description: String { "no boroughs in the feature collection" }
+    }
+
+    /// A downloaded borough boundaries file must read as the build reads it and name at least one
+    /// borough.
+    static func checkBoroughs(_ file: URL, toleranceMeters: Double) throws {
+        guard try !GeoJSONAreas.boroughs(from: Data(contentsOf: file), simplifyToleranceMeters: toleranceMeters).isEmpty else {
+            throw BoroughsUnusable()
+        }
     }
 
     static func hasher(runner: any ToolRunner) throws -> any Hasher256 {

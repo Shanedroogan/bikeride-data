@@ -90,6 +90,63 @@ import Testing
         #expect(newSystem.warnings == ["path: no previous trip counts; not compared"])
     }
 
+    /// `--accept-trip-count-change`: an accepted system's dates beyond the limit are warnings and
+    /// the check passes; another system's still fail; naming a system with nothing to accept warns.
+    @Test func anAcceptedChangeIsAWarningForThatSystemOnly() {
+        let previous = Self.counts("20261001", "20261031")
+        let doubled = Self.counts("20261005", "20261010", weekday: 2000, saturday: 1400, sunday: 1200)
+        let same = Self.counts("20261005", "20261010")
+        let accepted = GateChecks.tripCounts(current: ["bus": doubled, "subway": same], previous: ["bus": previous, "subway": previous],
+                                             holidays: [], maxChangePercent: 35, accepted: ["bus", "lirr"])
+        #expect(accepted.status == .pass && accepted.failures.isEmpty, "\(accepted.failures)")
+        let acceptedLines = accepted.warnings.filter { $0.hasPrefix("accepted: bus 2026-10-") }
+        #expect(acceptedLines.count == 6 && acceptedLines[0] == "accepted: bus 2026-10-05: 2000 trips vs 1000 (the previous build's same date), +100.0%")
+        #expect(accepted.warnings.contains("lirr: --accept-trip-count-change had nothing to accept (lirr's timetable is not new in this set)"))
+        #expect(accepted.metrics["bus.acceptedDates"] == 6 && accepted.metrics["subway.acceptedDates"] == nil)
+        #expect(accepted.summary == "6 dates within ±35% of the previous build; 6 beyond it accepted for bus (--accept-trip-count-change)")
+
+        // Accepting subway does not let bus through, and says subway had nothing to accept.
+        let wrong = GateChecks.tripCounts(current: ["bus": doubled, "subway": same], previous: ["bus": previous, "subway": previous],
+                                          holidays: [], maxChangePercent: 35, accepted: ["subway"])
+        #expect(wrong.status == .fail && wrong.failures.count == 6 && !wrong.warnings.contains { $0.hasPrefix("accepted: ") })
+        #expect(wrong.warnings.contains("subway: --accept-trip-count-change had nothing to accept (every compared date within ±35%)"))
+
+        // Without a previous build there is nothing to compare, accepted or not.
+        let none = GateChecks.tripCounts(current: ["bus": doubled], previous: nil, holidays: [], maxChangePercent: 35, accepted: ["bus"])
+        #expect(none.status == .skipped && none.warnings.last == "bus: --accept-trip-count-change had nothing to accept (no previous build)")
+        let newSystem = GateChecks.tripCounts(current: ["path": doubled], previous: ["bus": previous], holidays: [], maxChangePercent: 35, accepted: ["path"])
+        #expect(newSystem.warnings == ["path: no previous trip counts; not compared",
+                                       "path: --accept-trip-count-change had nothing to accept (no previous trip counts)"])
+    }
+
+    /// The override has a floor: an accepted system's date that falls by more than
+    /// `maxAcceptedDropPercent` (to no trips at all, as a broken or truncated feed would) still
+    /// fails; smaller drops are accepted as before.
+    @Test func anAcceptedSystemStillFailsADropToNothing() {
+        let previous = Self.counts("20261001", "20261031")
+        let cut = Self.counts("20261005", "20261010", weekday: 400, saturday: 300,
+                              overrides: ["20261006": 0, "20261007": 50, "20261008": 110])
+        let result = GateChecks.tripCounts(current: ["bus": cut], previous: ["bus": previous], holidays: [], maxChangePercent: 35,
+                                           accepted: ["bus"], maxAcceptedDropPercent: 90)
+        #expect(result.status == .fail)
+        #expect(result.failures == [
+            "bus 2026-10-06: 0 trips vs 1000 (the previous build's same date), -100.0%: a drop beyond 90% is not accepted (--accept-trip-count-change)",
+            "bus 2026-10-07: 50 trips vs 1000 (the previous build's same date), -95.0%: a drop beyond 90% is not accepted (--accept-trip-count-change)",
+        ])
+        #expect(result.warnings.filter { $0.hasPrefix("accepted: bus ") }.count == 4 && result.metrics["bus.acceptedDates"] == 4)
+        #expect(result.warnings.contains("accepted: bus 2026-10-08: 110 trips vs 1000 (the previous build's same date), -89.0%"))
+
+        // Every date cut to nothing: all fail, and the override is not reported as having had
+        // nothing to accept.
+        let none = GateChecks.tripCounts(current: ["bus": Self.counts("20261005", "20261010", weekday: 0, saturday: 0)],
+                                         previous: ["bus": previous], holidays: [], maxChangePercent: 35, accepted: ["bus"])
+        #expect(none.status == .fail && none.failures.count == 6 && none.metrics["bus.acceptedDates"] == 0)
+        #expect(!none.warnings.contains { $0.contains("had nothing to accept") }, "\(none.warnings)")
+
+        // The thresholds file sets the floor; the default matches it.
+        #expect(GateConfiguration.Thresholds.TripCounts(maxChangePercent: 35).maxAcceptedDropPercent == 90)
+    }
+
     // MARK: Coverage
 
     @Test func shortCoverageFailsSoftAndKeepsTheDates() {

@@ -99,6 +99,57 @@ private struct FixtureOsmiumRunner: ToolRunner {
         }
     }
 
+    /// Online, with Geofabrik's `-latest` failing for New York and the borough boundaries failing
+    /// too: the build uses yesterday's dated New York extract and the cached boundaries, says so in
+    /// the report, and builds the same graph.
+    @Test func aBuildThatFellBackSaysSo() throws {
+        let scratch = try ScratchDirectory()
+        var configuration = StreetsCompiler.Configuration(
+            sourcesDirectory: scratch.url.appendingPathComponent("sources"), outputDirectory: scratch.url.appendingPathComponent("data")
+        )
+        configuration.options.snapCellMeters = 50
+        configuration.compress = false
+        configuration.now = GeofabrikFallbackTests.now
+        try FileManager.default.createDirectory(at: configuration.boroughsFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try StreetsFixtures.data("boroughs-fixture.geojson").write(to: configuration.boroughsFile)
+        let curl = CurlStub(body: Data()) { $0 == StreetsCompiler.osmURL || $0 == StreetsCompiler.boroughsURL }
+        let report = try StreetsCompiler(runner: CurlThenFixtureOsmium(curl: curl), configuration: configuration).run()
+
+        #expect(curl.requested == [StreetsCompiler.osmURL, "https://download.geofabrik.de/north-america/us/new-york-260930.osm.pbf",
+                                   StreetsCompiler.njOSMURL, StreetsCompiler.boroughsURL])
+        #expect(report.sources.map(\.status) == ["downloaded", "downloaded", "cached"])
+        #expect(report.sources[0].url.hasSuffix("/new-york-260930.osm.pbf") && report.sources[1].url == StreetsCompiler.njOSMURL)
+        #expect(report.warnings.count == 2 && report.warnings[0].contains("used the dated extract") && report.warnings[1].hasPrefix("borough boundaries not refreshed"),
+                "\(report.warnings)")
+        #expect(report.regions == ["Manhattan", "Staten Island", "Hoboken", "Jersey City"])
+        #expect(report.stats == (try FixtureStreets.build()).stats)
+    }
+
+    /// `--cached-extracts`: Geofabrik is down entirely (every `-latest` and dated URL fails) and
+    /// `--sources` was seeded with both extracts. The build uses them, says so, and builds the same
+    /// graph; without the flag the same run fails.
+    @Test func withCachedExtractsAGeofabrikOutageUsesTheSeededExtracts() throws {
+        let scratch = try ScratchDirectory()
+        var configuration = StreetsCompiler.Configuration(
+            sourcesDirectory: scratch.url.appendingPathComponent("sources"), outputDirectory: scratch.url.appendingPathComponent("data")
+        )
+        configuration.options.snapCellMeters = 50
+        configuration.compress = false
+        configuration.now = GeofabrikFallbackTests.now
+        for file in [configuration.osmFile, configuration.njOSMFile] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("seeded".utf8).write(to: file)
+        }
+        let curl = CurlStub(body: try StreetsFixtures.data("boroughs-fixture.geojson")) { $0.hasPrefix("https://download.geofabrik.de/") }
+        #expect(throws: ToolError.self) { try StreetsCompiler(runner: CurlThenFixtureOsmium(curl: curl), configuration: configuration).run() }
+
+        configuration.cachedExtracts = true
+        let report = try StreetsCompiler(runner: CurlThenFixtureOsmium(curl: curl), configuration: configuration).run()
+        #expect(report.sources.map(\.status) == ["cached", "cached", "downloaded"])
+        #expect(report.warnings.count == 2 && report.warnings.allSatisfy { $0.hasSuffix("(--cached-extracts)") }, "\(report.warnings)")
+        #expect(report.stats == (try FixtureStreets.build()).stats)
+    }
+
     @Test func offlineBuildsNeedTheSources() throws {
         let scratch = try ScratchDirectory()
         var configuration = StreetsCompiler.Configuration(
@@ -108,6 +159,25 @@ private struct FixtureOsmiumRunner: ToolRunner {
         #expect(throws: SourceFetcher.FetchError.missingOffline(path: configuration.osmFile.path)) {
             try StreetsCompiler(runner: FixtureOsmiumRunner(), configuration: configuration).run()
         }
+    }
+}
+
+/// `curl` from a ``CurlStub``, `osmium` from the fixtures, everything else for real.
+private struct CurlThenFixtureOsmium: ToolRunner {
+    let curl: CurlStub
+    let osmium = FixtureOsmiumRunner()
+
+    func locate(_ executable: String) -> String? {
+        executable == "curl" ? "curl" : osmium.locate(executable)
+    }
+
+    func run(executable: String, args: [String], stdin: Data?) throws -> Data {
+        executable == "curl" ? try curl.run(executable: executable, args: args, stdin: stdin)
+            : try osmium.run(executable: executable, args: args, stdin: stdin)
+    }
+
+    func stream(executable: String, args: [String], stdinFile: URL?) throws -> ToolStream {
+        try osmium.stream(executable: executable, args: args, stdinFile: stdinFile)
     }
 }
 

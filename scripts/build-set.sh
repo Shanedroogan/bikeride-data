@@ -12,19 +12,21 @@ usage() {
 USAGE: scripts/build-set.sh --job timetables|streets|streets-restored --prev DIR --data DIR --sources DIR
                             [--accept-trip-count-change LIST] [--dry-run]
 
-Runs $BIKERIDE_DATA all --out <data> --sources <sources> --today <BUILD_DAY> and, by job:
+Runs $BIKERIDE_DATA all --out <data> --sources <sources> --today <BUILD_DAY> --strict-sources
+and, by job:
   timetables        --job timetables --skip streets,stations,flows (streets and stations were
                     restored into <data>)
   streets           --job streets --skip streets,flows (the streets step already built
                     streets.bin into <data>; stations and the rest are rebuilt on it)
   streets-restored  as timetables: the streets fallback, after restore-state.sh --blobs-only
+Every job builds the timetables, so every run passes --strict-sources: a subway without
+entrances (no download and no usable cached copy) stops bikeride-data all itself.
 On a real run, or any run with a previous set: --previous <prev>/manifest.json --require-flows,
 so flows is carried and a set without it fails. A first run (FIRST_RUN=1 in <prev>/state.env)
 is built only with --dry-run, without --previous and --require-flows, and skips only flows (and
 streets when the streets step built it): it proves the build on an empty bucket and publishes
 nothing. A real first run is refused: the first set is published from the Mac.
-Then: no flows.bin in <data>, and no "built without entrances" warning in
-<data>/../reports/timetables.json.
+Then: no flows.bin in <data>.
 
   --job NAME                       As above
   --prev DIR                       What restore-state.sh wrote
@@ -66,7 +68,7 @@ if [[ $job != timetables && ! -f $data/streets.bin ]]; then
   die "$data/streets.bin is missing: the streets step (or the fallback restore) comes first"
 fi
 
-args=(all --out "$data" --sources "$sources" --today "$BUILD_DAY")
+args=(all --out "$data" --sources "$sources" --today "$BUILD_DAY" --strict-sources)
 case $job in
   timetables | streets-restored)
     args+=(--job timetables)
@@ -94,9 +96,5 @@ status=0
 
 if [[ -e $data/flows.bin || -e $data/flows.bin.xz ]]; then
   die "$data holds flows files; flows never reaches the public runner"
-fi
-report="$(dirname "$data")/reports/timetables.json"
-if [[ -f $report ]] && grep -q 'built without entrances' "$report"; then
-  die "the subway was built without entrances (no download and no cached copy): not published"
 fi
 log "built set $(jq -r '.setId // "?"' "$data/manifest.json" 2>/dev/null || echo '?')"

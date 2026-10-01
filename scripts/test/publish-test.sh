@@ -90,14 +90,15 @@ restore() { run "$scripts/restore-state.sh" --today "$DAY" --now "$NOW" "$@"; }
 publish() { run "$scripts/publish-set.sh" --now "$NOW" "$@"; }
 
 # A stand-in bikeride-data: records its arguments, copies FAKE_BRD_SET into --out, writes the
-# reports build-set.sh and publish-local.sh read, and exits FAKE_BRD_STATUS.
+# reports publish-local.sh reads, and exits FAKE_BRD_STATUS. A FAKE_BRD_WARNING of "built without
+# entrances" with --strict-sources exits 1, as timetables (and so all) does then.
 cat >"$work/bin/bikeride-data" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_BRD_LOG"
-out=''
+out='' strict=0
 while [[ $# -gt 0 ]]; do
-  case $1 in --out) out=$2; shift ;; esac
+  case $1 in --out) out=$2; shift ;; --strict-sources) strict=1 ;; esac
   shift
 done
 [[ -n $out ]] || exit 64
@@ -105,6 +106,7 @@ mkdir -p "$out" "$(dirname "$out")/reports"
 if [[ -n ${FAKE_BRD_SET:-} ]]; then cp "$FAKE_BRD_SET"/* "$out"/; fi
 printf '{"warnings":["%s"]}\n' "${FAKE_BRD_WARNING:-none}" >"$(dirname "$out")/reports/timetables.json"
 printf '{"sanity":[{"name":"x","pass":%s}]}\n' "${FAKE_BRD_SANITY:-true}" >"$(dirname "$out")/reports/streets.json"
+if [[ $strict == 1 && ${FAKE_BRD_WARNING:-} == *"built without entrances"* ]]; then exit 1; fi
 exit "${FAKE_BRD_STATUS:-0}"
 FAKE
 chmod +x "$work/bin/bikeride-data"
@@ -330,7 +332,7 @@ restore --job timetables --prev "$d/prev" --sources "$d/sources" --data "$d/data
 FAKE_BRD_SET="$work/setB" run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources" \
   --accept-trip-count-change subway,path
 expect_status 0
-[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --job timetables --skip streets,stations,flows --previous $d/prev/manifest.json --require-flows --accept-trip-count-change subway,path" ]] ||
+[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --strict-sources --job timetables --skip streets,stations,flows --previous $d/prev/manifest.json --require-flows --accept-trip-count-change subway,path" ]] ||
   fail "arguments: $(cat "$FAKE_BRD_LOG")"
 
 begin "build-set: streets after the streets step; the fallback builds as timetables"
@@ -347,17 +349,21 @@ mkdir -p "$d2/prev" && cp "$d/prev/state.env" "$d2/prev/"
 run "$scripts/build-set.sh" --job streets --prev "$d2/prev" --data "$d2/data" --sources "$d2/sources"; expect_status 1
 expect_err "streets.bin is missing"
 
-begin "build-set: a failed build, a flows.bin or a subway without entrances is not publishable"
+begin "build-set: a failed build, a flows.bin or a subway without entrances (--strict-sources) is not publishable"
 FAKE_BRD_STATUS=3 run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources"
 expect_status 3
 FAKE_BRD_SET="$work/setA" run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources"
 expect_status 1
 expect_err "flows never reaches the public runner"
 rm -f "$d/data/flows.bin" "$d/data/flows.bin.xz"
-FAKE_BRD_WARNING="subway entrances unavailable (offline); built without entrances" FAKE_BRD_SET="$work/setB" \
-  run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources"
-expect_status 1
-expect_err "without entrances"
+for job in timetables streets streets-restored; do
+  : >"$FAKE_BRD_LOG"
+  FAKE_BRD_WARNING="subway entrances unavailable (offline); built without entrances" FAKE_BRD_SET="$work/setB" \
+    run "$scripts/build-set.sh" --job "$job" --prev "$d/prev" --data "$d/data" --sources "$d/sources"
+  expect_status 1
+  expect_err "stopped with status 1"
+  [[ $(cat "$FAKE_BRD_LOG") == *" --strict-sources "* ]] || fail "$job: no --strict-sources: $(cat "$FAKE_BRD_LOG")"
+done
 
 begin "build-set: a held run builds nothing"
 mkdir -p "$work/held" && printf 'HOLD=1\nFIRST_RUN=0\nPREV_SET=\nBUILD_DAY=20261007\n' >"$work/held/state.env"
@@ -375,7 +381,7 @@ restore --job timetables --prev "$d/prev" --sources "$d/sources" --data "$d/data
 : >"$FAKE_BRD_LOG"
 FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources" --dry-run
 expect_status 0
-[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --job timetables --skip flows" ]] ||
+[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --strict-sources --job timetables --skip flows" ]] ||
   fail "arguments: $(cat "$FAKE_BRD_LOG")"
 publish --data "$d/data" --prev "$d/prev" --no-flows-upload --dry-run; expect_status 0
 expect_err "[dry run] set $SET_ID would be published (previous none)"
@@ -395,7 +401,7 @@ mkdir -p "$d/data" && printf 'streets first\n' >"$d/data/streets.bin"
 : >"$FAKE_BRD_LOG"
 FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job streets --prev "$d/prev" --data "$d/data" --sources "$d/sources" --dry-run
 expect_status 0
-[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --job streets --skip streets,flows" ]] ||
+[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --strict-sources --job streets --skip streets,flows" ]] ||
   fail "arguments: $(cat "$FAKE_BRD_LOG")"
 : >"$FAKE_BRD_LOG"
 FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job streets-restored --prev "$d/prev" --data "$d/data" --sources "$d/sources" --dry-run

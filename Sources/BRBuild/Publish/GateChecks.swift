@@ -87,25 +87,43 @@ public enum GateChecks {
     /// Christmas and New Year's Day is 37 % under a normal Thursday or Friday, but the previous
     /// build (built days earlier) already had that same reduced schedule. The holiday profiles
     /// cover dates new to this build (a feed extended its calendar).
+    ///
+    /// `accepted` names the systems whose change a person reviewed and accepted for this run
+    /// (`--accept-trip-count-change`, the workflow's `accept_trip_count_change`): their dates
+    /// beyond the limit are warnings (`accepted: …`), not failures, except a date whose trips fall
+    /// by more than `maxAcceptedDropPercent` (to none included), which fails all the same: the
+    /// override is for a schedule pick a person reviewed, not for a broken or truncated feed (the
+    /// rerun downloads the feeds again, so it may not be the change that was reviewed). Everything
+    /// else about them is checked as usual, and naming a system that had nothing to accept is a
+    /// warning too, so an override left in a dispatch shows up.
     public static func tripCounts(current: [String: [ServiceDate: Int]], previous: [String: [ServiceDate: Int]]?,
                                   holidays: Set<ServiceDate>, maxChangePercent: Double,
-                                  holidayProfiles: [GateConfiguration.Thresholds.TripCounts.HolidayProfile] = [.weekday, .saturday, .sunday])
+                                  holidayProfiles: [GateConfiguration.Thresholds.TripCounts.HolidayProfile] = [.weekday, .saturday, .sunday],
+                                  accepted: Set<String> = [], maxAcceptedDropPercent: Double = 90)
         -> GateCheckResult {
+        let acceptedNames = accepted.sorted()
         guard let previous else {
             return GateCheckResult(name: "tripCounts", status: .skipped, summary: "no previous build to compare with",
-                                   warnings: ["no previous build (no --previous): trip counts not compared"])
+                                   warnings: ["no previous build (no --previous): trip counts not compared"]
+                                       + acceptedNames.map { "\($0): --accept-trip-count-change had nothing to accept (no previous build)" })
         }
         var failures: [String] = [], warnings: [String] = [], notes: [String] = [], metrics: [String: Double] = [:]
-        var compared = 0
+        var compared = 0, acceptedDates = 0, acceptedSystems: [String] = []
+        for name in acceptedNames where current[name] == nil {
+            warnings.append("\(name): --accept-trip-count-change had nothing to accept (\(name)'s timetable is not new in this set)")
+        }
         for (system, counts) in current.sorted(by: { $0.key < $1.key }) {
             guard let before = previous[system], !before.isEmpty else {
                 warnings.append("\(system): no previous trip counts; not compared")
+                if accepted.contains(system) {
+                    warnings.append("\(system): --accept-trip-count-change had nothing to accept (no previous trip counts)")
+                }
                 continue
             }
             var byWeekday: [Weekday: [Int]] = [:]
             for (date, trips) in before where !holidays.contains(date) { byWeekday[date.weekday, default: []].append(trips) }
             let medians = byWeekday.mapValues(median)
-            var sameDate = 0, profile = 0, worst: (delta: Double, line: String)?
+            var sameDate = 0, profile = 0, beyondAccepted = 0, droppedPastFloor = 0, worst: (delta: Double, line: String)?
             for (date, trips) in counts.sorted(by: { $0.key < $1.key }) {
                 let reference: Double, basis: String
                 if let same = before[date] {
@@ -140,7 +158,25 @@ public enum GateChecks {
                 let delta = (Double(trips) - reference) / reference
                 let line = String(format: "%@ %@: %d trips vs %.0f (%@), %+.1f%%", system, SetSystems.isoDay(date), trips, reference, basis, delta * 100)
                 if worst == nil || abs(delta) > abs(worst!.delta) { worst = (delta, line) }
-                if abs(delta) * 100 > maxChangePercent { failures.append(line) }
+                if abs(delta) * 100 > maxChangePercent {
+                    if accepted.contains(system), -delta * 100 > maxAcceptedDropPercent {
+                        failures.append("\(line): a drop beyond \(Int(maxAcceptedDropPercent))% is not accepted (--accept-trip-count-change)")
+                        droppedPastFloor += 1
+                    } else if accepted.contains(system) {
+                        warnings.append("accepted: \(line)")
+                        beyondAccepted += 1
+                    } else {
+                        failures.append(line)
+                    }
+                }
+            }
+            if accepted.contains(system) {
+                metrics["\(system).acceptedDates"] = Double(beyondAccepted)
+                acceptedDates += beyondAccepted
+                if beyondAccepted > 0 { acceptedSystems.append(system) }
+                if beyondAccepted == 0, droppedPastFloor == 0 {
+                    warnings.append("\(system): --accept-trip-count-change had nothing to accept (every compared date within ±\(Int(maxChangePercent))%)")
+                }
             }
             metrics["\(system).sameDate"] = Double(sameDate)
             metrics["\(system).weekdayProfile"] = Double(profile)
@@ -149,9 +185,11 @@ public enum GateChecks {
                 notes.append("worst: \(worst.line)")
             }
         }
+        let acceptedSummary = acceptedDates == 0 ? ""
+            : "; \(acceptedDates) beyond it accepted for \(acceptedSystems.joined(separator: ", ")) (--accept-trip-count-change)"
         return .verdict("tripCounts", checked: compared > 0,
-                        summary: failures.isEmpty ? "\(compared) dates within ±\(Int(maxChangePercent))% of the previous build"
-                                                  : "\(failures.count) of \(compared) dates beyond ±\(Int(maxChangePercent))%",
+                        summary: (failures.isEmpty ? "\(compared - acceptedDates) dates within ±\(Int(maxChangePercent))% of the previous build"
+                                                   : "\(failures.count) of \(compared) dates beyond ±\(Int(maxChangePercent))%") + acceptedSummary,
                         failures: failures, warnings: warnings, notes: notes, metrics: metrics)
     }
 

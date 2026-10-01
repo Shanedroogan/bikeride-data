@@ -28,6 +28,11 @@ public struct TimetableBuild: Sendable {
     public var feeds: [TransitSystem: [GTFSFeedSpec]]
     /// PATH parent-station and platform-transfer synthesis.
     public var pathStations = PATHStationOptions()
+    /// `--strict-sources`: a source the build would otherwise go without is an error instead of a
+    /// warning. Today that is the subway entrances: with neither a fresh download nor a readable
+    /// cached file, the subway is not built rather than built without entrances. CI passes it,
+    /// because a fresh runner has no cache unless the restore step put the last good copy there.
+    public var strictSources = false
 
     public init(sourcesDirectory: URL, outputDirectory: URL, reportURL: URL?, systems: [TransitSystem] = TransitSystem.allCases,
                 offline: Bool, today: ServiceDate, compress: Bool = true, runner: any ToolRunner) {
@@ -77,6 +82,9 @@ public struct TimetableBuild: Sendable {
             var entrances: (list: [SubwayEntrance], report: TimetableSystemReport.AuxiliarySource)?
             if system == .subway {
                 entrances = loadEntrances(warnings: &warnings, log: log)
+                if entrances == nil, strictSources {
+                    throw SourceError.builtWithoutEntrances(warnings.last ?? "subway entrances unavailable")
+                }
             }
             let versions = try sourceVersions(specs, fetcher: fetcher, log: log)
             let parseStart = Date()
@@ -175,15 +183,36 @@ public struct TimetableBuild: Sendable {
         return report
     }
 
-    /// The subway entrances: refreshed unless offline; on failure the cached file is used, and
-    /// without one the subway is built without entrances (with a warning).
+    /// Why a ``strictSources`` build stopped.
+    public enum SourceError: Error, Equatable, CustomStringConvertible {
+        /// The subway entrances could neither be downloaded nor read from the cached file.
+        case builtWithoutEntrances(String)
+
+        public var description: String {
+            switch self {
+            case .builtWithoutEntrances(let why): "\(why) (--strict-sources: the subway is not built without entrances)"
+            }
+        }
+    }
+
+    /// Why a downloaded subway entrances file was refused.
+    struct EntrancesUnusable: Error, CustomStringConvertible {
+        var description: String { "no usable rows" }
+    }
+
+    /// The subway entrances: refreshed unless offline; when the download fails, or answers 200 with
+    /// a body that has no usable rows (checked before it replaces the file, so a bad answer never
+    /// overwrites the last good copy), the cached file is used, and without one the subway is built
+    /// without entrances (with a warning; ``strictSources`` makes that an error).
     func loadEntrances(warnings: inout [String], log: (String) -> Void)
         -> (list: [SubwayEntrance], report: TimetableSystemReport.AuxiliarySource)?
     {
         var status = "cached"
         var version = ""
         do {
-            let record = try SourceFetcher(runner: runner, offline: offline).fetch(SubwayEntrances.url, to: entrancesFile)
+            let record = try SourceFetcher(runner: runner, offline: offline).fetch(SubwayEntrances.url, to: entrancesFile) {
+                guard try !SubwayEntrances.parse(fileAt: $0).entrances.isEmpty else { throw EntrancesUnusable() }
+            }
             status = record.status
             version = record.versionTag
             log("  fetch \(SubwayEntrances.fileName): \(record.status)")
@@ -198,6 +227,12 @@ public struct TimetableBuild: Sendable {
         }
         do {
             let parsed = try SubwayEntrances.parse(fileAt: entrancesFile)
+            guard !parsed.entrances.isEmpty else {
+                // An empty or truncated file is no better than none.
+                warnings.append("subway entrances file \(entrancesFile.lastPathComponent) has no usable rows; built without entrances")
+                log("  warning: \(warnings.last!)")
+                return nil
+            }
             if version.isEmpty {
                 let date = (try? FileManager.default.attributesOfItem(atPath: entrancesFile.path)[.modificationDate]) as? Date
                 version = date.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"

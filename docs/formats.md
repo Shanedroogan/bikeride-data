@@ -944,8 +944,8 @@ payload golden (`ConfigV1Tests`) pins the bytes of a hand-built document on macO
   is not switched to. A new value needs a bump (or a new optional key that carries it).
 - `null` reads as absent. Writers omit an absent optional.
 - `minAppFormat` is a semantics gate, not a parse gate: an app whose engine level is below it
-  rejects the set before switching to it, although the JSON parses. The manifest will mirror it
-  (M4) so such apps skip the download.
+  rejects the set before switching to it, although the JSON parses. The manifest mirrors it
+  (`minAppFormat` in `manifest.json`, see `publish.md`) so such apps skip the download.
 
 **Checks.** `MappedConfig` checks the envelope, decodes, then applies the *structural* rules an
 engine needs (`ConfigValidation.structuralIssues`): no negative prices, times or counts (the

@@ -23,9 +23,17 @@ without a gate report for these files (exit 3). `--today` and `--now` go to ever
 them (the manifest and heartbeat share one timestamp); `--previous FILE` goes to `gate` and
 `manifest`; `--trips` and `--months` to `flows`; `--config-sources` to `config`, which `all` always
 runs with `--require-references`. `--job NAME` (`all`, the default, or the workflow jobs
-`timetables`, `streets`, `flows`) is recorded as the heartbeat's `job`. `--accept-trip-count-change
-LIST` (systems, comma-separated, no spaces) is checked and passed to `gate`, which does not apply
-it yet: until it does, a `tripCounts` failure still fails the gate (see "R2", below).
+`timetables`, `streets`, `flows`) is recorded as the heartbeat's `job`; anything else is a usage
+error (64), on `manifest --job` too. `--accept-trip-count-change LIST` (systems, comma-separated, no
+spaces, as strict as the workflow's check) is passed to `gate`: see `tripCounts` below.
+`--strict-sources` is passed to `timetables`, where it makes "built without entrances" an error:
+with neither a fresh download nor a usable cached `<sources>/nyc/subway-entrances.csv` (an empty
+one counts as none), the subway is not built and the run stops. `build-set.sh` (CI) and
+`publish-local.sh` pass it. A download whose body has no usable rows (data.ny.gov answering 200 with an empty export or a changed header) is
+refused before it is saved, so the cached copy is kept and used, as for a failed download.
+`--cached-extracts` is passed to `streets`: when a Geofabrik extract's `-latest` and both dated
+copies fail, the extract already in `--sources` is used instead of stopping the run. Only the Mac
+fallback passes it (with a seeded `--sources`); data-build restores the last published streets.
 
 Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
 `--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that
@@ -64,7 +72,7 @@ the manifest only (`all` writes the heartbeat as its own step).
 ## `reports/gate.json` (`GateReport`)
 
 `{schema, generatedAt, tool, buildDay (YYYYMMDD), status: pass|softFail|fail, artifacts: {name:
-rawSha256}, blobs: {name: sha256 of the .xz}, carriedForward: [name], previousSetId?, systems: {subway|bus|lirr|ferry|path: {status:
+rawSha256}, blobs: {name: sha256 of the .xz}, carriedForward: [name], previousSetId?, acceptedTripCountChange?: [system], systems: {subway|bus|lirr|ferry|path: {status:
 ok|noSchedule, coverageDays, dates, first, last}}, checks: [{name, status: pass|softFail|fail|skipped,
 summary, failures, warnings, notes, metrics, seconds}]}`, pretty-printed.
 
@@ -75,7 +83,7 @@ Checks, in order:
 | `artifacts` | every core kind (streets, stations, the five `tt-*`, config, links; flows too with `--require-flows`) is in the data directory or carried forward; each file opens with its reader (`MappedConfig`, and `MappedFlows` validated, included); a carried-forward entry's `formatVersion` is one its kind's readers support (a format-0 draft carried from an older set fails: rebuild it); every `builtAgainst` entry, of fresh and carried artifacts alike, equals the set's rawSha256 of that input | hard |
 | `xz` | each blob is 1 stream / 1 block (`XZCheck`) and `xz -dc` gives the raw size and rawSha256 | hard |
 | `coverage` | consecutive covered days from the build day ≥ `coverage.minDays` (3) | soft: `noSchedule`, real dates kept |
-| `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without `--previous`; with `--previous`, a manifest that does not read or a sidecar that is missing or does not match fails (an unreadable manifest fails `artifacts` too) | hard |
+| `tripCounts` | active trips per date within ±`maxChangePercent` (35 %) of the previous build: same date, else the weekday median (holidays excluded), else for a holiday the nearest of its weekday / Saturday / Sunday medians; skipped without `--previous`, and when no `tt-*` is new (a flows-only set); with `--previous`, a manifest that does not read or a sidecar that is missing or does not match fails (an unreadable manifest fails `artifacts` too). `--accept-trip-count-change LIST`: a listed system's dates beyond the limit are warnings (`accepted: …`, counted in `<system>.acceptedDates`) instead of failures, except a drop of more than `maxAcceptedDropPercent` (90 %, to no trips included), which still fails (a broken or truncated feed, not a reviewed pick; rises are not bounded), and the list is recorded as `acceptedTripCountChange`; a listed system with nothing to accept is a warning; it never covers an unusable previous build | hard, unless accepted |
 | `streets` | each region's `keptShare` in `reports/streets.json` (which must describe this `streets.bin`) ≥ its minimum; a region with no street length at all fails (the report gives it 100 %); skipped when streets is carried forward | hard |
 | `snapping` | every routable stop inside the service area has street entry and exit, and every access point snaps within `maxSnapMeters` (100 m), except as `snap-allowlist.csv` allows; no routable stop, or none inside the service area, fails; a `links.bin` in the data directory needs its `streets.bin` there too (else fail), and a carried-forward `tt-*` leaves that system's stops unchecked with a warning; skipped only when links is carried forward | hard |
 | `configReferences` | `ReferenceChecks` over the set's `config.bin`, `tt-*` and `stations` (`ConfigReferencesCheck`): every LIRR stop with service has a fare zone and every NYC terminal is served (`lirrZones`); the MTA out-of-system and in-system pairs name subway stations and no in-system pair is in `transfers.txt` (`mtaStationPairs`); the SIR routes and fare stations exist (`statenIslandRailway`); every fixed transfer resolves (`fixedTransfers`); every valet station is in `stations.bin` within 50 m of its listed coordinate (`valetStations`); every station's region is configured (`stationRegions`). Run on every build, because `tt-*` change twice a day and config only with `Data/`. A config carried forward cannot be read: if any `tt-*` or `stations` is new the check fails (a job that rebuilds them keeps `config.bin` and `config.bin.xz` in its data directory; a raw file without its blob fails `xz` and the manifest), otherwise it is skipped. A check whose input is carried forward is skipped with a warning | hard |
@@ -100,7 +108,7 @@ timer.
 ```
 {"schema": 1,
  "setId": "3b0f7ece25409da6",            // first 16 hex of sha256 over sorted "<name>\t<sha>\n"
- "generatedAt": "2026-09-26T16:31:00Z", "tool": "bikeride-data 0.1.0 (Swift 6.4)",
+ "generatedAt": "2026-09-26T16:31:00Z", "minAppFormat": 1, "tool": "bikeride-data 0.1.0 (Swift 6.4)",
  "buildDay": "20260926", "previousSetId": "…" (absent for a first set), "carriedForward": [name],
  "artifacts": {"<name>": {"sha", "bytes", "rawBytes", "rawSha256", "formatVersion", "dataVersion", "builtAgainst"}},
  "coverage": {"subway": ["2026-09-25", …], "bus": […], "lirr": […], "ferry": […], "path": […]},
@@ -121,6 +129,11 @@ timer.
   version is named `<feed>@<key8>`.
 - `gate` publishes each check's status and warning count only; the text (which can name local
   paths) stays in `reports/gate.json`.
+- `minAppFormat` mirrors the set's config (`config/app.json`): from `config.bin` when the data
+  directory has it, else the previous manifest's, carried with the config. The app compares it
+  with its own engine level and refuses a set it must not apply before downloading anything. A
+  carried config whose previous manifest has no `minAppFormat` (written before the mirror) makes
+  the manifest refuse (exit 1): rebuild config.
 - `--previous` carries forward the kinds the data directory lacks (a job that did not rebuild
   them): their artifact entries, coverage, sources and trip counts. Everything, fresh or carried,
   must match what it was built against, or the manifest is refused.
@@ -175,7 +188,7 @@ They run on bash 3.2 (macOS) and later, and need `jq` and `xz` (`Brewfile`, `apt
 | Script | Does |
 |---|---|
 | `restore-state.sh` | The hold, the previous set (manifest, heartbeat, sidecar by sha), the source archive and auxiliary files, and for `timetables` the streets and stations blobs; writes `prev/state.env` |
-| `build-set.sh` | `bikeride-data all` with the job's arguments (no R2 keys), then no `flows.bin` and no "built without entrances" |
+| `build-set.sh` | `bikeride-data all` with the job's arguments (no R2 keys), with `--strict-sources`, then no `flows.bin` |
 | `publish-set.sh` | The only writer of `data/manifest.json` (below) |
 | `sync-sources.sh` | `upload` (add-only), `prune` and `aux` (after a publish) |
 | `gc-data.sh` | GC (below) |
@@ -258,12 +271,14 @@ planner crash). One run at a time (`concurrency: data-publish`).
    times out, or a sanity route fails (exit 2, which `all` would take as a warning),
    `restore-state.sh --blobs-only` puts the published streets and stations back, the run continues as a timetables run, and its last step
    fails the job with "streets not rebuilt".
-4. `build-set.sh` (no R2 keys): `all --previous prev/manifest.json --require-flows --job <job>`
-   with `--skip streets,stations,flows` (timetables) or `--skip streets,flows` (streets, after
-   step 3). Flows is always carried from the previous set: the public runner never sees trip data
-   or `flows.bin`. A first-run dry run builds without `--previous` and `--require-flows` and
-   skips only flows (and streets when step 3 built it). Then: no `flows.bin`, and no "built
-   without entrances" warning in `reports/timetables.json`.
+4. `build-set.sh` (no R2 keys): `all --previous prev/manifest.json --require-flows
+   --strict-sources --job <job>` with `--skip streets,stations,flows` (timetables) or `--skip
+   streets,flows` (streets, after step 3). Flows is always carried from the previous set: the
+   public runner never sees trip data or `flows.bin`. Every job builds the timetables, so every
+   build passes `--strict-sources`: a subway without entrances (no download and no usable cached
+   copy) stops `all` itself. A first-run dry run builds without `--previous` and
+   `--require-flows` and skips only flows (and streets when step 3 built it). Then: no
+   `flows.bin` in the data directory.
 5. `sync-sources.sh upload`, add-only, on every real run that restored, even a failed one. A
    failed upload turns the run red but does not hold back the publish: the archive is a backup.
 6. `publish-set.sh --no-flows-upload`, after a successful build: the hold again (a hold that
@@ -293,7 +308,8 @@ planner crash). One run at a time (`concurrency: data-publish`).
   newer set; it must be later than the current one's) through the re-read guard. Publishing
   resumes when the hold is removed by hand or its `until` passes, building on the rolled-back set.
 - `tripCounts` beyond ±35 % stops the run unless a person dispatches with
-  `accept_trip_count_change` (recorded in `gate.json` and the summary once the gate applies it).
+  `accept_trip_count_change` (`all --accept-trip-count-change`; recorded in `gate.json` as
+  `acceptedTripCountChange`, for the step summary).
 
 ### GC
 

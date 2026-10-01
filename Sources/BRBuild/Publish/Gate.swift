@@ -27,10 +27,17 @@ public struct GateConfiguration: Sendable, Equatable {
             /// Day, which run weekday service (subway +51 %, bus +44 % and +57 %, PATH +86 % against
             /// the Sunday median in the 2026-09-26 build).
             public var holidayProfiles: [HolidayProfile]
+            /// The bound on `--accept-trip-count-change`: a date whose trips fall by more than this
+            /// (to none included) fails even for an accepted system. A feed cut to almost nothing is
+            /// broken or truncated, not a schedule pick a person reviewed. Rises are not bounded: a
+            /// new pick may double a system's service.
+            public var maxAcceptedDropPercent: Double
 
-            public init(maxChangePercent: Double, holidayProfiles: [HolidayProfile] = HolidayProfile.allCases) {
+            public init(maxChangePercent: Double, holidayProfiles: [HolidayProfile] = HolidayProfile.allCases,
+                        maxAcceptedDropPercent: Double = 90) {
                 self.maxChangePercent = maxChangePercent
                 self.holidayProfiles = holidayProfiles
+                self.maxAcceptedDropPercent = maxAcceptedDropPercent
             }
         }
 
@@ -338,6 +345,10 @@ public struct Gate {
     public var configuration: GateConfiguration
     public var requiredKinds: [ArtifactKind] = SetManifest.coreKinds
     public var extraChecks: [any GateCheck] = []
+    /// `--accept-trip-count-change`: the systems whose trip-count change beyond the limit is
+    /// accepted for this run (see ``GateChecks/tripCounts(current:previous:holidays:maxChangePercent:holidayProfiles:accepted:)``),
+    /// recorded in the report. It does not cover a previous build whose counts cannot be used.
+    public var acceptedTripCountChange: Set<TransitSystem> = []
     public var runner: any ToolRunner
     public var now = Date()
 
@@ -399,7 +410,9 @@ public struct Gate {
             return GateChecks.tripCounts(
                 current: try currentTripCounts(context), previous: previousTripCounts(context), holidays: configuration.holidays,
                 maxChangePercent: configuration.thresholds.tripCounts.maxChangePercent,
-                holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles)
+                holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles,
+                accepted: Set(acceptedTripCountChange.map(SetSystems.name)),
+                maxAcceptedDropPercent: configuration.thresholds.tripCounts.maxAcceptedDropPercent)
         }
         timed("streets") { try streetsCheck(context) }
         timed("snapping") { try snappingCheck(context) }
@@ -411,7 +424,9 @@ public struct Gate {
             buildDay: today.yyyymmdd, status: status,
             artifacts: Dictionary(uniqueKeysWithValues: artifacts.values.map { ($0.kind.name, $0.rawSha256) }),
             blobs: SetArtifacts.blobHashes(artifacts),
-            carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId, systems: systems, checks: checks)
+            carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId,
+            acceptedTripCountChange: acceptedTripCountChange.isEmpty ? nil : acceptedTripCountChange.map(SetSystems.name).sorted(),
+            systems: systems, checks: checks)
         _ = try SetArtifacts.writeJSON(report, to: reportURL, pretty: true)
         return report
     }

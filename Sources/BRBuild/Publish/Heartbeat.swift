@@ -51,6 +51,20 @@ public struct SetHeartbeat: Codable, Sendable, Equatable {
         }
     }
 
+    /// Writes `<data>/heartbeat.json` for `manifest`, which this run just wrote: the job's name,
+    /// and `lastTimetableSuccessAt` per ``timetablesSucceeded(_:notRun:unchanged:)``, carried over
+    /// from `previousHeartbeat` (when it reads) otherwise. `bikeride-data all` (its last step) and
+    /// `bikeride-data manifest` both write it here, so the tests drive the same code.
+    @discardableResult
+    public static func write(for manifest: SetManifest, data: URL, previousHeartbeat: URL?, now: Date, job: String,
+                             notRun: Bool, unchanged: Bool) throws -> SetHeartbeat {
+        let heartbeat = after(manifest, now: now, job: job,
+                              timetablesSucceeded: timetablesSucceeded(manifest, notRun: notRun, unchanged: unchanged),
+                              previous: previousHeartbeat.flatMap { try? load($0) })
+        try heartbeat.write(to: data.appendingPathComponent(fileName))
+        return heartbeat
+    }
+
     public static func load(_ url: URL) throws -> SetHeartbeat {
         try JSONDecoder().decode(SetHeartbeat.self, from: Data(contentsOf: url))
     }

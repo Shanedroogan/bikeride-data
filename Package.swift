@@ -51,7 +51,8 @@ let package = Package(
         ),
         .testTarget(
             name: "BRPublishTests",
-            dependencies: ["BRBuild", "BRConfig", "BRFlows", "BRTimetable", "BRStreetCore", "BRData", "BRGeo", "BRCore"]
+            // bikeride-data: the `all` command's own tests call it in process (@testable import).
+            dependencies: ["bikeride-data", "BRBuild", "BRConfig", "BRFlows", "BRTimetable", "BRStreetCore", "BRData", "BRGeo", "BRCore"]
         ),
     ],
     swiftLanguageModes: [.v6]
