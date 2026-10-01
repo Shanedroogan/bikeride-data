@@ -112,6 +112,9 @@ public enum GateChecks {
         for (system, counts) in current.sorted(by: { $0.key < $1.key }) {
             guard let before = previous[system], !before.isEmpty else {
                 warnings.append("\(system): no previous trip counts; not compared")
+                if accepted.contains(system) {
+                    warnings.append("\(system): --accept-trip-count-change had nothing to accept (no previous trip counts)")
+                }
                 continue
             }
             var byWeekday: [Weekday: [Int]] = [:]

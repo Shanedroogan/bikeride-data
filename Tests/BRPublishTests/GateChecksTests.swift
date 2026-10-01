@@ -114,6 +114,9 @@ import Testing
         // Without a previous build there is nothing to compare, accepted or not.
         let none = GateChecks.tripCounts(current: ["bus": doubled], previous: nil, holidays: [], maxChangePercent: 35, accepted: ["bus"])
         #expect(none.status == .skipped && none.warnings.last == "bus: --accept-trip-count-change had nothing to accept (no previous build)")
+        let newSystem = GateChecks.tripCounts(current: ["path": doubled], previous: ["bus": previous], holidays: [], maxChangePercent: 35, accepted: ["path"])
+        #expect(newSystem.warnings == ["path: no previous trip counts; not compared",
+                                       "path: --accept-trip-count-change had nothing to accept (no previous trip counts)"])
     }
 
     // MARK: Coverage
