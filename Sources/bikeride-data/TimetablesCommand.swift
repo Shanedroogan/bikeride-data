@@ -5,6 +5,7 @@ import Foundation
 let timetablesUsage = """
     USAGE: bikeride-data timetables [--sources <dir>] [--out <dir>] [--report <file>] [--offline]
                                     [--systems subway,bus,lirr,ferry,path] [--today YYYYMMDD] [--no-xz]
+                                    [--strict-sources]
 
     Downloads the GTFS feeds into <sources>/gtfs (conditional GET; skipped with --offline),
     compiles tt-subway, tt-bus, tt-lirr, tt-ferry and tt-path into <out> as raw artifacts plus .xz blobs,
@@ -18,6 +19,8 @@ let timetablesUsage = """
       --systems <list>  Comma-separated subset (default all)
       --today <date>    Build day (default today in New York); the window starts the day before
       --no-xz           Skip compression
+      --strict-sources  Fail instead of building the subway without entrances when neither the
+                        download nor the cached <sources>/nyc file is usable (CI passes it)
     """
 
 /// `bikeride-data timetables …`. Returns the process exit status.
@@ -27,6 +30,7 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
     var report: URL?
     var offline = false
     var compress = true
+    var strictSources = false
     var systems = TransitSystem.allCases
     var today = ServiceDate(containing: Date(), in: .nyc)
 
@@ -55,6 +59,8 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
             offline = true
         case "--no-xz":
             compress = false
+        case "--strict-sources":
+            strictSources = true
         case "--systems":
             guard let list = value() else { return usageError("--systems needs a list") }
             var chosen: [TransitSystem] = []
@@ -82,10 +88,11 @@ func runTimetablesCommand(_ arguments: [String]) -> Int32 {
     }
 
     let reportURL = report ?? output.deletingLastPathComponent().appendingPathComponent("reports/timetables.json")
-    let build = TimetableBuild(
+    var build = TimetableBuild(
         sourcesDirectory: sources, outputDirectory: output, reportURL: reportURL, systems: systems,
         offline: offline, today: today, compress: compress, runner: ProcessToolRunner()
     )
+    build.strictSources = strictSources
     do {
         let started = Date()
         try build.run { print($0) }

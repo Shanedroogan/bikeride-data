@@ -21,6 +21,14 @@ file changes in the same commit as the rules. The binary layout is in `docs/form
 Downloads are conditional (`If-None-Match` with the saved ETag, `If-Modified-Since` from the file
 time), so an unchanged source is not fetched again. `--offline` uses whatever is in `--sources`.
 
+When a Geofabrik `-latest` download fails (on 2026-10-01 it was in a redirect loop while the dated
+files served normally), the same extract is taken from Geofabrik's dated copy of the day before,
+then of the day before that, in UTC: `new-york-YYMMDD.osm.pbf`, `new-jersey-YYMMDD.osm.pbf`
+(`GeofabrikExtract`). The build then reads it as usual; the report's source record names the URL
+it came from and a warning says so. When those fail too the build fails. When the borough
+boundaries cannot be downloaded, the copy already in `--sources` (the last good one, which CI
+restores) is used, with a warning and the record's status `cached`; without one the build fails.
+
 The water-included boundaries are used rather than the shoreline-clipped ones (`tqmj-j8zm`) so
 that points on piers, at the water's edge and on bridges land in a borough; borough lines run
 mid-river. Each ring is simplified with Douglas–Peucker at **10 m**, then stored at microdegree

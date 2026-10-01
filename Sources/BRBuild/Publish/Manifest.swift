@@ -1,3 +1,4 @@
+import BRConfig
 import BRCore
 import BRData
 import BRTimetable
@@ -113,6 +114,12 @@ public struct SetManifest: Codable, Sendable, Equatable {
     /// name: content-derived (never time-derived), so rebuilding the same bytes gives the same set.
     public var setId: String
     public var generatedAt: String
+    /// The config's `minAppFormat`, mirrored so the app can refuse a set it must not apply before
+    /// downloading anything (an app whose engine level is lower records the refusal and does not
+    /// retry). Taken from `config.bin` when the set has a fresh one, else carried with the config
+    /// from the previous manifest. Optional only so a manifest written before the mirror still
+    /// reads as `--previous`; every manifest this builder writes has it.
+    public var minAppFormat: Int?
     public var tool: String
     /// `YYYYMMDD`.
     public var buildDay: String
@@ -291,13 +298,14 @@ public struct SetManifestBuilder {
                 days: days, status: gate.systems[name]?.status ?? .ok)
         }
 
+        let minAppFormat = try mirroredMinAppFormat(local, previous: previous)
         let setId = try SetManifest.setId(artifacts, runner: runner)
         let sidecar = TripCountSidecar(setId: setId, buildDay: today.yyyymmdd, systems: counts)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let sidecarBytes = try encoder.encode(sidecar)
         let manifest = SetManifest(
-            schema: SetManifest.schemaVersion, setId: setId, generatedAt: SetArtifacts.isoTimestamp(now),
+            schema: SetManifest.schemaVersion, setId: setId, generatedAt: SetArtifacts.isoTimestamp(now), minAppFormat: minAppFormat,
             tool: "bikeride-data \(BuildInfo.toolVersion) (Swift \(BuildInfo.swiftVersion))", buildDay: today.yyyymmdd,
             previousSetId: previous?.setId, carriedForward: carried.sorted(), artifacts: artifacts, coverage: coverage, systems: systems,
             sources: sources,
@@ -314,6 +322,24 @@ public struct SetManifestBuilder {
         try sidecarBytes.write(to: tripCountsURL, options: .atomic)
         _ = try SetArtifacts.writeJSON(manifest, to: manifestURL, pretty: false)
         return manifest
+    }
+
+    /// The set's `minAppFormat`: from the config in the data directory, else from the previous
+    /// manifest the config is carried from. A carried config whose manifest predates the mirror
+    /// has no value to carry; that is refused rather than published as level 1, which the config
+    /// may not be (rebuild config).
+    func mirroredMinAppFormat(_ local: [ArtifactKind: SetArtifactFile], previous: SetManifest?) throws -> Int {
+        if let file = local[.config] {
+            return try MappedConfig(contentsOf: file.rawURL).document.minAppFormat
+        }
+        guard let previous, previous.artifacts[ArtifactKind.config.name] != nil else {
+            throw SetManifest.ManifestError.missingKind(ArtifactKind.config.name)
+        }
+        guard let level = previous.minAppFormat else {
+            throw SetManifest.ManifestError.inconsistent(
+                "config is carried forward from set \(previous.setId), whose manifest has no minAppFormat to carry with it; rebuild config")
+        }
+        return level
     }
 
     /// The gate report for exactly these files, or why there is none.

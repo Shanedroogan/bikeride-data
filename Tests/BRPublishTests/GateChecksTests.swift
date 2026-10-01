@@ -90,6 +90,32 @@ import Testing
         #expect(newSystem.warnings == ["path: no previous trip counts; not compared"])
     }
 
+    /// `--accept-trip-count-change`: an accepted system's dates beyond the limit are warnings and
+    /// the check passes; another system's still fail; naming a system with nothing to accept warns.
+    @Test func anAcceptedChangeIsAWarningForThatSystemOnly() {
+        let previous = Self.counts("20261001", "20261031")
+        let doubled = Self.counts("20261005", "20261010", weekday: 2000, saturday: 1400, sunday: 1200)
+        let same = Self.counts("20261005", "20261010")
+        let accepted = GateChecks.tripCounts(current: ["bus": doubled, "subway": same], previous: ["bus": previous, "subway": previous],
+                                             holidays: [], maxChangePercent: 35, accepted: ["bus", "lirr"])
+        #expect(accepted.status == .pass && accepted.failures.isEmpty, "\(accepted.failures)")
+        let acceptedLines = accepted.warnings.filter { $0.hasPrefix("accepted: bus 2026-10-") }
+        #expect(acceptedLines.count == 6 && acceptedLines[0] == "accepted: bus 2026-10-05: 2000 trips vs 1000 (the previous build's same date), +100.0%")
+        #expect(accepted.warnings.contains("lirr: --accept-trip-count-change had nothing to accept (lirr's timetable is not new in this set)"))
+        #expect(accepted.metrics["bus.acceptedDates"] == 6 && accepted.metrics["subway.acceptedDates"] == nil)
+        #expect(accepted.summary == "6 dates within ±35% of the previous build; 6 beyond it accepted for bus (--accept-trip-count-change)")
+
+        // Accepting subway does not let bus through, and says subway had nothing to accept.
+        let wrong = GateChecks.tripCounts(current: ["bus": doubled, "subway": same], previous: ["bus": previous, "subway": previous],
+                                          holidays: [], maxChangePercent: 35, accepted: ["subway"])
+        #expect(wrong.status == .fail && wrong.failures.count == 6 && !wrong.warnings.contains { $0.hasPrefix("accepted: ") })
+        #expect(wrong.warnings.contains("subway: --accept-trip-count-change had nothing to accept (every compared date within ±35%)"))
+
+        // Without a previous build there is nothing to compare, accepted or not.
+        let none = GateChecks.tripCounts(current: ["bus": doubled], previous: nil, holidays: [], maxChangePercent: 35, accepted: ["bus"])
+        #expect(none.status == .skipped && none.warnings.last == "bus: --accept-trip-count-change had nothing to accept (no previous build)")
+    }
+
     // MARK: Coverage
 
     @Test func shortCoverageFailsSoftAndKeepsTheDates() {

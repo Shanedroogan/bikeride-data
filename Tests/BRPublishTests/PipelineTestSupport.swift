@@ -407,6 +407,8 @@ struct SyntheticPipeline {
     let out: URL
     var previous: URL?
     var requireFlows = false
+    /// `all --job`: the heartbeat's job.
+    var job = PublishJob.all
     var now = Date(timeIntervalSince1970: 1_791_300_000)   // 2026-10-06T15:20:00Z
     /// Errors thrown by the step bodies (exit 1), by step.
     private(set) var errors: [PipelineStep: String] = [:]
@@ -524,11 +526,8 @@ struct SyntheticPipeline {
             }
             return 0
         case .heartbeat:
-            let manifest = try SetManifest.load(manifestURL)
-            let previousHeartbeat = retired.previousHeartbeat.flatMap { try? SetHeartbeat.load($0) }
-            try SetHeartbeat.after(manifest, now: now, job: "all",
-                                   timetablesSucceeded: SetHeartbeat.timetablesSucceeded(manifest, notRun: timetablesSkipped, unchanged: false),
-                                   previous: previousHeartbeat).write(to: heartbeatURL)
+            try SetHeartbeat.write(for: SetManifest.load(manifestURL), data: out, previousHeartbeat: retired.previousHeartbeat, now: now,
+                                   job: job.rawValue, notRun: timetablesSkipped, unchanged: false)
             return 0
         }
     }

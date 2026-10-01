@@ -8,7 +8,8 @@ public struct SourceRecord: Codable, Sendable, Equatable {
     public var bytes: Int
     public var etag: String?
     public var lastModified: String?
-    /// `downloaded`, `not-modified` (conditional GET answered 304) or `offline` (not checked).
+    /// `downloaded`, `not-modified` (conditional GET answered 304), `offline` (not checked) or
+    /// `cached` (the download failed and the file already there was used).
     public var status: String
     public var checkedAt: String
 

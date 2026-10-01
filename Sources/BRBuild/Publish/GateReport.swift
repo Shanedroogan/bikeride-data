@@ -96,6 +96,10 @@ public struct GateReport: Codable, Sendable, Equatable {
     /// Artifacts not in the data directory that the previous manifest supplies (not re-checked).
     public var carriedForward: [String]
     public var previousSetId: String?
+    /// The systems named by `--accept-trip-count-change` for this run (sorted), whose trip-count
+    /// changes beyond the limit the `tripCounts` check reported as accepted warnings rather than
+    /// failures. Absent when the flag was not given. The workflow's step summary shows it.
+    public var acceptedTripCountChange: [String]?
     public var systems: [String: GateSystem]
     public var checks: [GateCheckResult]
 

@@ -128,6 +128,7 @@ struct PipelineTests {
         #expect(manifest.artifacts.keys.sorted() == Self.artifacts && manifest.carriedForward.isEmpty && manifest.previousSetId == nil)
         #expect(manifest.systems["subway"]?.days == 20 && manifest.systems["ferry"]?.days == 26 && manifest.systems.values.allSatisfy { $0.status == .ok })
         #expect(try manifest.setId == SetManifest.setId(manifest.artifacts))
+        #expect(manifest.minAppFormat == 1 && json["minAppFormat"] as? Int == 1)   // Data/config/app.json's
         #expect(manifest.gate.status == .pass && manifest.gate.checks.map(\.name) == gate.checks.map(\.name))
         // Two versions of the ferry feed, chosen per date: the newer through 10/15, the older after.
         let ferry = try #require(manifest.sources["tt-ferry"])
@@ -445,4 +446,71 @@ struct PipelineTests {
             "config.bin is carried forward from set \(setId), but stations, tt-subway, tt-bus, tt-lirr, tt-ferry, tt-path are new: the reference checks need config.bin in the data directory",
         ])
     }
+
+    // MARK: M4 jobs (library side; `AllCommandTests` runs the CLI)
+
+    /// data-build's timetables job: streets and stations restored as the previous set has them,
+    /// no flows files at all (the public runner never fetches them), flows required. Flows is
+    /// carried with the previous set's exact entry; nothing else changed, so the set is the same.
+    @Test func aTimetablesOnlyRunCarriesFlows() throws {
+        var pipeline = try Self.published(try SyntheticSources())
+        pipeline.previous = try pipeline.keepAsPrevious("previous")
+        let before = try SetManifest.load(pipeline.previous!)
+        for name in ["flows.bin", "flows.bin.xz"] { try FileManager.default.removeItem(at: pipeline.out.appendingPathComponent(name)) }
+        try FileManager.default.removeItem(at: pipeline.report("flows"))
+        pipeline.requireFlows = true
+        pipeline.job = .timetables
+        pipeline.now = Date(timeIntervalSince1970: 1_791_350_000)
+
+        let outcome = try pipeline.run(skip: [.streets, .stations, .flows])
+        #expect(outcome.status == 0 && outcome.warnings.isEmpty, "\(outcome) \(pipeline.errors)")
+        #expect(outcome.ran.map(\.step) == [.timetables, .config, .links, .gate, .manifest, .heartbeat])
+        let gate = try #require(pipeline.gateReport)
+        #expect(gate.status == .pass && gate.carriedForward == ["flows"] && gate.check("tripCounts")?.status == .pass)
+        #expect(gate.check("flows")?.status == .skipped && gate.check("flows")?.summary == "flows carried forward from set \(before.setId); checked when it was built")
+
+        let manifest = try SetManifest.load(pipeline.manifestURL)
+        #expect(manifest.carriedForward == ["flows"] && manifest.previousSetId == before.setId)
+        #expect(manifest.artifacts["flows"] != nil && manifest.artifacts["flows"] == before.artifacts["flows"])
+        #expect(manifest.artifacts == before.artifacts && manifest.setId == before.setId && manifest.generatedAt != before.generatedAt)
+        #expect(manifest.minAppFormat == 1)
+        let heartbeat = try SetHeartbeat.load(pipeline.heartbeatURL)
+        #expect(heartbeat.job == "timetables" && heartbeat.lastTimetableSuccessAt == heartbeat.checkedAt && heartbeat.checkedAt == manifest.generatedAt)
+        #expect(!pipeline.publishedFiles.isEmpty && !FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent("flows.bin").path))
+    }
+
+    /// minAppFormat comes from the config the set has: a fresh config.bin's value, else the
+    /// previous manifest's (carried with the config). A carried config whose manifest predates
+    /// the mirror has nothing to carry, and the manifest refuses rather than guess.
+    @Test func minAppFormatIsTheConfigs() throws {
+        let sources = try SyntheticSources()
+        try Data(#"{"minAppFormat": 2, "flags": {}}"#.utf8).write(to: sources.configSources.appendingPathComponent("config/app.json"))
+        var pipeline = try Self.published(sources)
+        #expect(try SetManifest.load(pipeline.manifestURL).minAppFormat == 2)
+
+        // A flows-only run carries it.
+        pipeline.previous = try pipeline.keepAsPrevious("previous")
+        let flowsOnly: Set<PipelineStep> = [.streets, .timetables, .stations, .config, .links]
+        for name in Self.artifacts where name != "flows" {
+            for file in ["\(name).bin", "\(name).bin.xz"] { try FileManager.default.removeItem(at: pipeline.out.appendingPathComponent(file)) }
+        }
+        try sources.writeTrips(version: "v2")
+        var outcome = try pipeline.run(skip: flowsOnly)
+        #expect(outcome.status == 0, "\(outcome) \(pipeline.errors)")
+        let manifest = try SetManifest.load(pipeline.manifestURL)
+        #expect(manifest.minAppFormat == 2 && manifest.carriedForward == Self.artifacts.filter { $0 != "flows" })
+
+        // The previous manifest without it (written before the mirror): refused.
+        let previous = try #require(pipeline.previous)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: previous)) as? [String: Any])
+        json["minAppFormat"] = nil
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: previous)
+        #expect(try SetManifest.load(previous).minAppFormat == nil)
+        try sources.writeTrips(version: "v3")
+        outcome = try pipeline.run(skip: flowsOnly)
+        #expect(outcome.status == 1 && outcome.stoppedAt == .manifest && pipeline.publishedFiles.isEmpty)
+        let previousSetId = try SetManifest.load(previous).setId
+        #expect(pipeline.errors[.manifest] == "config is carried forward from set \(previousSetId), whose manifest has no minAppFormat to carry with it; rebuild config")
+    }
+
 }

@@ -27,8 +27,10 @@ let gateUsage = """
       --require-flows  A set without flows fails (by default flows is optional)
       --accept-trip-count-change LIST
                        Systems whose trip-count change a person reviewed and accepts for this run
-                       (subway, bus, lirr, ferry, path; comma-separated, no spaces). Parsed and
-                       checked only for now: not applied yet, so a tripCounts failure still fails
+                       (subway, bus, lirr, ferry, path; comma-separated, no spaces): their dates
+                       beyond the limit are warnings ("accepted: …"), not failures, and the list is
+                       recorded in gate.json as acceptedTripCountChange. Every other check, and a
+                       previous build whose trip counts cannot be used, still fails
 
     Exit status: 0 pass or soft failure, 3 hard failure (publish nothing), 1 error, 64 usage.
     """
@@ -48,11 +50,10 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         // No gate.json may survive a run that fails before writing its own (manifest would take it).
         try Gate.removeReport(in: reports)
         let today = try publishToday(options)
-        if let list = options.values["--accept-trip-count-change"] {
-            let systems = try Pipeline.tripCountChangeSystems(named: list).map(SetSystems.name).sorted()
-            // Fail closed until the override is implemented: the flag changes nothing yet.
-            logLine("gate", "warning: --accept-trip-count-change \(systems.joined(separator: ",")) is not applied yet; "
-                + "a tripCounts failure still fails the gate")
+        let accepted = try options.values["--accept-trip-count-change"].map(Pipeline.tripCountChangeSystems(named:)) ?? []
+        if !accepted.isEmpty {
+            logLine("gate", "accepting the trip-count change of \(accepted.map(SetSystems.name).sorted().joined(separator: ", ")) "
+                + "for this run (--accept-trip-count-change; recorded in gate.json)")
         }
         guard let repoData = options.values["--repo-data"].map(CommandOptions.absoluteURL) ?? GateConfiguration.defaultRepoData() else {
             throw CommandOptions.UsageError(description: "no Data/ directory with gate/thresholds.json found; pass --repo-data")
@@ -63,6 +64,7 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         if let now = try publishNow(options) { gate.now = now }
         gate.requiredKinds = SetManifest.requiredKinds(requireFlows: options.flags.contains("--require-flows"))
         gate.extraChecks = Gate.publishHooks
+        gate.acceptedTripCountChange = accepted
         let started = Date()
         let report = try gate.run { logLine("gate", $0) }
         print("gate: \(report.status.rawValue) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; report \(gate.reportURL.path)")

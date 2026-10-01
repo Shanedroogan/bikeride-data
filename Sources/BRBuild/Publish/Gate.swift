@@ -338,6 +338,10 @@ public struct Gate {
     public var configuration: GateConfiguration
     public var requiredKinds: [ArtifactKind] = SetManifest.coreKinds
     public var extraChecks: [any GateCheck] = []
+    /// `--accept-trip-count-change`: the systems whose trip-count change beyond the limit is
+    /// accepted for this run (see ``GateChecks/tripCounts(current:previous:holidays:maxChangePercent:holidayProfiles:accepted:)``),
+    /// recorded in the report. It does not cover a previous build whose counts cannot be used.
+    public var acceptedTripCountChange: Set<TransitSystem> = []
     public var runner: any ToolRunner
     public var now = Date()
 
@@ -399,7 +403,8 @@ public struct Gate {
             return GateChecks.tripCounts(
                 current: try currentTripCounts(context), previous: previousTripCounts(context), holidays: configuration.holidays,
                 maxChangePercent: configuration.thresholds.tripCounts.maxChangePercent,
-                holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles)
+                holidayProfiles: configuration.thresholds.tripCounts.holidayProfiles,
+                accepted: Set(acceptedTripCountChange.map(SetSystems.name)))
         }
         timed("streets") { try streetsCheck(context) }
         timed("snapping") { try snappingCheck(context) }
@@ -411,7 +416,9 @@ public struct Gate {
             buildDay: today.yyyymmdd, status: status,
             artifacts: Dictionary(uniqueKeysWithValues: artifacts.values.map { ($0.kind.name, $0.rawSha256) }),
             blobs: SetArtifacts.blobHashes(artifacts),
-            carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId, systems: systems, checks: checks)
+            carriedForward: context.carriedForward.map(\.name), previousSetId: previous?.setId,
+            acceptedTripCountChange: acceptedTripCountChange.isEmpty ? nil : acceptedTripCountChange.map(SetSystems.name).sorted(),
+            systems: systems, checks: checks)
         _ = try SetArtifacts.writeJSON(report, to: reportURL, pretty: true)
         return report
     }

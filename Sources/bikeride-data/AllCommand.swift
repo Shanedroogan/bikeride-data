@@ -6,7 +6,7 @@ let allUsage = """
     USAGE: bikeride-data all [--sources DIR] [--out DIR] [--trips DIR] [--months LIST] [--config-sources DIR]
                              [--previous FILE] [--offline] [--no-xz] [--skip LIST] [--require-flows]
                              [--today YYYYMMDD] [--now ISO8601] [--job NAME]
-                             [--accept-trip-count-change LIST]
+                             [--accept-trip-count-change LIST] [--strict-sources]
 
     Builds and publishes a set, in the only valid order:
       streets → timetables → stations → config → links → flows → gate → manifest → heartbeat
@@ -44,8 +44,11 @@ let allUsage = """
       --accept-trip-count-change LIST
                             Systems whose trip-count change a person reviewed and accepts for this run
                             (subway, bus, lirr, ferry, path; comma-separated, no spaces), passed to
-                            the gate. Parsed and checked only for now: the gate does not apply it yet,
-                            so a tripCounts failure still stops the run
+                            the gate: their trip-count changes beyond the limit are accepted
+                            warnings, not failures, and gate.json records the list
+      --strict-sources      Passed to timetables: the subway is not built without entrances (no
+                            download and no usable cached file is an error, not a warning). CI
+                            passes it; a fresh runner has only the copy the restore step put there
 
     Step outcomes:
       streets 2 (a sanity route failed)   warning; the run goes on
@@ -82,7 +85,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         options = try CommandOptions(
             arguments, valued: ["--sources", "--out", "--trips", "--months", "--config-sources", "--previous", "--skip", "--today", "--now",
                      "--job", "--accept-trip-count-change"],
-            flags: ["--offline", "--no-xz", "--require-flows"])
+            flags: ["--offline", "--no-xz", "--require-flows", "--strict-sources"])
         requested = try Pipeline.steps(named: options.values["--skip"] ?? "")
         today = try publishToday(options)
         pinnedNow = try publishNow(options)
@@ -125,11 +128,11 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let offline = options.flags.contains("--offline") ? ["--offline"] : []
     let noXZ = compress ? [] : ["--no-xz"]
     let todayArgument = ["--today", today.yyyymmdd]
+    let strictSources = options.flags.contains("--strict-sources") ? ["--strict-sources"] : []
     let previousArgument = retired.previous.map { ["--previous", $0.path] } ?? []
     let flowsRequired = options.flags.contains("--require-flows")
     let requireFlows = flowsRequired ? ["--require-flows"] : []
-    // The gate parses the list again and reports what it does with it.
-    // TODO(M4 lane P): a CLI-level test that the accepted list reaches the gate (no test covers it).
+    // The gate parses the list again and records it in gate.json.
     let acceptTripCountChange = acceptedTripCountChange.map {
         ["--accept-trip-count-change", $0.map(SetSystems.name).sorted().joined(separator: ",")]
     } ?? []
@@ -151,7 +154,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         case .streets:
             status = runStreetsCommand(["--sources", sources, "--out", out.path] + offline + noXZ)
         case .timetables:
-            status = runTimetablesCommand(["--sources", sources, "--out", out.path] + offline + noXZ + todayArgument)
+            status = runTimetablesCommand(["--sources", sources, "--out", out.path] + offline + noXZ + todayArgument + strictSources)
         case .stations:
             status = runStationsCommand(["--sources", sources, "--out", out.path] + offline + noXZ)
         case .config:
@@ -185,9 +188,6 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     logLine("all", String(format: "done in %.1f s (%@)", Date().timeIntervalSince(started), summary))
     return 0
 }
-
-// TODO(M4 lane P): a CLI-level test that `all --job` reaches the heartbeat's job (no test covers
-// it; the library pipeline in the tests writes "all").
 
 /// The heartbeat step: `heartbeat.json` for the manifest the manifest step of this run just wrote.
 private func runHeartbeatStep(data: URL, previousHeartbeat: URL?, now: Date, job: PublishJob, notRun: Bool) -> Int32 {
