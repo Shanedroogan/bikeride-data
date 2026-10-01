@@ -123,7 +123,7 @@ public enum GateChecks {
             var byWeekday: [Weekday: [Int]] = [:]
             for (date, trips) in before where !holidays.contains(date) { byWeekday[date.weekday, default: []].append(trips) }
             let medians = byWeekday.mapValues(median)
-            var sameDate = 0, profile = 0, beyondAccepted = 0, worst: (delta: Double, line: String)?
+            var sameDate = 0, profile = 0, beyondAccepted = 0, droppedPastFloor = 0, worst: (delta: Double, line: String)?
             for (date, trips) in counts.sorted(by: { $0.key < $1.key }) {
                 let reference: Double, basis: String
                 if let same = before[date] {
@@ -161,6 +161,7 @@ public enum GateChecks {
                 if abs(delta) * 100 > maxChangePercent {
                     if accepted.contains(system), -delta * 100 > maxAcceptedDropPercent {
                         failures.append("\(line): a drop beyond \(Int(maxAcceptedDropPercent))% is not accepted (--accept-trip-count-change)")
+                        droppedPastFloor += 1
                     } else if accepted.contains(system) {
                         warnings.append("accepted: \(line)")
                         beyondAccepted += 1
@@ -173,7 +174,7 @@ public enum GateChecks {
                 metrics["\(system).acceptedDates"] = Double(beyondAccepted)
                 acceptedDates += beyondAccepted
                 if beyondAccepted > 0 { acceptedSystems.append(system) }
-                if beyondAccepted == 0 {
+                if beyondAccepted == 0, droppedPastFloor == 0 {
                     warnings.append("\(system): --accept-trip-count-change had nothing to accept (every compared date within ±\(Int(maxChangePercent))%)")
                 }
             }

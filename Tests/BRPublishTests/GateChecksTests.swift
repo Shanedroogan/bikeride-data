@@ -136,6 +136,13 @@ import Testing
         #expect(result.warnings.filter { $0.hasPrefix("accepted: bus ") }.count == 4 && result.metrics["bus.acceptedDates"] == 4)
         #expect(result.warnings.contains("accepted: bus 2026-10-08: 110 trips vs 1000 (the previous build's same date), -89.0%"))
 
+        // Every date cut to nothing: all fail, and the override is not reported as having had
+        // nothing to accept.
+        let none = GateChecks.tripCounts(current: ["bus": Self.counts("20261005", "20261010", weekday: 0, saturday: 0)],
+                                         previous: ["bus": previous], holidays: [], maxChangePercent: 35, accepted: ["bus"])
+        #expect(none.status == .fail && none.failures.count == 6 && none.metrics["bus.acceptedDates"] == 0)
+        #expect(!none.warnings.contains { $0.contains("had nothing to accept") }, "\(none.warnings)")
+
         // The thresholds file sets the floor; the default matches it.
         #expect(GateConfiguration.Thresholds.TripCounts(maxChangePercent: 35).maxAcceptedDropPercent == 90)
     }
