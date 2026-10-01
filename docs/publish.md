@@ -168,11 +168,20 @@ unused 19 MB zips.
 
 ## R2 (M4)
 
-The design of record for publishing to R2 (the private repository's `docs/plans/m4-plan.md`). As of
-M4 S0, `scripts/r2.sh` is complete and tested; `restore-state.sh`, `publish-set.sh`,
-`sync-sources.sh`, `gc-data.sh`, `publish-local.sh` and `rollback.sh` parse their arguments and
-stop with 69 before any R2 call, and `.github/workflows/data-build.yml` is a skeleton around them.
-M4 lane Q writes their bodies.
+The design of record for publishing to R2 (the private repository's `docs/plans/m4-plan.md`). The
+scripts under `scripts/` do it, each with `--help`; every R2 call goes through `scripts/r2.sh`.
+They run on bash 3.2 (macOS) and later, and need `jq` and `xz` (`Brewfile`, `apt-packages.txt`).
+
+| Script | Does |
+|---|---|
+| `restore-state.sh` | The hold, the previous set (manifest, heartbeat, sidecar by sha), the source archive and auxiliary files, and for `timetables` the streets and stations blobs; writes `prev/state.env` |
+| `build-set.sh` | `bikeride-data all` with the job's arguments (no R2 keys), then no `flows.bin` and no "built without entrances" |
+| `publish-set.sh` | The only writer of `data/manifest.json` (below) |
+| `sync-sources.sh` | `upload` (add-only), `prune` and `aux` (after a publish) |
+| `gc-data.sh` | GC (below) |
+| `rollback.sh` | Puts an earlier set back and holds publishing |
+| `publish-local.sh` | The Mac fallback, and the first set (M4 I2) |
+| `set-summary.sh` | The step summary of a built set |
 
 ### Keys
 
@@ -216,6 +225,10 @@ https://<account>.r2.cloudflarestorage.com --region auto`):
 `scripts/test/r2-test.sh` runs it against `scripts/test/fake-aws`, a stand-in CLI that serves a
 local directory as the bucket, records each call and injects failures in the CLI's own error
 shapes, printing the key pair and a signed URL each time; the test checks none reaches the output.
+`scripts/test/publish-test.sh` runs the other scripts against the same fake, with a stand-in
+`bikeride-data`; the fake can also change the bucket after a given call (`FAKE_AWS_AFTER`), as
+another caller publishing in the middle of a run would. The public `ci.yml` runs both, with
+shellcheck and actionlint, on every push and pull request.
 
 ### `data-build.yml`
 
@@ -224,43 +237,73 @@ Dispatched only by cron-job.org (`workflow_dispatch`; no `schedule:`): `timetabl
 (`timetables|streets|gc`), `dry_run` (default true), `accept_trip_count_change` (checked against
 `^(subway|bus|lirr|ferry|path)(,(subway|bus|lirr|ferry|path))*$`). The R2 keys are in the
 Environment `r2-publish`, restricted to `main` (so no other ref can run the workflow, dry run or
-not), and reach only the steps that call R2; the
+not), and reach only the steps that call R2. The Environment must exist, with that rule, before
+the first dispatch: GitHub creates a missing one with no rules. Until the data-bucket names
+(`R2_DATA_ACCESS_KEY_ID`, `R2_DATA_SECRET_ACCESS_KEY`, var `R2_DATA_BUCKET`) are set, a dry run
+falls back to the repository's `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and var `R2_BUCKET`,
+with which it only reads (a first run there, M4 I1); a real run never falls back. The
 container is `swift:6.4-noble` pinned by digest; the build is retried 3 times (the SwiftPM
 planner crash). One run at a time (`concurrency: data-publish`).
 
 1. Check the inputs; install the tools and the AWS CLI; build `bikeride-data` (release).
 2. `restore-state.sh`: the hold (while active: exit 0 with a summary line); `prev/manifest.json`,
-   `prev/heartbeat.json`, `prev/trip-counts.json` (a 404 on the manifest is a first run, which CI
-   refuses: the first set is published from the Mac; open: this also stops the plan's I1 dry runs
-   on an empty bucket, see the TODO at the restore step); the `sources/` records still in use
-   (`calendarEnd ≥ build day − 1`) and `sources/aux/` as the builder's cache; for `timetables`, the
-   streets and stations blobs. No `flows.bin` may be in the data directory.
-3. `all --previous prev/manifest.json --require-flows --job <job>` with `--skip
-   streets,stations,flows` (timetables) or `--skip flows` (streets). Flows is always carried from
-   the previous set: the public runner never sees trip data or `flows.bin`.
-4. `sync-sources.sh upload`, add-only, on every real run that restored, even a failed one.
-5. `publish-set.sh`: HEAD every blob the manifest names (carried ones too) and compare
-   `ContentLength`; PUT the local blobs, the sidecar and the dated manifest; re-GET
-   `data/manifest.json` and stop unless its setId is still the previous one (or it is still a 404
-   on a first run); PUT `data/manifest.json`; PUT `data/heartbeat.json`, last.
-6. `sync-sources.sh prune` and `gc-data.sh`, only after a publish succeeded (or `job=gc`).
-7. The step summary: setIds, sizes, coverage, gate checks, "flows: carried from set <prev>"; no
-   key outside `data/` and `sources/`.
+   `prev/heartbeat.json`, `prev/trip-counts.json`; the `sources/` records still in use
+   (`calendarEnd ≥ build day − 1`, each zip checked by sha256) and `sources/aux/` as the builder's
+   cache (stamped 1970, so the conditional download still fetches a newer file); for
+   `timetables`, the streets and stations blobs (sha256, size, `xz -dc`, rawSha256). No
+   `flows.bin` may be in the data directory. A 404 on the manifest is a first run: a dry run
+   goes on with `FIRST_RUN=1`; a real run stops (the first set is published from the Mac with
+   `publish-local.sh --first`).
+3. `streets` only: `bikeride-data streets` on its own, under a 22-minute `timeout`. If it fails,
+   times out, or a sanity route fails (exit 2, which `all` would take as a warning),
+   `restore-state.sh --blobs-only` puts the published streets and stations back, the run continues as a timetables run, and its last step
+   fails the job with "streets not rebuilt".
+4. `build-set.sh` (no R2 keys): `all --previous prev/manifest.json --require-flows --job <job>`
+   with `--skip streets,stations,flows` (timetables) or `--skip streets,flows` (streets, after
+   step 3). Flows is always carried from the previous set: the public runner never sees trip data
+   or `flows.bin`. A first-run dry run builds without `--previous` and `--require-flows` and
+   skips only flows (and streets when step 3 built it). Then: no `flows.bin`, and no "built
+   without entrances" warning in `reports/timetables.json`.
+5. `sync-sources.sh upload`, add-only, on every real run that restored, even a failed one. A
+   failed upload turns the run red but does not hold back the publish: the archive is a backup.
+6. `publish-set.sh --no-flows-upload`, after a successful build: the hold again (a hold that
+   began after the restore stops it with `published=0`); HEAD every carried blob and compare
+   `ContentLength`; check each built blob against the manifest, then PUT it (always), the
+   sidecar and the dated manifest; re-GET `data/manifest.json` and stop unless its setId is still
+   the previous one (or it is still a 404 on a first run); PUT `data/manifest.json`; PUT
+   `data/heartbeat.json`, last. On a dry run every read runs and every write is printed.
+7. After a set was published (`published=1`; on a dry run, would have been): `sync-sources.sh prune` (the versions this build dropped, and those
+   30 days past their calendar), `sync-sources.sh aux` (the auxiliary files, when they changed;
+   the boundaries only when streets was rebuilt) and `gc-data.sh` (alone with `job=gc`).
+8. The step summary (`set-summary.sh`): setIds, xz sizes built or carried, coverage days, gate
+   checks, "flows: carried from set <prev>"; no key outside `data/` and `sources/`.
 
 ### Failures
 
 - A gate, config or manifest failure writes nothing; the previous set stays current.
 - Two callers racing: the re-read guard stops the later one; its next run builds on the new set.
-- A publish torn between PUTs leaves only orphan blobs, which GC removes after 48 h.
-- A bad set: `rollback.sh <setId>` puts an earlier manifest back with a new `generatedAt` (the
-  app takes only a strictly newer set) and writes `data/hold.json`.
+- A publish torn between PUTs: before the dated copy, it leaves only blobs (and perhaps the
+  sidecar), which GC removes after 48 h. At the re-read guard or after it (a race, or a failed
+  `data/manifest.json` PUT), the dated copy is in R2 too: nothing serves it, but it is a retained
+  manifest, so GC keeps it and what it names for 30 days (longer while it is among the newest 7),
+  and `rollback.sh` could pick it by its setId.
+- A bad set: `rollback.sh <setId>` checks that every blob and the sidecar of an earlier set are
+  still in R2, writes `data/hold.json` first (so a run that restored before it cannot publish
+  over it), then puts that manifest back with a new `generatedAt` (the app takes only a strictly
+  newer set; it must be later than the current one's) through the re-read guard. Publishing
+  resumes when the hold is removed by hand or its `until` passes, building on the rolled-back set.
 - `tripCounts` beyond ±35 % stops the run unless a person dispatches with
   `accept_trip_count_change` (recorded in `gate.json` and the summary once the gate applies it).
 
 ### GC
 
-After a successful publish, inside `data-publish`: re-read `data/manifest.json` and list
-`data/manifests/`; the roots are the current manifest and every retained dated manifest; delete
-blobs and sidecars no root names whose LastModified is over 48 h old, and the dated manifests
-outside retention. It stops at the first list, GET or parse error, deletes at most 200 objects a
-run, only under `data/`, and fails the run when `data/` is over 1.5 GB.
+After a successful publish, inside `data-publish`: re-read `data/manifest.json` and list `data/`;
+the roots are the current manifest and every retained dated manifest (the newest 7, all of the
+last 30 days, and any copy of the current set), each read and checked; delete blobs and sidecars
+no root names whose LastModified is over 48 h old, and the dated manifests outside retention. It
+stops before deleting anything at the first list, GET or parse error, or a key under
+`data/manifests/` it cannot read; a plan of more than 200 objects deletes none and fails (a person
+checks it with `--dry-run` and reruns with `--max-deletions`). With no `data/manifest.json` there
+are no roots: nothing is deleted, and the run fails unless `data/` is empty too. Only `data/` is
+touched (never `manifest.json`, `heartbeat.json` or `hold.json`), and the run fails when what is
+left is over 1.5 GB.

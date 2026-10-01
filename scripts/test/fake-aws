@@ -12,6 +12,10 @@
 #                  CLI does (exit 254, or 255 for network) with the CLI's own error shapes,
 #                  NoSuchKey/AccessDenied from get-object, 404/403 from head-object; or short:
 #                  head-object reports one byte less than stored (a truncated upload).
+#   FAKE_AWS_AFTER space-separated rules OP:KEY:SCRIPT: after a call matching OP and KEY (a shell
+#                  pattern) succeeds, run SCRIPT once (it is then renamed to SCRIPT.done). The
+#                  tests use it to change the bucket in the middle of a run, as another caller
+#                  publishing in between would.
 #
 # Every failure also writes to stderr what a leaking caller would print: the key pair, the
 # account id and a presigned-style URL with X-Amz-Signature. The tests check none of it gets
@@ -177,3 +181,15 @@ case $op in
     ;;
   *) fatal "unsupported operation '$op'" ;;
 esac
+
+# after: the hook for this successful call, if any.
+read -r -a hooks <<<"${FAKE_AWS_AFTER:-}"
+for h in ${hooks[@]+"${hooks[@]}"}; do
+  hop=${h%%:*} hscript=${h##*:} hkey=${h#*:}
+  hkey=${hkey%:*}
+  # shellcheck disable=SC2053 # hkey is a pattern
+  if [[ $hop == "$op" && $subject == $hkey && -f $hscript ]]; then
+    mv "$hscript" "$hscript.done"
+    bash "$hscript.done" >&2
+  fi
+done

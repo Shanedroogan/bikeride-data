@@ -28,7 +28,7 @@ the Compression framework) sit behind `#if canImport(...)` with portable fallbac
 ## Requirements
 
 - Swift 6.0 or later (CI uses 6.4).
-- Tools the CLI shells out to: `xz`, `osmium-tool`, `unzip`.
+- Tools the CLI shells out to: `xz`, `osmium-tool`, `unzip`; the publishing scripts also need `jq`.
   - macOS: `brew bundle` (see `Brewfile`).
   - Debian/Ubuntu: `xargs -a apt-packages.txt sudo apt-get install -y`.
 
@@ -41,8 +41,8 @@ swift run bikeride-data version
 ```
 
 Codec tests need `xz` and are skipped, with a message, when it is missing. The publishing
-scripts' tests (`scripts/r2.sh` against a stand-in AWS CLI; no network) run with
-`scripts/test/r2-test.sh`.
+scripts' tests (against a stand-in AWS CLI; no network, no bucket; they need `jq` and `xz`) run
+with `scripts/test/r2-test.sh` and `scripts/test/publish-test.sh`.
 
 ## Documentation
 

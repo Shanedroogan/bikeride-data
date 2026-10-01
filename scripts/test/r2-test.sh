@@ -1,57 +1,15 @@
 #!/usr/bin/env bash
-# Tests of scripts/r2.sh against scripts/test/fake-aws, and of the S0 stubs' argument parsing.
-# Nothing here reaches the network or a real bucket: `aws` on PATH is the fake, the account id,
-# keys and bucket are made up, and the test stops if `aws` resolves to anything else.
+# Tests of scripts/r2.sh against scripts/test/fake-aws. Nothing here reaches the network or a real
+# bucket (scripts/test/harness.sh).
 #
 #   scripts/test/r2-test.sh
 #
 # Every r2.sh call's stdout and stderr are checked for the key pair, the account id, the R2
 # endpoint and signed-URL text, which the fake prints on every failure.
-set -euo pipefail
-
-here=$(cd "$(dirname "$0")" && pwd)
-repo=$(cd "$here/../.." && pwd)
+# shellcheck source-path=SCRIPTDIR source=harness.sh
+. "$(dirname "$0")/harness.sh"
 r2="$repo/scripts/r2.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/r2-test.XXXXXX")
-trap 'rm -rf "$work"' EXIT
-
-mkdir -p "$work/bin" "$work/root/test-bucket" "$work/files"
-ln -s "$here/fake-aws" "$work/bin/aws"
-export PATH="$work/bin:$PATH"
-export FAKE_AWS_ROOT="$work/root" FAKE_AWS_LOG="$work/calls.log"
-export R2_ACCOUNT_ID=0fa4e0000000000000000000000fake0 R2_BUCKET=test-bucket
-key_id=AKIDFAKEKEYID00001 secret_key=fakeSecretDoNotPrint0001
-export AWS_ACCESS_KEY_ID=$key_id AWS_SECRET_ACCESS_KEY=$secret_key
-unset R2_DRY_RUN R2_ALLOW_PRIVATE_FLOWS FAKE_AWS_FAIL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
-[[ $(command -v aws) == "$work/bin/aws" ]] || { echo "r2-test: aws is not the fake; stopping" >&2; exit 1; }
-bucket="$work/root/test-bucket"
-
-failures=0 tests=0 current=
-fail() { echo "FAIL [$current]: $*" >&2; failures=$((failures + 1)); }
-begin() { current=$1; tests=$((tests + 1)); : >"$FAKE_AWS_LOG"; }
-
-# run SCRIPT ARGS...: status, out and err of one call; then the leak check.
-run() {
-  local script=$1
-  shift
-  set +e
-  "$script" "$@" >"$work/out" 2>"$work/err"
-  status=$?
-  set -e
-  out=$(cat "$work/out")
-  err=$(cat "$work/err")
-  local both="$out"$'\n'"$err" secret
-  for secret in "$secret_key" "$key_id" "$R2_ACCOUNT_ID" X-Amz-Signature X-Amz-Credential \
-    r2.cloudflarestorage.com DEBUG "An error occurred"; do
-    [[ $both != *"$secret"* ]] || fail "output contains '$secret': $both"
-  done
-}
 r2() { run "$r2" "$@"; }
-
-expect_status() { [[ $status -eq $1 ]] || fail "status $status, expected $1 (stderr: $err)"; }
-expect_err() { [[ $err == *"$1"* ]] || fail "stderr lacks '$1': $err"; }
-expect_no_calls() { [[ ! -s $FAKE_AWS_LOG ]] || fail "aws was called: $(cat "$FAKE_AWS_LOG")"; }
-expect_call() { grep -q -- "$1" "$FAKE_AWS_LOG" || fail "no aws call matching '$1': $(cat "$FAKE_AWS_LOG")"; }
 
 printf 'hello\n' >"$work/files/hello.json"
 head -c 70000 /dev/zero | tr '\0' 'x' >"$work/files/blob.xz"
@@ -223,39 +181,4 @@ run env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY R2_ACCESS_KEY_ID="$key_id"
   "$r2" head data/blobs/0123abcd.xz
 expect_status 0
 
-# --- The S0 stubs --------------------------------------------------------------------------------
-
-begin "the stubs parse their arguments, then stop with 69 before touching R2"
-stub() { run "$repo/scripts/$1" "${@:2}"; }
-for script in restore-state.sh publish-set.sh sync-sources.sh gc-data.sh publish-local.sh rollback.sh; do
-  stub "$script" --help; expect_status 0
-  [[ $out == USAGE:* ]] || fail "$script --help: $out"
-  stub "$script" --bogus; expect_status 64
-done
-stub restore-state.sh --job timetables --prev p --sources s --data d --today 20261007; expect_status 69
-stub restore-state.sh --job gc --prev p --sources s --data d; expect_status 64
-stub restore-state.sh --job timetables --prev p --sources s --data d --today 2026-10-07; expect_status 64
-stub publish-set.sh --data d --prev p --dry-run; expect_status 69
-stub publish-set.sh --data d; expect_status 64
-stub sync-sources.sh upload --sources s; expect_status 69
-stub sync-sources.sh prune --sources s --restored r --today 20261007 --dry-run; expect_status 69
-stub sync-sources.sh prune --sources s; expect_status 64
-stub sync-sources.sh delete --sources s; expect_status 64
-stub gc-data.sh --dry-run --now 2026-10-07T12:00:00Z --max-deletions 10; expect_status 69
-stub gc-data.sh --max-deletions 0; expect_status 64
-stub gc-data.sh --now yesterday; expect_status 64
-printf 'R2_BUCKET=x\n' >"$work/files/test.env"
-stub publish-local.sh --work "$work/new" --env "$work/files/test.env" --first --dry-run; expect_status 69
-stub publish-local.sh --work "$work/files" --env "$work/files/test.env"; expect_status 64
-stub rollback.sh 3b0f7ece25409da6 --reason "bad stops" --until 2026-10-08T00:00:00Z; expect_status 69
-stub rollback.sh 3b0f7ece25409da6; expect_status 64
-stub rollback.sh 3B0F7ECE25409DA6 --reason x; expect_status 64
-stub rollback.sh 3b0f7ece25409da6 3b0f7ece25409da7 --reason x; expect_status 64
-expect_no_calls
-[[ ! -e $work/new ]] || fail "publish-local.sh created its work directory"
-
-if [[ $failures -ne 0 ]]; then
-  echo "r2-test: $failures failure(s) in $tests tests" >&2
-  exit 1
-fi
-echo "r2-test: $tests tests passed"
+finish
