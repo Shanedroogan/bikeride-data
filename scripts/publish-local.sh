@@ -23,7 +23,8 @@ USAGE: scripts/publish-local.sh --work DIR --env FILE [--flows-from DIR] [--flow
   5. $BIKERIDE_DATA all --out <work>/data --sources <work>/sources --skip flows --require-flows
      --job all --today <build day> [--previous <work>/prev/manifest.json]; then no "built without
      entrances" warning.
-  6. sync-sources.sh upload (add-only; also after a failed build), then publish-set.sh, then
+  6. sync-sources.sh upload (add-only; also after a failed build), then publish-set.sh, then,
+     only when the set went out (not when a hold that began after the restore stopped it),
      sync-sources.sh prune and aux. No GC: that runs only in data-build.yml.
 
   --work DIR          A new directory (must not exist): data/, reports/, prev/, sources/
@@ -154,9 +155,15 @@ sync=()
 [[ $dry_run == 0 ]] || sync+=(--dry-run)
 "$SCRIPTS_DIR/sync-sources.sh" upload --sources "$work/sources" ${sync[@]+"${sync[@]}"}
 [[ $status -eq 0 ]] || die "bikeride-data all stopped with status $status; nothing published" "$status"
-publish=(--data "$data" --prev "$prev")
+publish=(--data "$data" --prev "$prev" --result-file "$prev/publish.result")
 [[ $dry_run == 0 ]] || publish+=(--dry-run)
 "$SCRIPTS_DIR/publish-set.sh" "${publish[@]}"
+published=$(sed -n 's/^published=//p' "$prev/publish.result" 2>/dev/null | tail -n 1)
+if [[ $published == 0 ]]; then
+  log "publishing went on hold during the run: nothing published, pruned or replaced"
+  exit 0
+fi
+[[ $published == 1 ]] || die "publish-set.sh gave no result; stopping before the prune"
 "$SCRIPTS_DIR/sync-sources.sh" prune --sources "$work/sources" --restored "$prev/sources-restored.txt" \
   --today "$BUILD_DAY" ${sync[@]+"${sync[@]}"}
 "$SCRIPTS_DIR/sync-sources.sh" aux --sources "$work/sources" --files entrances,boundaries ${sync[@]+"${sync[@]}"}

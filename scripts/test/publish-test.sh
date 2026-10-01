@@ -385,6 +385,25 @@ run "$scripts/gc-data.sh" --dry-run --now "$NOW"; expect_status 0
 expect_err "nothing to collect"
 [[ -z $(find "$bucket" -type f) ]] || fail "the bucket is not empty: $(find "$bucket" -type f)"
 
+begin "first run, dry, streets: no --previous or --require-flows, streets skipped; the fallback is refused"
+reset_bucket
+d=$(fresh f2)
+restore --job streets --prev "$d/prev" --sources "$d/sources" --data "$d/data" --allow-first-run; expect_status 0
+[[ $(sed -n 's/^FIRST_RUN=//p' "$d/prev/state.env") == 1 ]] || fail "FIRST_RUN not 1"
+# What the streets step built.
+mkdir -p "$d/data" && printf 'streets first\n' >"$d/data/streets.bin"
+: >"$FAKE_BRD_LOG"
+FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job streets --prev "$d/prev" --data "$d/data" --sources "$d/sources" --dry-run
+expect_status 0
+[[ $(cat "$FAKE_BRD_LOG") == "all --out $d/data --sources $d/sources --today 20261007 --job streets --skip streets,flows" ]] ||
+  fail "arguments: $(cat "$FAKE_BRD_LOG")"
+: >"$FAKE_BRD_LOG"
+FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job streets-restored --prev "$d/prev" --data "$d/data" --sources "$d/sources" --dry-run
+expect_status 1
+expect_err "no previous set to fall back to"
+[[ ! -s $FAKE_BRD_LOG ]] || fail "bikeride-data ran"
+expect_no_call "put-object"
+
 begin "first run, real: the build refuses it (and restore without --allow-first-run already did)"
 : >"$FAKE_BRD_LOG"
 FAKE_BRD_SET="$work/setFirst" run "$scripts/build-set.sh" --job timetables --prev "$d/prev" --data "$d/data" --sources "$d/sources"
@@ -409,7 +428,8 @@ reset_bucket
 install_set "$work/setA"
 prepare_run p1 "$work/setB"
 : >"$FAKE_AWS_LOG"
-publish --data "$RUN/data" --prev "$RUN/prev" --no-flows-upload; expect_status 0
+publish --data "$RUN/data" --prev "$RUN/prev" --no-flows-upload --result-file "$RUN/result"; expect_status 0
+[[ $(cat "$RUN/result") == published=1 ]] || fail "result: $(cat "$RUN/result")"
 [[ $(current_set) == "$SET_B" ]] || fail "current set $(current_set)"
 cmp -s "$bucket/data/heartbeat.json" "$work/setB/heartbeat.json" || fail "heartbeat"
 sidecar_b=$(sha "$work/setB/trip-counts.json")
@@ -533,9 +553,10 @@ install_set "$work/setA"
 prepare_run p8 "$work/setB"
 put_hold '{"reason":"incident"}'
 : >"$FAKE_AWS_LOG"
-publish --data "$RUN/data" --prev "$RUN/prev"; expect_status 0
+publish --data "$RUN/data" --prev "$RUN/prev" --result-file "$RUN/result"; expect_status 0
 expect_err "on hold"
 expect_no_call "put-object"
+[[ $(cat "$RUN/result") == published=0 ]] || fail "result: $(cat "$RUN/result")"
 rm "$bucket/data/hold.json"
 
 begin "publish: --no-flows-upload refuses a set whose flows is built here, not carried"
@@ -550,15 +571,17 @@ expect_no_call "put-object"
 begin "publish: a dry run reads (HEADs, hold, guard) and writes nothing"
 prepare_run p10 "$work/setB"
 : >"$FAKE_AWS_LOG"
-publish --data "$RUN/data" --prev "$RUN/prev" --dry-run; expect_status 0
+publish --data "$RUN/data" --prev "$RUN/prev" --dry-run --result-file "$RUN/result"; expect_status 0
+[[ $(cat "$RUN/result") == published=1 ]] || fail "a dry run's result: $(cat "$RUN/result")"
 expect_err "[dry run] would put data/manifest.json"
 expect_no_call "put-object"
 expect_call "head-object --bucket test-bucket --key data/blobs/$flows_sha.xz"
 [[ $(current_set) == "$SET_A" ]] || fail "a dry run published"
 
 begin "publish: the hold read by restore stops publish-set too"
-publish --data "$RUN/data" --prev "$work/held"; expect_status 0
+publish --data "$RUN/data" --prev "$work/held" --result-file "$work/files/held.result"; expect_status 0
 expect_err "on hold"
+[[ $(cat "$work/files/held.result") == published=0 ]] || fail "result: $(cat "$work/files/held.result")"
 
 # --- sync-sources.sh -----------------------------------------------------------------------------
 
@@ -857,6 +880,27 @@ FAKE_BRD_SET="$work/macNext" run "$scripts/publish-local.sh" --work "$work/local
 expect_status 0
 [[ $(cat "$FAKE_BRD_LOG") == *"--previous $work/local4/prev/manifest.json" ]] || fail "arguments: $(cat "$FAKE_BRD_LOG")"
 [[ $(current_set) == "$(jq -r .setId "$work/macNext/manifest.json")" ]] || fail "not published"
+
+begin "publish-local: a hold that begins after the restore stops the publish, the prune and the aux files"
+# A version 30 days past its calendar, which the prune would delete, and entrances the aux step
+# would put.
+make_record "$bucket/sources" gtfs_bus ended 20260801 "bus ended long ago"
+mkdir -p "$work/macSources2/nyc"
+printf 'entrances\n' >"$work/macSources2/nyc/subway-entrances.csv"
+make_set "$work/macThird" 2026-10-07T20:00:00Z "$work/macNext/manifest.json" third "$CORE" "flows"
+printf 'printf %%s %q >%q\n' '{"reason":"incident"}' "$bucket/data/hold.json" >"$work/hold.sh"
+before=$(current_set)
+: >"$FAKE_AWS_LOG"
+FAKE_AWS_AFTER="list-objects-v2:sources/:$work/hold.sh" FAKE_BRD_SET="$work/macThird" run "$scripts/publish-local.sh" \
+  --work "$work/local5" --env "$work/files/bootstrap.env" --sources "$work/macSources2"
+expect_status 0
+expect_err "went on hold during the run"
+[[ $(current_set) == "$before" ]] || fail "published through the hold"
+expect_no_call "delete-object"
+expect_no_call "put-object --bucket test-bucket --key data/"
+expect_no_call "put-object --bucket test-bucket --key sources/aux/"
+[[ -f $bucket/sources/gtfs_bus/ended.zip ]] || fail "pruned during the hold"
+rm "$bucket/data/hold.json"
 
 # --- set-summary.sh ------------------------------------------------------------------------------
 

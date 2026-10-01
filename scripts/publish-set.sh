@@ -8,7 +8,8 @@ SCRIPT=publish-set
 
 usage() {
   cat <<'USAGE'
-USAGE: scripts/publish-set.sh --data DIR --prev DIR [--no-flows-upload] [--dry-run] [--now ISO8601]
+USAGE: scripts/publish-set.sh --data DIR --prev DIR [--no-flows-upload] [--result-file FILE] [--dry-run]
+                              [--now ISO8601]
 
 Publishes the set bikeride-data all wrote to --data. Before anything is written: the hold is
 checked again (while one is active nothing is written, exit 0); the manifest is checked, and
@@ -24,8 +25,11 @@ has none on a first run); the sidecar and the heartbeat must be this set's. Then
      it is still a 404): another caller published in between, and the next run builds on that.
   5. PUT data/manifest.json.
   6. PUT data/heartbeat.json, last.
-A failure stops at that step; what was written before it is only blobs, a sidecar and a dated
-copy, which nothing serves and GC removes after 48 h when no retained manifest names them.
+A failure stops at that step. A failure at step 4 or 5, or a race the guard stops, leaves the
+blobs, the sidecar and the dated copy: nothing serves them, but the dated copy is a retained
+manifest, so GC keeps it and what it names as long as it keeps any dated copy (30 days, longer
+while it is among the newest 7), and rollback.sh could pick it by its setId. A failure before
+step 3 leaves only blobs and perhaps the sidecar, which GC removes after 48 h.
 With --dry-run every read still runs (the HEADs, the hold, the re-read guard) and every write is
 printed instead.
 
@@ -34,20 +38,25 @@ printed instead.
                       checked, never sourced
   --no-flows-upload   Refuse a set whose flows blob is in --data: on the public runner flows is
                       only ever carried from the previous set
+  --result-file FILE  Append published=1 (the set went out; on a dry run, would have) or
+                      published=0 (a hold stopped it) to FILE. What follows a publish (pruning
+                      sources, the auxiliary files, GC) runs only after published=1;
+                      data-build.yml passes $GITHUB_OUTPUT
   --dry-run           Print the plan; write nothing
   --now TIME          The time the hold's until is compared with (default now; tests pin it)
 
-Exit status: 0 published (or held), 1 a failure (nothing after the failed step was written),
-64 usage.
+Exit status: 0 published (or held: see --result-file), 1 a failure (nothing after the failed
+step was written), 64 usage.
 USAGE
 }
 
-data='' prev='' dry_run=0 no_flows=0 now=''
+data='' prev='' dry_run=0 no_flows=0 now='' result_file=''
 while [[ $# -gt 0 ]]; do
   case $1 in
     --data) need_value "$1" $#; data=$2; shift ;;
     --prev) need_value "$1" $#; prev=$2; shift ;;
     --no-flows-upload) no_flows=1 ;;
+    --result-file) need_value "$1" $#; result_file=$2; shift ;;
     --dry-run) dry_run=1 ;;
     --now) need_value "$1" $#; check_time "$1" "$2"; now=$2; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -59,10 +68,13 @@ done
 need_tools jq
 [[ -n $now ]] || now=$(now_iso)
 if [[ $dry_run == 1 ]]; then export R2_DRY_RUN=1; else unset R2_DRY_RUN; fi
+# result VALUE: the outcome, for the caller (--result-file).
+result() { if [[ -n $result_file ]]; then printf 'published=%s\n' "$1" >>"$result_file"; fi; }
 
 read_state "$prev/state.env"
 if [[ $HOLD == 1 ]]; then
   summary "publishing is on hold (see the restore step); nothing was published"
+  result 0
   exit 0
 fi
 
@@ -95,6 +107,7 @@ fi
 
 if hold_active "$now"; then
   summary "$HOLD_TEXT; set $set_id was not published"
+  result 0
   exit 0
 fi
 
@@ -168,3 +181,4 @@ if [[ $dry_run == 1 ]]; then
 else
   summary "published set $set_id (previous ${PREV_SET:-none})"
 fi
+result 1

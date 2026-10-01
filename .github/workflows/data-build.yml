@@ -5,10 +5,18 @@ name: Data build
 # 05:00, America/New_York), never by `schedule:`, which GitHub may delay or drop.
 #
 # Guards:
-# - The R2 keys live in the Environment r2-publish, restricted to main. GitHub refuses a job from
-#   any other ref at start, dry run or not, so only main can run this workflow at all (every
-#   step that matters reads R2, even on a dry run). The input check below also refuses a real run
-#   off main: a second guard should the restriction ever be lifted, not a way to run a branch.
+# - The R2 keys live in the Environment r2-publish, restricted to main. Once it exists with that
+#   rule, GitHub refuses a job from any other ref at start, dry run or not. It must be created
+#   (restricted to main) before the first dispatch: a job that names a missing Environment makes
+#   GitHub create it with no rules. The input check below also refuses a real run off main: a
+#   second guard should the restriction ever be lifted, not a way to run a branch.
+# - The data-bucket names (R2_DATA_ACCESS_KEY_ID, R2_DATA_SECRET_ACCESS_KEY, var R2_DATA_BUCKET)
+#   come with the bucket split. Until they are set, a dry run falls back to the repository's
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and var R2_BUCKET, and only reads with them: restore
+#   reads, the upload is skipped, and publish, prune, aux and GC print their plans. With no data/
+#   in that bucket the run is a first run (M4 I1). A real run never falls back: that key can also
+#   write and delete the bucket's history. A half-set pair (a key without its bucket) fails at
+#   the first read with a 403.
 # - Inputs reach the scripts only through env:, never spliced into a run: line.
 # - Each R2 step gets the keys in its own env:; the checkout, the Swift build and the set build
 #   never see them.
@@ -172,9 +180,9 @@ jobs:
         if: inputs.job != 'gc'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
         run: |
           args=(--job "$INPUT_JOB" --prev build/prev --sources build/sources --data build/data)
           if [ "$INPUT_DRY_RUN" = true ]; then args+=(--allow-first-run); fi
@@ -196,35 +204,62 @@ jobs:
       # streets: the street graph on its own first, so a failed build or a failed sanity route
       # (exit 2, which `all` takes as a warning) is seen here. Never fails the step: the
       # fallback below takes over, and the job fails at the end.
+      # Under timeout, which signals the whole process group (curl, osmium): a stalled Geofabrik
+      # download or osmium ends here with ok=0. A step timeout would only stop the docker exec,
+      # and could leave the build writing build/data while the fallback restores into it.
+      # timeout-minutes and continue-on-error are the backstop should the step end some other
+      # way; "Streets result" then reads it as not rebuilt.
       - name: Build streets
         id: streets
         if: inputs.job == 'streets' && steps.restore.outputs.hold == '0'
         timeout-minutes: 25
+        continue-on-error: true
         run: |
           status=0
-          "$BIKERIDE_DATA" streets --sources build/sources --out build/data || status=$?
+          timeout --kill-after=60 22m "$BIKERIDE_DATA" streets --sources build/sources --out build/data || status=$?
           if [ "$status" = 0 ]; then
             echo "ok=1" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::streets stopped with status $status (2: a sanity route failed); publishing the timetables on the published streets and stations"
+            case $status in
+              124) echo "::warning::streets timed out after 22 min; publishing the timetables on the published streets and stations" ;;
+              137) echo "::warning::streets was killed (past its timeout, or out of memory); publishing the timetables on the published streets and stations" ;;
+              *) echo "::warning::streets stopped with status $status (2: a sanity route failed); publishing the timetables on the published streets and stations" ;;
+            esac
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The one streets verdict every later step reads: rebuilt only when the step succeeded and
+      # said so.
+      - name: Streets result
+        id: streets_result
+        if: inputs.job == 'streets' && steps.restore.outputs.hold == '0'
+        env:
+          OUTCOME: ${{ steps.streets.outcome }}
+          OK: ${{ steps.streets.outputs.ok }}
+        run: |
+          if [ "$OUTCOME" = success ] && [ "$OK" = 1 ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$OK" != 0 ]; then echo "::warning::the streets step ended $OUTCOME with no verdict; taking it as not rebuilt"; fi
             echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore the published streets and stations (fallback)
-        if: steps.streets.outputs.ok == '0'
+        if: steps.streets_result.outputs.ok == '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
         run: scripts/restore-state.sh --blobs-only --prev build/prev --data build/data
 
       # No R2 keys: bikeride-data downloads only public sources.
       - name: Build the set
+        id: build
         if: inputs.job != 'gc' && steps.restore.outputs.hold == '0'
         timeout-minutes: 30
         env:
-          STREETS_OK: ${{ steps.streets.outputs.ok }}
+          STREETS_OK: ${{ steps.streets_result.outputs.ok }}
         run: |
           job=$INPUT_JOB
           if [ "$STREETS_OK" = 0 ]; then job=streets-restored; fi
@@ -241,35 +276,39 @@ jobs:
         if: always() && inputs.job != 'gc' && !inputs.dry_run && steps.restore.outcome == 'success' && steps.restore.outputs.hold == '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
         run: scripts/sync-sources.sh upload --sources build/sources
 
+      # Only on the build: a failed source upload above turns the run red but does not hold back
+      # the set (the archive is a backup; the next run uploads what this one could not).
+      # published=1 when the set went out (on a dry run: would have), 0 when a hold that began
+      # after the restore stopped it.
       - name: Publish the set
         id: publish
-        if: inputs.job != 'gc' && steps.restore.outputs.hold == '0'
+        if: ${{ !cancelled() && inputs.job != 'gc' && steps.restore.outputs.hold == '0' && steps.build.outcome == 'success' }}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
         run: |
-          args=(--data build/data --prev build/prev --no-flows-upload)
+          args=(--data build/data --prev build/prev --no-flows-upload --result-file "$GITHUB_OUTPUT")
           if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
           scripts/publish-set.sh "${args[@]}"
 
-      # Deletions, and the last good copy of the auxiliary files, only after a publish succeeded.
-      # The borough boundaries only when streets was rebuilt on them.
+      # Deletions, and the last good copy of the auxiliary files, only after a set was published
+      # (not when a hold stopped it). The borough boundaries only when streets was rebuilt on them.
       - name: Prune source versions and keep the auxiliary files
-        if: inputs.job != 'gc' && steps.publish.outcome == 'success'
+        if: ${{ !cancelled() && inputs.job != 'gc' && steps.publish.outcome == 'success' && steps.publish.outputs.published == '1' }}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
           BUILD_DAY: ${{ steps.restore.outputs.build_day }}
-          STREETS_OK: ${{ steps.streets.outputs.ok }}
+          STREETS_OK: ${{ steps.streets_result.outputs.ok }}
         run: |
           dry=()
           if [ "$INPUT_DRY_RUN" = true ]; then dry=(--dry-run); fi
@@ -280,12 +319,12 @@ jobs:
           scripts/sync-sources.sh aux --sources build/sources --files "$files" "${dry[@]}"
 
       - name: Garbage-collect data/
-        if: inputs.job == 'gc' || steps.publish.outcome == 'success'
+        if: ${{ !cancelled() && ((inputs.job == 'gc' && success()) || (steps.publish.outcome == 'success' && steps.publish.outputs.published == '1')) }}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY || (inputs.dry_run && secrets.R2_SECRET_ACCESS_KEY) || '' }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET || (inputs.dry_run && vars.R2_BUCKET) || '' }}
         run: |
           args=()
           if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
@@ -298,8 +337,9 @@ jobs:
         env:
           HOLD: ${{ steps.restore.outputs.hold }}
           FIRST_RUN: ${{ steps.restore.outputs.first_run }}
-          STREETS_OK: ${{ steps.streets.outputs.ok }}
+          STREETS_OK: ${{ steps.streets_result.outputs.ok }}
           PUBLISH: ${{ steps.publish.outcome }}
+          PUBLISHED: ${{ steps.publish.outputs.published }}
         run: |
           {
             if [ "$HOLD" = 1 ]; then echo "- on hold: nothing was built or published"; fi
@@ -308,6 +348,9 @@ jobs:
             fi
             if [ "$STREETS_OK" = 0 ]; then
               echo "- **streets not rebuilt**: the timetables were published on the published streets and stations"
+            fi
+            if [ "$PUBLISHED" = 0 ]; then
+              echo "- on hold since the restore: the set was not published, and nothing was pruned or collected"
             fi
             if [ -f build/data/manifest.json ]; then
               echo "- publish step: ${PUBLISH:-not run}"
@@ -319,7 +362,7 @@ jobs:
       # Last, after the timetables were published on the old streets: the run is red, and the
       # failed-run email says why.
       - name: Streets not rebuilt
-        if: always() && steps.streets.outputs.ok == '0'
+        if: always() && steps.streets_result.outputs.ok == '0'
         run: |
           echo "::error::streets not rebuilt (its build or a sanity route failed); see the Build streets step"
           exit 1
