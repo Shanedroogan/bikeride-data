@@ -31,12 +31,15 @@ public enum GeofabrikExtract {
 
     /// Fetches `latest` into `file`, falling back to ``fallbackURLs(latest:now:)`` in order when
     /// it fails (not offline: offline there is nothing to try). A fallback that works adds a
-    /// warning; when every one fails, the `-latest` error is thrown.
+    /// warning; when every one fails, the `-latest` error is thrown, unless `useCached` is set and
+    /// `file` already holds an extract: that one is then used, with a warning and the status
+    /// `cached`. `useCached` is the Mac fallback's `--cached-extracts` (a seeded `--sources`); CI
+    /// leaves it off and restores the last published streets instead.
     ///
     /// A dated fetch is conditional like any other: against a cached file newer than the dated
     /// one the server may answer 304, and the cached file (at least as new) is kept.
-    public static func fetch(_ latest: String, to file: URL, fetcher: SourceFetcher, now: Date, warnings: inout [String],
-                             log: (String) -> Void) throws -> SourceRecord {
+    public static func fetch(_ latest: String, to file: URL, fetcher: SourceFetcher, now: Date, useCached: Bool = false,
+                             warnings: inout [String], log: (String) -> Void) throws -> SourceRecord {
         do {
             return try fetcher.fetch(latest, to: file)
         } catch {
@@ -56,7 +59,13 @@ public enum GeofabrikExtract {
                     tried.append(url)
                 }
             }
-            throw error
+            guard useCached, FileManager.default.fileExists(atPath: file.path) else { throw error }
+            warnings.append("\(latest) failed (\(error)), and so did \(tried.joined(separator: ", ")); used the cached extract "
+                + "\(file.lastPathComponent) (--cached-extracts)")
+            log("  warning: \(warnings.last!)")
+            var record = try SourceFetcher(runner: fetcher.runner, offline: true).fetch(latest, to: file)
+            record.status = "cached"
+            return record
         }
     }
 }

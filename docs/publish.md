@@ -31,6 +31,9 @@ with neither a fresh download nor a usable cached `<sources>/nyc/subway-entrance
 one counts as none), the subway is not built and the run stops. CI passes it. A download whose
 body has no usable rows (data.ny.gov answering 200 with an empty export or a changed header) is
 refused before it is saved, so the cached copy is kept and used, as for a failed download.
+`--cached-extracts` is passed to `streets`: when a Geofabrik extract's `-latest` and both dated
+copies fail, the extract already in `--sources` is used instead of stopping the run. Only the Mac
+fallback passes it (with a seeded `--sources`); data-build restores the last published streets.
 
 Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
 `--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that

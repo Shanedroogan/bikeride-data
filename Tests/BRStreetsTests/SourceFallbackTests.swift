@@ -89,8 +89,8 @@ final class CurlStub: ToolRunner, @unchecked Sendable {
         #expect(runner.requested == [Self.latest] && record.url == Self.latest && warnings.isEmpty)
     }
 
-    /// Every URL fails: the `-latest` error is the one reported, and a cached extract is not used
-    /// (the workflow restores the last published streets instead).
+    /// Every URL fails: the `-latest` error is the one reported, and by default a cached extract is
+    /// not used (the workflow restores the last published streets instead).
     @Test func whenEveryDateFailsTheLatestErrorStands() throws {
         let scratch = try ScratchDirectory()
         let file = scratch.file("osm/ny.osm.pbf")
@@ -104,6 +104,31 @@ final class CurlStub: ToolRunner, @unchecked Sendable {
         }
         #expect(runner.requested.count == 3 && warnings.isEmpty)
         #expect(try Data(contentsOf: file) == Data("cached".utf8))
+    }
+
+    /// `--cached-extracts` (the Mac fallback with a seeded `--sources`): when every URL fails the
+    /// extract already there is used, marked `cached`, with a warning naming every URL tried.
+    /// Without a cached extract the `-latest` error still stands.
+    @Test func withCachedExtractsTheCachedFileIsUsedWhenEveryDateFails() throws {
+        let scratch = try ScratchDirectory()
+        let file = scratch.file("osm/new-york-latest.osm.pbf")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("cached".utf8).write(to: file)
+        let runner = CurlStub { _ in true }
+        var warnings: [String] = []
+        let record = try GeofabrikExtract.fetch(Self.latest, to: file, fetcher: SourceFetcher(runner: runner, offline: false),
+                                                now: Self.now, useCached: true, warnings: &warnings, log: { _ in })
+        #expect(runner.requested.count == 3 && record.status == "cached" && record.url == Self.latest && record.bytes == 6)
+        #expect(try Data(contentsOf: file) == Data("cached".utf8))
+        #expect(warnings == ["\(Self.latest) failed (curl exited with status 47: curl: (47) Maximum (50) redirects followed), and so did "
+                             + GeofabrikExtract.fallbackURLs(latest: Self.latest, now: Self.now).joined(separator: ", ")
+                             + "; used the cached extract new-york-latest.osm.pbf (--cached-extracts)"], "\(warnings)")
+
+        let missing = scratch.file("osm/none.osm.pbf")
+        #expect(throws: ToolError.failed(executable: "curl", status: 47, stderr: "curl: (47) Maximum (50) redirects followed")) {
+            try GeofabrikExtract.fetch(Self.latest, to: missing, fetcher: SourceFetcher(runner: runner, offline: false),
+                                       now: Self.now, useCached: true, warnings: &warnings, log: { _ in })
+        }
     }
 
     @Test func offlineThereIsNothingToFallBackTo() throws {

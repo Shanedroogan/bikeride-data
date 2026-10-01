@@ -125,6 +125,31 @@ private struct FixtureOsmiumRunner: ToolRunner {
         #expect(report.stats == (try FixtureStreets.build()).stats)
     }
 
+    /// `--cached-extracts`: Geofabrik is down entirely (every `-latest` and dated URL fails) and
+    /// `--sources` was seeded with both extracts. The build uses them, says so, and builds the same
+    /// graph; without the flag the same run fails.
+    @Test func withCachedExtractsAGeofabrikOutageUsesTheSeededExtracts() throws {
+        let scratch = try ScratchDirectory()
+        var configuration = StreetsCompiler.Configuration(
+            sourcesDirectory: scratch.url.appendingPathComponent("sources"), outputDirectory: scratch.url.appendingPathComponent("data")
+        )
+        configuration.options.snapCellMeters = 50
+        configuration.compress = false
+        configuration.now = GeofabrikFallbackTests.now
+        for file in [configuration.osmFile, configuration.njOSMFile] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("seeded".utf8).write(to: file)
+        }
+        let curl = CurlStub(body: try StreetsFixtures.data("boroughs-fixture.geojson")) { $0.hasPrefix("https://download.geofabrik.de/") }
+        #expect(throws: ToolError.self) { try StreetsCompiler(runner: CurlThenFixtureOsmium(curl: curl), configuration: configuration).run() }
+
+        configuration.cachedExtracts = true
+        let report = try StreetsCompiler(runner: CurlThenFixtureOsmium(curl: curl), configuration: configuration).run()
+        #expect(report.sources.map(\.status) == ["cached", "cached", "downloaded"])
+        #expect(report.warnings.count == 2 && report.warnings.allSatisfy { $0.hasSuffix("(--cached-extracts)") }, "\(report.warnings)")
+        #expect(report.stats == (try FixtureStreets.build()).stats)
+    }
+
     @Test func offlineBuildsNeedTheSources() throws {
         let scratch = try ScratchDirectory()
         var configuration = StreetsCompiler.Configuration(

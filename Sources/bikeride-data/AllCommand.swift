@@ -6,7 +6,7 @@ let allUsage = """
     USAGE: bikeride-data all [--sources DIR] [--out DIR] [--trips DIR] [--months LIST] [--config-sources DIR]
                              [--previous FILE] [--offline] [--no-xz] [--skip LIST] [--require-flows]
                              [--today YYYYMMDD] [--now ISO8601] [--job NAME]
-                             [--accept-trip-count-change LIST] [--strict-sources]
+                             [--accept-trip-count-change LIST] [--strict-sources] [--cached-extracts]
 
     Builds and publishes a set, in the only valid order:
       streets → timetables → stations → config → links → flows → gate → manifest → heartbeat
@@ -50,6 +50,10 @@ let allUsage = """
       --strict-sources      Passed to timetables: the subway is not built without entrances (no
                             download and no usable cached file is an error, not a warning). CI
                             passes it; a fresh runner has only the copy the restore step put there
+      --cached-extracts     Passed to streets: when a Geofabrik extract's -latest and both dated copies
+                            fail, the extract already in --sources is used (with a warning) instead of
+                            stopping the run. For the Mac fallback with a seeded --sources; CI leaves
+                            it off and restores the last published streets instead
 
     Step outcomes:
       streets 2 (a sanity route failed)   warning; the run goes on
@@ -86,7 +90,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         options = try CommandOptions(
             arguments, valued: ["--sources", "--out", "--trips", "--months", "--config-sources", "--previous", "--skip", "--today", "--now",
                      "--job", "--accept-trip-count-change"],
-            flags: ["--offline", "--no-xz", "--require-flows", "--strict-sources"])
+            flags: ["--offline", "--no-xz", "--require-flows", "--strict-sources", "--cached-extracts"])
         requested = try Pipeline.steps(named: options.values["--skip"] ?? "")
         today = try publishToday(options)
         pinnedNow = try publishNow(options)
@@ -130,6 +134,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let noXZ = compress ? [] : ["--no-xz"]
     let todayArgument = ["--today", today.yyyymmdd]
     let strictSources = options.flags.contains("--strict-sources") ? ["--strict-sources"] : []
+    let cachedExtracts = options.flags.contains("--cached-extracts") ? ["--cached-extracts"] : []
     let previousArgument = retired.previous.map { ["--previous", $0.path] } ?? []
     let flowsRequired = options.flags.contains("--require-flows")
     let requireFlows = flowsRequired ? ["--require-flows"] : []
@@ -153,7 +158,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         let status: Int32
         switch step {
         case .streets:
-            status = runStreetsCommand(["--sources", sources, "--out", out.path] + offline + noXZ)
+            status = runStreetsCommand(["--sources", sources, "--out", out.path] + offline + noXZ + cachedExtracts)
         case .timetables:
             status = runTimetablesCommand(["--sources", sources, "--out", out.path] + offline + noXZ + todayArgument + strictSources)
         case .stations:

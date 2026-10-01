@@ -34,6 +34,10 @@ public struct StreetsCompiler: Sendable {
         /// The clock the Geofabrik dated fallback counts back from (UTC days; see
         /// ``GeofabrikExtract``). Tests pin it.
         public var now = Date()
+        /// `--cached-extracts`: when `-latest` and both dated Geofabrik copies fail, build from the
+        /// extract already in ``sourcesDirectory`` (status `cached`, with a warning) instead of
+        /// failing. For the Mac fallback with a seeded `--sources`; CI leaves it off.
+        public var cachedExtracts = false
 
         public init(sourcesDirectory: URL, outputDirectory: URL, workDirectory: URL? = nil) {
             self.sourcesDirectory = sourcesDirectory
@@ -108,11 +112,11 @@ public struct StreetsCompiler: Sendable {
         let (osm, njOSM, boroughs) = try timed("download") {
             log("fetching \(Self.osmURL)")
             let osm = try GeofabrikExtract.fetch(Self.osmURL, to: config.osmFile, fetcher: fetcher, now: config.now,
-                                                 warnings: &warnings, log: log)
+                                                 useCached: config.cachedExtracts, warnings: &warnings, log: log)
             log("  \(osm.status), \(osm.bytes) bytes")
             log("fetching \(Self.njOSMURL)")
             let njOSM = try GeofabrikExtract.fetch(Self.njOSMURL, to: config.njOSMFile, fetcher: fetcher, now: config.now,
-                                                   warnings: &warnings, log: log)
+                                                   useCached: config.cachedExtracts, warnings: &warnings, log: log)
             log("  \(njOSM.status), \(njOSM.bytes) bytes")
             log("fetching \(Self.boroughsURL)")
             let boroughs = try Self.fetchBoroughs(to: config.boroughsFile, fetcher: fetcher, toleranceMeters: config.boroughToleranceMeters,

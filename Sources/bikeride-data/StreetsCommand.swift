@@ -12,6 +12,7 @@ import Glibc
 
 let streetsUsage = """
     USAGE: bikeride-data streets [--sources DIR] [--out DIR] [--work DIR] [--report FILE] [--offline] [--no-xz]
+                                 [--cached-extracts]
 
     Builds the streets artifact (walk + bike graph, snap grid, service-area polygons) from the
     Geofabrik New York and New Jersey extracts and the NYC borough boundaries, downloading them into
@@ -23,6 +24,11 @@ let streetsUsage = """
       --report FILE   Build report JSON (default <out>/../reports/streets.json)
       --offline       Use the files in <sources> as they are
       --no-xz         Skip compression
+      --cached-extracts
+                      When a Geofabrik extract's -latest and both dated copies fail, build from the
+                      one already in <sources> (status cached, with a warning) instead of failing.
+                      For the Mac fallback with a seeded <sources>; CI restores the last published
+                      streets instead
 
     USAGE: bikeride-data streets-route --from LAT,LON --to LAT,LON [--profile walk|ebike|classic] [--data DIR]
 
@@ -184,7 +190,7 @@ func runStreetsCommand(_ arguments: [String]) -> Int32 {
             return 0
         }
         let parsed = try StreetsArguments(
-            arguments, valued: ["--sources", "--out", "--work", "--report"], flags: ["--offline", "--no-xz"]
+            arguments, valued: ["--sources", "--out", "--work", "--report"], flags: ["--offline", "--no-xz", "--cached-extracts"]
         )
         let started = Date()
         let sources = resolvedURL(parsed.values["--sources"] ?? "build/sources")
@@ -193,6 +199,7 @@ func runStreetsCommand(_ arguments: [String]) -> Int32 {
             sourcesDirectory: sources, outputDirectory: out, workDirectory: parsed.values["--work"].map(resolvedURL)
         )
         configuration.offline = parsed.flags.contains("--offline")
+        configuration.cachedExtracts = parsed.flags.contains("--cached-extracts")
         configuration.compress = !parsed.flags.contains("--no-xz")
         let reportURL = parsed.values["--report"].map(resolvedURL)
             ?? out.deletingLastPathComponent().appendingPathComponent("reports/streets.json")

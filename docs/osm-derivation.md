@@ -25,7 +25,10 @@ When a Geofabrik `-latest` download fails (on 2026-10-01 it was in a redirect lo
 files served normally), the same extract is taken from Geofabrik's dated copy of the day before,
 then of the day before that, in UTC: `new-york-YYMMDD.osm.pbf`, `new-jersey-YYMMDD.osm.pbf`
 (`GeofabrikExtract`). The build then reads it as usual; the report's source record names the URL
-it came from and a warning says so. When those fail too the build fails. When the borough
+it came from and a warning says so. When those fail too the build fails, unless `--cached-extracts`
+(on `streets` and `all`) is given and `--sources` already holds that extract: it is then used, with a
+warning and the record's status `cached`. That is for the Mac fallback (`publish-local.sh` with a
+seeded `--sources`); CI leaves it off and restores the last published streets instead. When the borough
 boundaries cannot be downloaded, or the server answers 200 with something that does not read as a
 feature collection of boroughs (an empty export, an error page), the copy already in `--sources`
 (the last good one, which CI restores) is used, with a warning and the record's status `cached`;
