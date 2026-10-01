@@ -1,0 +1,264 @@
+name: Data build
+
+# Builds a data set and publishes it to R2 (docs/publish.md, "R2"). Started only by cron-job.org
+# through the GitHub API (workflow_dispatch: timetables at 03:15 and 13:00, streets Sundays at
+# 05:00, America/New_York), never by `schedule:`, which GitHub may delay or drop.
+#
+# M4 S0 skeleton: the shape, the guards and the pins are final; the scripts it calls are stubs
+# that parse their arguments and stop with 69 before any R2 call, so every run fails at the
+# restore (or, for gc, the GC) step until M4 lane Q fills them in.
+#
+# Guards:
+# - The R2 keys live in the Environment r2-publish, restricted to main, so a run from any other
+#   ref cannot read them; the input check below also refuses a real (not dry) run off main.
+# - Inputs reach the scripts only through env:, never spliced into a run: line.
+# - Each R2 step gets the keys in its own env:; the checkout and the Swift build never see them.
+# - Flows never reaches this runner (docs/publish.md, "R2"): every build passes --skip flows and
+#   carries flows forward from the previous set; restore-state.sh fails if a flows.bin is present.
+# - No upload-artifact, no set -x: logs and artifacts of a public repository are public.
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "timetables (twice daily), streets (Sundays), or gc (garbage collection only)"
+        type: choice
+        options: [timetables, streets, gc]
+        required: true
+        default: timetables
+      dry_run:
+        description: "Build and print the publish plan; write nothing to R2 (cron-job.org passes false)"
+        type: boolean
+        default: true
+      accept_trip_count_change:
+        description: "Systems whose reviewed trip-count change the gate accepts, e.g. subway,path (empty: none)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One publisher at a time. A third dispatch while one runs and one waits replaces the waiting
+# one: acceptable, the slots are 10 h apart.
+concurrency:
+  group: data-publish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  data-build:
+    name: ${{ inputs.job }}${{ inputs.dry_run && ' (dry run)' || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: r2-publish
+    # swift:6.4-noble pinned by digest (the multi-arch index, read from Docker Hub 2026-10-01).
+    # To bump: docker buildx imagetools inspect swift:6.4-noble, take the index digest, re-pin.
+    container:
+      image: swift:6.4-noble@sha256:64bab762bc73a3fda6d9ebc559258bd6d7660c10a705bb25ecacad2f99d066f9
+    env:
+      TZ: UTC
+      # Pinned AWS CLI build, as the private repository's nightly.yml: the sha256 was taken
+      # 2026-09-26 from the zip whose PGP signature verified against the AWS CLI Team key
+      # FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C.
+      AWSCLI_VERSION: "2.27.0"
+      AWSCLI_SHA256: "13b4a15795b818ef837464f40e0902bfca7ce785597fd53e6d2ecbc2598d9a38"
+      INPUT_JOB: ${{ inputs.job }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      INPUT_ACCEPT_TRIP_COUNT_CHANGE: ${{ inputs.accept_trip_count_change }}
+    steps:
+      # First, before anything is installed: a bad input fails in seconds, and a bogus
+      # accept_trip_count_change is the cheap way to check that a failed run sends its email.
+      - name: Check the inputs
+        id: check
+        run: |
+          case $INPUT_JOB in
+            timetables | streets | gc) ;;
+            *) echo "::error::job must be timetables, streets or gc"; exit 1 ;;
+          esac
+          case $INPUT_DRY_RUN in
+            true | false) ;;
+            *) echo "::error::dry_run must be true or false"; exit 1 ;;
+          esac
+          systems='(subway|bus|lirr|ferry|path)'
+          if [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
+            if ! [[ $INPUT_ACCEPT_TRIP_COUNT_CHANGE =~ ^$systems(,$systems)*$ ]]; then
+              echo "::error::accept_trip_count_change must be systems from subway, bus, lirr, ferry, path, comma-separated, no spaces"
+              exit 1
+            fi
+            if [ "$INPUT_JOB" = gc ]; then
+              echo "::error::accept_trip_count_change applies to a build; job gc builds nothing"
+              exit 1
+            fi
+          fi
+          if [ "$INPUT_DRY_RUN" != true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::only main publishes; dispatch from $GITHUB_REF with dry_run=true"
+            exit 1
+          fi
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # The CLI's tools (apt-packages.txt), curl for the downloads, tzdata for America/New_York.
+      # The container runs as root and the workspace belongs to the runner user: without
+      # safe.directory git refuses the repository (as the private nightly.yml).
+      - name: System tools
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          apt-get update -qq
+          # shellcheck disable=SC2046 # one package per word
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            $(grep -v '^#' apt-packages.txt) curl ca-certificates tzdata
+
+      - name: Install AWS CLI v2 (${{ env.AWSCLI_VERSION }})
+        run: |
+          zip="$RUNNER_TEMP/awscliv2.zip"
+          curl -fsSL -o "$zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWSCLI_VERSION}.zip"
+          echo "$AWSCLI_SHA256  $zip" | sha256sum -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/aws/install" --install-dir "$RUNNER_TEMP/aws-cli" --bin-dir "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/aws" --version
+
+      - name: Toolchain version
+        id: toolchain
+        if: inputs.job != 'gc'
+        run: echo "id=$(swift --version 2>&1 | head -n 1 | sha256sum | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+
+      # .build only: no data, sources or reports are ever cached (a public repository's caches
+      # can be read by its forks' pull requests).
+      - name: Cache .build
+        if: inputs.job != 'gc'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .build
+          key: data-build-${{ runner.os }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('Sources/**', 'Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            data-build-${{ runner.os }}-${{ steps.toolchain.outputs.id }}-
+
+      # Retried: SwiftPM 6.4's planner sometimes segfaults while planning on Linux (exit 139,
+      # before any compile; the private repository's run 36273854387). No R2 keys in this step.
+      - name: Build bikeride-data
+        if: inputs.job != 'gc'
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            if swift build -c release --product bikeride-data; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "::warning::swift build failed (attempt $attempt); retrying"
+          done
+          echo "BIKERIDE_DATA=$(swift build -c release --show-bin-path)/bikeride-data" >> "$GITHUB_ENV"
+
+      - name: Restore the previous set and the sources
+        id: restore
+        if: inputs.job != 'gc'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: |
+          scripts/restore-state.sh --job "$INPUT_JOB" --prev build/prev --sources build/sources --data build/data
+          # shellcheck disable=SC1091 # written by restore-state.sh
+          . build/prev/state.env
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
+          echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
+          if [ "$HOLD" != 1 ] && [ "$FIRST_RUN" = 1 ]; then
+            echo "::error::no data/manifest.json in R2: the first set is published from the Mac (scripts/publish-local.sh --first)"
+            exit 1
+          fi
+
+      # timetables: everything but streets, stations and flows, which are carried from the
+      # previous set (streets and stations restored into build/data for links and the gate).
+      # streets: everything but flows.
+      # TODO(M4 lane Q): the streets fallbacks. If the Geofabrik -latest download fails, the CLI
+      # tries the dated extracts (lane P); if that fails too, or the streets sanity check returns
+      # 2, restore streets and stations, run the timetables command line, publish, and fail the
+      # job at the end with "streets not rebuilt".
+      - name: Build the set
+        if: inputs.job != 'gc' && steps.restore.outputs.hold != '1'
+        run: |
+          args=(all --out build/data --sources build/sources --previous build/prev/manifest.json
+            --require-flows --job "$INPUT_JOB")
+          case $INPUT_JOB in
+            timetables) args+=(--skip 'streets,stations,flows') ;;
+            streets) args+=(--skip flows) ;;
+          esac
+          if [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
+            args+=(--accept-trip-count-change "$INPUT_ACCEPT_TRIP_COUNT_CHANGE")
+          fi
+          "$BIKERIDE_DATA" "${args[@]}"
+          # Flows is carried in the manifest, never present here.
+          if [ -e build/data/flows.bin ] || [ -e build/data/flows.bin.xz ]; then
+            echo "::error::build/data holds flows files; flows never reaches the public runner"
+            exit 1
+          fi
+
+      # Add-only, and also after a failed build: a source version first seen by a run that then
+      # failed is kept. Real runs only.
+      - name: Upload new source versions (add-only)
+        if: always() && inputs.job != 'gc' && !inputs.dry_run && steps.restore.outcome == 'success' && steps.restore.outputs.hold != '1'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: scripts/sync-sources.sh upload --sources build/sources
+
+      - name: Publish the set
+        id: publish
+        if: inputs.job != 'gc' && steps.restore.outputs.hold != '1'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: |
+          args=(--data build/data --prev build/prev)
+          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
+          scripts/publish-set.sh "${args[@]}"
+
+      # Deletions only after a publish succeeded.
+      - name: Prune source versions
+        if: inputs.job != 'gc' && steps.publish.outcome == 'success'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: |
+          args=(prune --sources build/sources --restored build/prev/sources-restored.txt
+            --today "$(TZ=America/New_York date +%Y%m%d)")
+          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
+          scripts/sync-sources.sh "${args[@]}"
+
+      - name: Garbage-collect data/
+        if: inputs.job == 'gc' || steps.publish.outcome == 'success'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: |
+          args=()
+          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
+          scripts/gc-data.sh "${args[@]}"
+
+      # TODO(M4 lane Q): setId and the previous setId, xz sizes, coverage days per system, each
+      # gate check's status, "flows: carried from set <prev>". No key outside data/ and sources/.
+      - name: Summary
+        if: always()
+        env:
+          CHECKED: ${{ steps.check.outcome }}
+        run: |
+          {
+            echo "### Data build: $INPUT_JOB"
+            echo
+            echo "- dry run: $INPUT_DRY_RUN"
+            echo "- commit: $GITHUB_SHA"
+            # Only a checked input is echoed.
+            if [ "$CHECKED" = success ] && [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
+              echo "- accepted trip-count change: $INPUT_ACCEPT_TRIP_COUNT_CHANGE"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

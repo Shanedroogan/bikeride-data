@@ -5,7 +5,8 @@ import Foundation
 let allUsage = """
     USAGE: bikeride-data all [--sources DIR] [--out DIR] [--trips DIR] [--months LIST] [--config-sources DIR]
                              [--previous FILE] [--offline] [--no-xz] [--skip LIST] [--require-flows]
-                             [--today YYYYMMDD] [--now ISO8601]
+                             [--today YYYYMMDD] [--now ISO8601] [--job NAME]
+                             [--accept-trip-count-change LIST]
 
     Builds and publishes a set, in the only valid order:
       streets → timetables → stations → config → links → flows → gate → manifest → heartbeat
@@ -38,6 +39,13 @@ let allUsage = """
                             timetable window starts the day before). Fixtures pin it
       --now ISO8601         Timestamp for gate.json, the manifest and the heartbeat (default: the time
                             each is written). Pin it to make two runs byte-identical
+      --job NAME            The job this run belongs to, recorded in the heartbeat: all (default),
+                            timetables, streets or flows (the M4 workflow jobs)
+      --accept-trip-count-change LIST
+                            Systems whose trip-count change a person reviewed and accepts for this run
+                            (subway, bus, lirr, ferry, path; comma-separated, no spaces), passed to
+                            the gate. Parsed and checked only for now: the gate does not apply it yet,
+                            so a tripCounts failure still stops the run
 
     Step outcomes:
       streets 2 (a sanity route failed)   warning; the run goes on
@@ -68,13 +76,18 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let requested: Set<PipelineStep>
     let today: ServiceDate
     let pinnedNow: Date?
+    let job: PublishJob
+    let acceptedTripCountChange: Set<TransitSystem>?
     do {
         options = try CommandOptions(
-            arguments, valued: ["--sources", "--out", "--trips", "--months", "--config-sources", "--previous", "--skip", "--today", "--now"],
+            arguments, valued: ["--sources", "--out", "--trips", "--months", "--config-sources", "--previous", "--skip", "--today", "--now",
+                     "--job", "--accept-trip-count-change"],
             flags: ["--offline", "--no-xz", "--require-flows"])
         requested = try Pipeline.steps(named: options.values["--skip"] ?? "")
         today = try publishToday(options)
         pinnedNow = try publishNow(options)
+        job = try options.values["--job"].map(Pipeline.job(named:)) ?? .all
+        acceptedTripCountChange = try options.values["--accept-trip-count-change"].map(Pipeline.tripCountChangeSystems(named:))
     } catch {
         return usageError("\(error)")
     }
@@ -115,6 +128,10 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let previousArgument = retired.previous.map { ["--previous", $0.path] } ?? []
     let flowsRequired = options.flags.contains("--require-flows")
     let requireFlows = flowsRequired ? ["--require-flows"] : []
+    // The gate parses the list again and reports what it does with it.
+    let acceptTripCountChange = acceptedTripCountChange.map {
+        ["--accept-trip-count-change", $0.map(SetSystems.name).sorted().joined(separator: ",")]
+    } ?? []
     func value(_ name: String) -> [String] { options.values[name].map { [name, $0] } ?? [] }
     func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
@@ -144,7 +161,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
         case .flows:
             status = runFlowsCommand(["--sources", sources, "--out", out.path] + value("--trips") + value("--months") + offline + noXZ)
         case .gate:
-            status = runGateCommand(["--data", out.path] + todayArgument + previousArgument + requireFlows
+            status = runGateCommand(["--data", out.path] + todayArgument + previousArgument + requireFlows + acceptTripCountChange
                 + (pinnedNow.map { ["--now", timestamp($0)] } ?? []))
         case .manifest:
             let now = publishedAt ?? Date()
@@ -152,7 +169,8 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
             status = runManifestCommand(["--data", out.path, "--no-heartbeat", "--now", timestamp(now)] + todayArgument + previousArgument
                 + requireFlows + (skip.contains(.timetables) ? ["--timetables-not-run"] : []))
         case .heartbeat:
-            status = runHeartbeatStep(data: out, previousHeartbeat: retired.previousHeartbeat, now: publishedAt ?? Date(), notRun: skip.contains(.timetables))
+            status = runHeartbeatStep(data: out, previousHeartbeat: retired.previousHeartbeat, now: publishedAt ?? Date(), job: job,
+                                       notRun: skip.contains(.timetables))
         }
         logLine("all", String(format: "%@ finished with status %d in %.1f s", step.rawValue, status, Date().timeIntervalSince(stepStart)))
         return status
@@ -168,11 +186,11 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
 }
 
 /// The heartbeat step: `heartbeat.json` for the manifest the manifest step of this run just wrote.
-private func runHeartbeatStep(data: URL, previousHeartbeat: URL?, now: Date, notRun: Bool) -> Int32 {
+private func runHeartbeatStep(data: URL, previousHeartbeat: URL?, now: Date, job: PublishJob, notRun: Bool) -> Int32 {
     do {
         let manifest = try SetManifest.load(data.appendingPathComponent(SetManifest.fileName))
         let url = try writeHeartbeat(for: manifest, data: data, previousHeartbeat: previousHeartbeat, now: now,
-                                     job: "all", notRun: notRun, unchanged: false)
+                                     job: job.rawValue, notRun: notRun, unchanged: false)
         print("heartbeat: \(url.path) (set \(manifest.setId))")
         return 0
     } catch {

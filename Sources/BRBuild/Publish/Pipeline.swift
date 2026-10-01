@@ -1,3 +1,4 @@
+import BRCore
 import Foundation
 
 /// One step of `bikeride-data all`. `allCases` is the only valid order: config is built before
@@ -18,6 +19,12 @@ public enum PipelineStep: String, CaseIterable, Sendable, Comparable {
         case .gate, .manifest, .heartbeat: false
         }
     }
+}
+
+/// The job a publish run belongs to (`all --job`), written to the heartbeat's `job`: `all` by
+/// hand or from the Mac, or one of the M4 workflow jobs. GC runs no build, so it has no case.
+public enum PublishJob: String, CaseIterable, Sendable {
+    case all, timetables, streets, flows
 }
 
 /// What `bikeride-data all` does with each step's exit status, and which steps it runs. The CLI
@@ -47,6 +54,36 @@ public enum Pipeline {
             steps.insert(step)
         }
         return steps
+    }
+
+    /// `--job NAME`: the job a run belongs to, recorded in the heartbeat. Exactly one of the
+    /// ``PublishJob`` names, lowercase; anything else is a usage error, so a typo in a workflow
+    /// cannot write a heartbeat under a job name nothing else knows.
+    public static func job(named name: String) throws -> PublishJob {
+        guard let job = PublishJob(rawValue: name) else {
+            throw UsageError(description: "unknown job '\(name)' (jobs: \(PublishJob.allCases.map(\.rawValue).joined(separator: ", ")))")
+        }
+        return job
+    }
+
+    /// `--accept-trip-count-change LIST`: the systems whose trip-count change a person reviewed and
+    /// accepted for this run (the `accept_trip_count_change` dispatch input). As strict as the
+    /// workflow's check, `^(subway|bus|lirr|ferry|path)(,(subway|bus|lirr|ferry|path))*$`: lowercase
+    /// names and commas, no blanks and no empty list, because the list overrides a hard failure
+    /// and a loose parse could accept more than was typed. Repeats collapse.
+    public static func tripCountChangeSystems(named list: String) throws -> Set<TransitSystem> {
+        let known = TransitSystem.allCases.map(SetSystems.name).joined(separator: ", ")
+        guard !list.isEmpty else {
+            throw UsageError(description: "--accept-trip-count-change needs one or more systems (\(known)), comma-separated")
+        }
+        var systems = Set<TransitSystem>()
+        for name in list.split(separator: ",", omittingEmptySubsequences: false).map(String.init) {
+            guard let system = SetSystems.system(named: name) else {
+                throw UsageError(description: "--accept-trip-count-change: unknown system '\(name)' (systems: \(known); comma-separated, no spaces)")
+            }
+            systems.insert(system)
+        }
+        return systems
     }
 
     /// The steps a run skips: those asked for, plus those that cannot run given them.

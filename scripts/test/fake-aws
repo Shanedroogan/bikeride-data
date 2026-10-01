@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# A stand-in for the AWS CLI in the script tests: put on PATH as `aws`, it serves a local
+# directory as the bucket and records every call. It answers only the s3api calls and output
+# shapes scripts/r2.sh makes, and fails loudly on anything else, so a script that starts calling
+# the CLI another way breaks its tests instead of passing against a fake that guessed.
+#
+#   FAKE_AWS_ROOT  the buckets: object <key> of bucket <b> is the file $FAKE_AWS_ROOT/<b>/<key>
+#                  (its mtime is the object's LastModified, so tests can age objects with touch)
+#   FAKE_AWS_LOG   a file each call is appended to: one line, the arguments joined by spaces
+#   FAKE_AWS_FAIL  space-separated rules OP:KEY:WHAT, KEY a shell pattern matched against the key
+#                  (or the list prefix). WHAT is 404, 403, 500 or network: the call fails as the
+#                  CLI does (exit 254, or 255 for network) with the CLI's own error shapes,
+#                  NoSuchKey/AccessDenied from get-object, 404/403 from head-object; or short:
+#                  head-object reports one byte less than stored (a truncated upload).
+#
+# Every failure also writes to stderr what a leaking caller would print: the key pair, the
+# account id and a presigned-style URL with X-Amz-Signature. The tests check none of it gets
+# past r2.sh.
+set -euo pipefail
+
+: "${FAKE_AWS_ROOT:?set FAKE_AWS_ROOT}"
+
+fatal() { echo "fake-aws: $*" >&2; exit 2; }
+
+[[ -z ${FAKE_AWS_LOG:-} ]] || printf '%s\n' "$*" >>"$FAKE_AWS_LOG"
+
+if [[ ${1:-} == --version ]]; then
+  echo "aws-cli/2.27.0 Python/3.13.2 Linux/6.8 exe/x86_64.fake"
+  exit 0
+fi
+
+endpoint='' region='' service='' op='' bucket='' key='' body='' md5='' query='' output='' prefix='' outfile=''
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --endpoint-url) endpoint=$2; shift ;;
+    --region) region=$2; shift ;;
+    --bucket) bucket=$2; shift ;;
+    --key) key=$2; shift ;;
+    --body) body=$2; shift ;;
+    --content-md5) md5=$2; shift ;;
+    --content-type) shift ;;
+    --prefix) prefix=$2; shift ;;
+    --query) query=$2; shift ;;
+    --output) output=$2; shift ;;
+    --*) fatal "unsupported option $1" ;;
+    *)
+      if [[ -z $service ]]; then service=$1
+      elif [[ -z $op ]]; then op=$1
+      elif [[ -z $outfile ]]; then outfile=$1
+      else fatal "unexpected argument $1"; fi
+      ;;
+  esac
+  shift
+done
+
+[[ $service == s3api ]] || fatal "only s3api is faked, not '$service'"
+[[ $endpoint =~ ^https://[A-Za-z0-9]+\.r2\.cloudflarestorage\.com$ ]] || fatal "no R2 endpoint ('$endpoint')"
+[[ $region == auto ]] || fatal "region must be auto"
+[[ -n $bucket ]] || fatal "no --bucket"
+dir="$FAKE_AWS_ROOT/$bucket"
+[[ -d $dir ]] || fatal "no bucket directory $dir"
+
+# leak: what a careless caller could print. Never in r2.sh's output.
+leak() {
+  echo "DEBUG - https://$bucket.${endpoint#https://}/$1?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${AWS_ACCESS_KEY_ID:-}%2F20261001%2Fauto%2Fs3%2Faws4_request&X-Amz-Signature=0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0" >&2
+  echo "DEBUG - credentials: ${AWS_ACCESS_KEY_ID:-} ${AWS_SECRET_ACCESS_KEY:-}" >&2
+}
+
+# fail_as WHAT OPERATION KEY: the CLI's error for an injected failure.
+fail_as() {
+  local what=$1 name=$2 subject=$3
+  leak "$subject"
+  case $what:$op in
+    404:head-object) echo "An error occurred (404) when calling the $name operation: Not Found" >&2 ;;
+    404:*) echo "An error occurred (NoSuchKey) when calling the $name operation: The specified key does not exist." >&2 ;;
+    403:head-object) echo "An error occurred (403) when calling the $name operation: Forbidden" >&2 ;;
+    403:*) echo "An error occurred (AccessDenied) when calling the $name operation: Access Denied" >&2 ;;
+    500:*) echo "An error occurred (InternalError) when calling the $name operation (reached max retries: 2): We encountered an internal error. Please try again." >&2 ;;
+    network:*)
+      echo "Could not connect to the endpoint URL: \"$endpoint/$bucket/$subject\"" >&2
+      exit 255
+      ;;
+    *) fatal "unknown failure '$what'" ;;
+  esac
+  exit 254
+}
+
+# rule SUBJECT: the injected failure for this call, if any.
+rule() {
+  local r rop rkey rwhat rules=()
+  # Split on spaces without expanding the patterns against the working directory.
+  read -r -a rules <<<"${FAKE_AWS_FAIL:-}"
+  for r in ${rules[@]+"${rules[@]}"}; do
+    rop=${r%%:*} rwhat=${r##*:} rkey=${r#*:}
+    rkey=${rkey%:*}
+    # shellcheck disable=SC2053 # rkey is a pattern
+    if [[ $rop == "$op" && $1 == $rkey ]]; then echo "$rwhat"; return 0; fi
+  done
+  return 0
+}
+
+operation_name() {
+  case $op in
+    get-object) echo GetObject ;;
+    head-object) echo HeadObject ;;
+    put-object) echo PutObject ;;
+    delete-object) echo DeleteObject ;;
+    list-objects-v2) echo ListObjectsV2 ;;
+  esac
+}
+
+modified() { # ISO 8601 LastModified from the file's mtime, as the CLI prints it
+  local t
+  t=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1")
+  { date -u -d "@$t" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null || date -u -r "$t" +%Y-%m-%dT%H:%M:%S+00:00; }
+}
+
+md5_hex() { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
+
+# The digest as R2 computes it, independently of r2.sh's printf route where openssl exists.
+md5_base64() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -md5 -binary "$1" | base64
+  else
+    # shellcheck disable=SC2059
+    printf "$(md5_hex "$1" | sed 's/../\\x&/g')" | base64
+  fi
+}
+
+size() { wc -c <"$1" | tr -d ' '; }
+
+subject=${key:-$prefix}
+what=$(rule "$subject")
+if [[ -n $what && $what != short ]]; then fail_as "$what" "$(operation_name)" "$subject"; fi
+
+case $op in
+  get-object)
+    [[ -n $key && -n $outfile ]] || fatal "get-object needs --key and an outfile"
+    [[ -f $dir/$key ]] || fail_as 404 GetObject "$key"
+    cp "$dir/$key" "$outfile"
+    printf '{"ContentLength": %s, "ETag": "\\"%s\\""}\n' "$(size "$dir/$key")" "$(md5_hex "$dir/$key")"
+    ;;
+  head-object)
+    [[ -n $key ]] || fatal "head-object needs --key"
+    [[ $query == '[ContentLength,ETag,LastModified]' && $output == text ]] || fatal "head-object: unsupported --query/--output '$query' '$output'"
+    [[ -f $dir/$key ]] || fail_as 404 HeadObject "$key"
+    bytes=$(size "$dir/$key")
+    [[ $what != short ]] || bytes=$((bytes - 1))
+    printf '%s\t"%s"\t%s\n' "$bytes" "$(md5_hex "$dir/$key")" "$(modified "$dir/$key")"
+    ;;
+  put-object)
+    [[ -n $key && -n $body && -n $md5 ]] || fatal "put-object needs --key, --body and --content-md5"
+    if [[ $(md5_base64 "$body") != "$md5" ]]; then
+      leak "$key"
+      echo "An error occurred (BadDigest) when calling the PutObject operation: The Content-MD5 you specified did not match what we received." >&2
+      exit 254
+    fi
+    mkdir -p "$(dirname "$dir/$key")"
+    cp "$body" "$dir/$key"
+    printf '{"ETag": "\\"%s\\""}\n' "$(md5_hex "$body")"
+    ;;
+  delete-object)
+    [[ -n $key ]] || fatal "delete-object needs --key"
+    rm -f "$dir/$key"
+    ;;
+  list-objects-v2)
+    [[ -n $prefix ]] || fatal "list-objects-v2 without --prefix"
+    [[ $query == 'Contents[].[Key,Size,LastModified]' && $output == text ]] || fatal "list-objects-v2: unsupported --query/--output '$query' '$output'"
+    found=0
+    while IFS= read -r path; do
+      k=${path#"$dir"/}
+      [[ $k == "$prefix"* ]] || continue
+      printf '%s\t%s\t%s\n' "$k" "$(size "$path")" "$(modified "$path")"
+      found=1
+    done < <(find "$dir" -type f | LC_ALL=C sort)
+    [[ $found == 1 ]] || echo None
+    ;;
+  *) fatal "unsupported operation '$op'" ;;
+esac

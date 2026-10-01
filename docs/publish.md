@@ -1,4 +1,4 @@
-# Publishing a set: gate, manifest, heartbeat, source archive
+# Publishing a set: gate, manifest, heartbeat, source archive, R2
 
 What `bikeride-data gate` and `bikeride-data manifest` read and write (`Sources/BRBuild/Publish/`).
 The artifact formats themselves are in `formats.md`.
@@ -22,7 +22,10 @@ vouch for it, so the gate fails), skip `gate,manifest`; `--skip gate` alone leav
 without a gate report for these files (exit 3). `--today` and `--now` go to every step that takes
 them (the manifest and heartbeat share one timestamp); `--previous FILE` goes to `gate` and
 `manifest`; `--trips` and `--months` to `flows`; `--config-sources` to `config`, which `all` always
-runs with `--require-references`.
+runs with `--require-references`. `--job NAME` (`all`, the default, or the workflow jobs
+`timetables`, `streets`, `flows`) is recorded as the heartbeat's `job`. `--accept-trip-count-change
+LIST` (systems, comma-separated, no spaces) is checked and passed to `gate`, which does not apply
+it yet: until it does, a `tripCounts` failure still fails the gate (see "R2", below).
 
 Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
 `--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that
@@ -88,8 +91,11 @@ Thresholds and the allowlist: `Data/gate/` (see its `SOURCES.md`); holidays:
 
 ## `data/manifest.json` (`SetManifest`)
 
-Compact JSON, keys sorted. The app fetches it through the relay every 60 s; the relay's
-`/v1/health/data` reads `coverage`.
+Compact JSON, keys sorted. The relay serves it at `/v1/data/manifest.json` from a 60 s edge cache
+(per colo, with a last-good copy), and its `/v1/health/data` reads `coverage`. The app fetches it
+through the relay on a cold launch, on returning to the foreground more than 2 h after the last
+check, and from a background refresh scheduled about 45 min after each publish slot; never on a
+timer.
 
 ```
 {"schema": 1,
@@ -119,10 +125,12 @@ Compact JSON, keys sorted. The app fetches it through the relay every 60 s; the 
   them): their artifact entries, coverage, sources and trip counts. Everything, fresh or carried,
   must match what it was built against, or the manifest is refused.
 
-## `data/trip-counts.json` (`TripCountSidecar`)
+## The trip-count sidecar (`TripCountSidecar`)
 
-`{schema: 1, setId, buildDay, systems: {"<system>": {"YYYY-MM-DD": activeTrips}}}`, next to the
-manifest, which records its SHA-256. Only the next build's gate reads it (as `--previous`'s
+`{schema: 1, setId, buildDay, systems: {"<system>": {"YYYY-MM-DD": activeTrips}}}`. Locally it is
+`trip-counts.json` next to the manifest, which records its SHA-256 (`tripCounts.file`,
+`tripCounts.sha256`); in R2 it is content-addressed, `data/trip-counts/<sha256>.json`, and restored
+by that sha256 into `prev/trip-counts.json` beside the previous manifest. Only the next build's gate reads it (as `--previous`'s
 sidecar); it stays out of the manifest the app polls. A sidecar that is missing or does not match
 its manifest's record or `setId` fails the next gate and makes `manifest --previous` refuse: a
 check that quietly turned itself off, and a sidecar without the counts of the carried-forward
@@ -157,3 +165,100 @@ on some date of the window; the compiler then takes, per date, the newest versio
 selected; online builds delete it (offline builds only read the sources). This replaces "keep
 until the calendar ends", which for the hourly supplemented subway feed would keep dozens of
 unused 19 MB zips.
+
+## R2 (M4)
+
+The design of record for publishing to R2 (the private repository's `docs/plans/m4-plan.md`). As of
+M4 S0, `scripts/r2.sh` is complete and tested; `restore-state.sh`, `publish-set.sh`,
+`sync-sources.sh`, `gc-data.sh`, `publish-local.sh` and `rollback.sh` parse their arguments and
+stop with 69 before any R2 call, and `.github/workflows/data-build.yml` is a skeleton around them.
+M4 lane Q writes their bodies.
+
+### Keys
+
+`data/` and `sources/` are meant for a bucket of their own, `bike-ride-data`, with a token scoped
+to it (open question 16); `private/flows/` stays in `bike-ride`. Without the split, all of it shares
+`bike-ride` with `history/` and `fixtures/`, and the `r2.sh` allowlist is the only guard.
+
+| Key | Writer | Content | Retention |
+|---|---|---|---|
+| `data/blobs/<sha256 of the .xz>.xz` | `publish-set.sh` | The artifacts' blobs, content-addressed; locally built ones are always PUT | GC only |
+| `data/manifests/<YYYYMMDDTHHMMSSZ>-<setId>.json` | `publish-set.sh` | An immutable copy of each published manifest; every retained one is a GC root | The newest 7, plus 30 days |
+| `data/trip-counts/<sha256>.json` | `publish-set.sh` | The sidecar the next gate reads; the relay never serves it | While a retained manifest names it |
+| `data/manifest.json` | `publish-set.sh` | The current set | Overwritten |
+| `data/heartbeat.json` | `publish-set.sh` | Written last by every successful run | Overwritten |
+| `data/hold.json` | `rollback.sh`, or by hand | `{reason, until}`: publishing paused | Removed by hand, or at `until` |
+| `sources/<feed>/<key>.{zip,json}` | data-build | The GTFS source archive (above) | The build's prune, plus `calendarEnd < today − 30` |
+| `sources/aux/{subway-entrances.csv,borough-boundaries.geojson}` | data-build | The last good copy of each | Overwritten |
+| `private/flows/reports/<rawSha256>.json` | the private `flows.yml` | `reports/flows.json` of each published flows build | 400 days |
+| `private/flows/sources/station_information-<last_updated>.json` | the private `flows.yml` | The GBFS input of that build | 400 days |
+
+`history/` and `fixtures/` belong to the private repository's jobs; nothing here touches them.
+
+### `scripts/r2.sh`
+
+Every R2 call of these scripts goes through it, on the pinned AWS CLI 2.27.0 (`--endpoint-url
+https://<account>.r2.cloudflarestorage.com --region auto`):
+
+- Keys and list prefixes must be under `data/` or `sources/`, or `private/flows/` with
+  `R2_ALLOW_PRIVATE_FLOWS=1` (the private caller). `history/` and `fixtures/` are refused by name
+  first. Keys are plain (`[A-Za-z0-9._/-]`, no empty, `.` or `..` segment), and a list needs a
+  prefix: there is no listing of the whole bucket.
+- The CLI's stderr goes to a private temp file that is never printed (AWS error text names keys,
+  and debug output holds signed URLs); a failure prints one fixed line with the exit status.
+- Not found (10) is told apart from access denied (11) and every other failure (12). A 404 on
+  `data/manifest.json` means a first run; a 403 or a 5xx is never taken for "not there".
+- Uploads are `s3api put-object --content-md5`, never `s3 cp`, which goes multipart above 8 MB
+  (tt-bus is 8.35 MB) and has no whole-object MD5; each is followed by a HEAD that compares
+  `ContentLength`.
+- `R2_DRY_RUN=1` prints put and delete instead of doing them.
+
+`scripts/test/r2-test.sh` runs it against `scripts/test/fake-aws`, a stand-in CLI that serves a
+local directory as the bucket, records each call and injects failures in the CLI's own error
+shapes, printing the key pair and a signed URL each time; the test checks none reaches the output.
+
+### `data-build.yml`
+
+Dispatched only by cron-job.org (`workflow_dispatch`; no `schedule:`): `timetables` at 03:15 and
+13:00, `streets` Sundays at 05:00, America/New_York; `gc` by hand. Inputs: `job`
+(`timetables|streets|gc`), `dry_run` (default true), `accept_trip_count_change` (checked against
+`^(subway|bus|lirr|ferry|path)(,(subway|bus|lirr|ferry|path))*$`). The R2 keys are in the
+Environment `r2-publish`, restricted to `main`, and reach only the steps that call R2; the
+container is `swift:6.4-noble` pinned by digest; the build is retried 3 times (the SwiftPM
+planner crash). One run at a time (`concurrency: data-publish`).
+
+1. Check the inputs; install the tools and the AWS CLI; build `bikeride-data` (release).
+2. `restore-state.sh`: the hold (while active: exit 0 with a summary line); `prev/manifest.json`,
+   `prev/heartbeat.json`, `prev/trip-counts.json` (a 404 on the manifest is a first run, which CI
+   refuses: the first set is published from the Mac); the `sources/` records still in use
+   (`calendarEnd ≥ build day − 1`) and `sources/aux/` as the builder's cache; for `timetables`, the
+   streets and stations blobs. No `flows.bin` may be in the data directory.
+3. `all --previous prev/manifest.json --require-flows --job <job>` with `--skip
+   streets,stations,flows` (timetables) or `--skip flows` (streets). Flows is always carried from
+   the previous set: the public runner never sees trip data or `flows.bin`.
+4. `sync-sources.sh upload`, add-only, on every real run that restored, even a failed one.
+5. `publish-set.sh`: HEAD every blob the manifest names (carried ones too) and compare
+   `ContentLength`; PUT the local blobs, the sidecar and the dated manifest; re-GET
+   `data/manifest.json` and stop unless its setId is still the previous one (or it is still a 404
+   on a first run); PUT `data/manifest.json`; PUT `data/heartbeat.json`, last.
+6. `sync-sources.sh prune` and `gc-data.sh`, only after a publish succeeded (or `job=gc`).
+7. The step summary: setIds, sizes, coverage, gate checks, "flows: carried from set <prev>"; no
+   key outside `data/` and `sources/`.
+
+### Failures
+
+- A gate, config or manifest failure writes nothing; the previous set stays current.
+- Two callers racing: the re-read guard stops the later one; its next run builds on the new set.
+- A publish torn between PUTs leaves only orphan blobs, which GC removes after 48 h.
+- A bad set: `rollback.sh <setId>` puts an earlier manifest back with a new `generatedAt` (the
+  app takes only a strictly newer set) and writes `data/hold.json`.
+- `tripCounts` beyond ±35 % stops the run unless a person dispatches with
+  `accept_trip_count_change` (recorded in `gate.json` and the summary once the gate applies it).
+
+### GC
+
+After a successful publish, inside `data-publish`: re-read `data/manifest.json` and list
+`data/manifests/`; the roots are the current manifest and every retained dated manifest; delete
+blobs and sidecars no root names whose LastModified is over 48 h old, and the dated manifests
+outside retention. It stops at the first list, GET or parse error, deletes at most 200 objects a
+run, only under `data/`, and fails the run when `data/` is over 1.5 GB.

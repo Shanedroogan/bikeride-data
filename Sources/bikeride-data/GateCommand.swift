@@ -5,6 +5,7 @@ import Foundation
 let gateUsage = """
     USAGE: bikeride-data gate [--data DIR] [--reports DIR] [--previous FILE] [--today YYYYMMDD]
                               [--repo-data DIR] [--now ISO8601] [--require-flows]
+                              [--accept-trip-count-change LIST]
 
     Runs the validation gate over the set in --data and writes <reports>/gate.json: every required
     artifact present, opening and consistent with builtAgainst; xz blobs one stream / one block and
@@ -24,6 +25,10 @@ let gateUsage = """
                        or the source tree this binary was built from
       --now ISO8601    Timestamp for the report (default now)
       --require-flows  A set without flows fails (by default flows is optional)
+      --accept-trip-count-change LIST
+                       Systems whose trip-count change a person reviewed and accepts for this run
+                       (subway, bus, lirr, ferry, path; comma-separated, no spaces). Parsed and
+                       checked only for now: not applied yet, so a tripCounts failure still fails
 
     Exit status: 0 pass or soft failure, 3 hard failure (publish nothing), 1 error, 64 usage.
     """
@@ -35,13 +40,20 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         return 0
     }
     do {
-        let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now"],
+        let options = try CommandOptions(arguments, valued: ["--data", "--reports", "--previous", "--today", "--repo-data", "--now",
+                                                                     "--accept-trip-count-change"],
                                          flags: ["--require-flows"])
         let data = options.url("--data", default: "build/data")
         let reports = options.values["--reports"].map(CommandOptions.absoluteURL) ?? data.deletingLastPathComponent().appendingPathComponent("reports")
         // No gate.json may survive a run that fails before writing its own (manifest would take it).
         try Gate.removeReport(in: reports)
         let today = try publishToday(options)
+        if let list = options.values["--accept-trip-count-change"] {
+            let systems = try Pipeline.tripCountChangeSystems(named: list).map(SetSystems.name).sorted()
+            // Fail closed until the override is implemented: the flag changes nothing yet.
+            logLine("gate", "warning: --accept-trip-count-change \(systems.joined(separator: ",")) is not applied yet; "
+                + "a tripCounts failure still fails the gate")
+        }
         guard let repoData = options.values["--repo-data"].map(CommandOptions.absoluteURL) ?? GateConfiguration.defaultRepoData() else {
             throw CommandOptions.UsageError(description: "no Data/ directory with gate/thresholds.json found; pass --repo-data")
         }
@@ -56,6 +68,9 @@ func runGateCommand(_ arguments: [String]) -> Int32 {
         print("gate: \(report.status.rawValue) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; report \(gate.reportURL.path)")
         return report.status == .fail ? 3 : 0
     } catch let error as CommandOptions.UsageError {
+        FileHandle.standardError.write(Data("bikeride-data gate: \(error)\n\n\(gateUsage)\n".utf8))
+        return 64
+    } catch let error as Pipeline.UsageError {
         FileHandle.standardError.write(Data("bikeride-data gate: \(error)\n\n\(gateUsage)\n".utf8))
         return 64
     } catch {

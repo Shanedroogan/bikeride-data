@@ -40,11 +40,14 @@ swift test
 swift run bikeride-data version
 ```
 
-Codec tests need `xz` and are skipped, with a message, when it is missing.
+Codec tests need `xz` and are skipped, with a message, when it is missing. The publishing
+scripts' tests (`scripts/r2.sh` against a stand-in AWS CLI; no network) run with
+`scripts/test/r2-test.sh`.
 
 ## Documentation
 
 - [`docs/formats.md`](docs/formats.md): artifact header, binary primitives and each artifact's layout.
+- [`docs/publish.md`](docs/publish.md): the gate, the manifest, the heartbeat and publishing to R2.
 - [`docs/osm-derivation.md`](docs/osm-derivation.md): how the street data is derived from
   OpenStreetMap (the ODbL derivation recipe).
 

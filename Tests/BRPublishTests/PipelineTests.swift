@@ -18,6 +18,27 @@ import Testing
         #expect(throws: Pipeline.UsageError.self) { try Pipeline.steps(named: "streets,tt") }
     }
 
+    @Test func jobAcceptsTheFourJobsAndNothingElse() throws {
+        #expect(PublishJob.allCases.map(\.rawValue) == ["all", "timetables", "streets", "flows"])
+        for job in PublishJob.allCases { #expect(try Pipeline.job(named: job.rawValue) == job) }
+        // gc builds nothing, so it never runs all; names are exact (the heartbeat records them).
+        for name in ["", "gc", "Timetables", " streets", "flows,streets", "tt"] {
+            #expect(throws: Pipeline.UsageError.self, "\(name)") { try Pipeline.job(named: name) }
+        }
+    }
+
+    @Test func acceptedTripCountChangeIsAsStrictAsTheWorkflow() throws {
+        #expect(try Pipeline.tripCountChangeSystems(named: "subway") == [.subway])
+        #expect(try Pipeline.tripCountChangeSystems(named: "subway,path") == [.subway, .path])
+        #expect(try Pipeline.tripCountChangeSystems(named: "bus,lirr,ferry,path,subway") == Set(TransitSystem.allCases))
+        #expect(try Pipeline.tripCountChangeSystems(named: "bus,bus") == [.bus])
+        // What the workflow's regex refuses, the CLI refuses too: an override of a hard failure
+        // accepts only what was typed exactly.
+        for list in ["", "bogus", "Subway", "subway,", ",subway", "subway,,bus", "subway, bus", " subway", "S", "tt-subway", "all"] {
+            #expect(throws: Pipeline.UsageError.self, "\(list)") { try Pipeline.tripCountChangeSystems(named: list) }
+        }
+    }
+
     @Test func impliedSkips() {
         #expect(Pipeline.effectiveSkips([], compress: true).skip == [])
         let noXZ = Pipeline.effectiveSkips([.streets], compress: false)
