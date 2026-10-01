@@ -129,6 +129,7 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     let flowsRequired = options.flags.contains("--require-flows")
     let requireFlows = flowsRequired ? ["--require-flows"] : []
     // The gate parses the list again and reports what it does with it.
+    // TODO(M4 lane P): a CLI-level test that the accepted list reaches the gate (no test covers it).
     let acceptTripCountChange = acceptedTripCountChange.map {
         ["--accept-trip-count-change", $0.map(SetSystems.name).sorted().joined(separator: ",")]
     } ?? []
@@ -184,6 +185,9 @@ func runAllCommand(_ arguments: [String]) -> Int32 {
     logLine("all", String(format: "done in %.1f s (%@)", Date().timeIntervalSince(started), summary))
     return 0
 }
+
+// TODO(M4 lane P): a CLI-level test that `all --job` reaches the heartbeat's job (no test covers
+// it; the library pipeline in the tests writes "all").
 
 /// The heartbeat step: `heartbeat.json` for the manifest the manifest step of this run just wrote.
 private func runHeartbeatStep(data: URL, previousHeartbeat: URL?, now: Date, job: PublishJob, notRun: Bool) -> Int32 {

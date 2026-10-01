@@ -122,6 +122,14 @@ fi
 [[ $md5_from_r2 == sZRqySSS0jR8YjW00mERhA== ]] || fail "Content-MD5 of 'hello\\n' is $md5_from_r2"
 rm -f "$bucket/data/hold.json"
 
+begin "a put whose file cannot be hashed never reaches put-object (no empty Content-MD5)"
+# Both hashers r2.sh looks for print something that is not a digest.
+for hasher in md5sum md5; do printf '#!/bin/sh\necho nope\n' >"$work/bin/$hasher"; chmod +x "$work/bin/$hasher"; done
+r2 put "$work/files/hello.json" data/manifest.json; expect_status 12
+expect_err "cannot hash"
+! grep -q put-object "$FAKE_AWS_LOG" || fail "put-object ran: $(cat "$FAKE_AWS_LOG")"
+rm -f "$work/bin/md5sum" "$work/bin/md5"
+
 begin "list prints key, size and LastModified under the prefix only"
 r2 list data/blobs/; expect_status 0
 [[ $out == data/blobs/0123abcd.xz$'\t'70000$'\t'????-??-??T??:??:??+00:00 ]] || fail "listing: $out"

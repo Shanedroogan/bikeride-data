@@ -223,14 +223,16 @@ Dispatched only by cron-job.org (`workflow_dispatch`; no `schedule:`): `timetabl
 13:00, `streets` Sundays at 05:00, America/New_York; `gc` by hand. Inputs: `job`
 (`timetables|streets|gc`), `dry_run` (default true), `accept_trip_count_change` (checked against
 `^(subway|bus|lirr|ferry|path)(,(subway|bus|lirr|ferry|path))*$`). The R2 keys are in the
-Environment `r2-publish`, restricted to `main`, and reach only the steps that call R2; the
+Environment `r2-publish`, restricted to `main` (so no other ref can run the workflow, dry run or
+not), and reach only the steps that call R2; the
 container is `swift:6.4-noble` pinned by digest; the build is retried 3 times (the SwiftPM
 planner crash). One run at a time (`concurrency: data-publish`).
 
 1. Check the inputs; install the tools and the AWS CLI; build `bikeride-data` (release).
 2. `restore-state.sh`: the hold (while active: exit 0 with a summary line); `prev/manifest.json`,
    `prev/heartbeat.json`, `prev/trip-counts.json` (a 404 on the manifest is a first run, which CI
-   refuses: the first set is published from the Mac); the `sources/` records still in use
+   refuses: the first set is published from the Mac; open: this also stops the plan's I1 dry runs
+   on an empty bucket, see the TODO at the restore step); the `sources/` records still in use
    (`calendarEnd ≥ build day − 1`) and `sources/aux/` as the builder's cache; for `timetables`, the
    streets and stations blobs. No `flows.bin` may be in the data directory.
 3. `all --previous prev/manifest.json --require-flows --job <job>` with `--skip

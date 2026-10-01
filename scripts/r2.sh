@@ -179,8 +179,12 @@ cmd_put() {
     return 0
   fi
   need_r2
+  # Hashed on its own line: set -e stops on a failed assignment, but not on a failed $(...)
+  # inside a command's arguments, which would send an empty Content-MD5.
+  local md5
+  md5=$(md5_base64 "$file")
   aws_call put "$key" /dev/null put-object --bucket "$R2_BUCKET" --key "$key" --body "$file" \
-    --content-md5 "$(md5_base64 "$file")" --content-type "$type"
+    --content-md5 "$md5" --content-type "$type"
   local stored
   stored=$(head_line "$key" | cut -f1) || die "put $key: no HEAD after the PUT (exit $EXIT_FAILED)"
   [[ $stored == "$bytes" ]] || die "put $key: R2 holds $stored bytes after the PUT, expected $bytes (exit $EXIT_FAILED)"

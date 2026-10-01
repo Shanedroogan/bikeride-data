@@ -24,7 +24,10 @@ In order (docs/publish.md, "R2"):
      sha256, xz -dc and rawSha256.
   5. timetables and streets: fail if --data holds a flows.bin (flows never reaches the public runner).
 
-Writes <prev>/state.env: PREV_SET (empty on a first run), FIRST_RUN, HOLD.
+Writes <prev>/state.env, one KEY=value per line with printf, no quotes: PREV_SET (the
+manifest's setId, checked against ^[0-9a-f]{16}$; empty on a first run), FIRST_RUN and HOLD
+(0 or 1). PREV_SET comes from R2, so readers take values with sed and check them; none sources
+the file (data-build.yml's restore step holds the keys).
 
   --job NAME     timetables, streets (data-build.yml) or flows (flows.yml)
   --prev DIR     Where the previous set's documents go (the --previous of bikeride-data all)

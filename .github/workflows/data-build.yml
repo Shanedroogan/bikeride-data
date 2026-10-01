@@ -9,8 +9,10 @@ name: Data build
 # restore (or, for gc, the GC) step until M4 lane Q fills them in.
 #
 # Guards:
-# - The R2 keys live in the Environment r2-publish, restricted to main, so a run from any other
-#   ref cannot read them; the input check below also refuses a real (not dry) run off main.
+# - The R2 keys live in the Environment r2-publish, restricted to main. GitHub refuses a job from
+#   any other ref at start, dry run or not, so only main can run this workflow at all (every
+#   step that matters reads R2, even on a dry run). The input check below also refuses a real run
+#   off main: a second guard should the restriction ever be lifted, not a way to run a branch.
 # - Inputs reach the scripts only through env:, never spliced into a run: line.
 # - Each R2 step gets the keys in its own env:; the checkout and the Swift build never see them.
 # - Flows never reaches this runner (docs/publish.md, "R2"): every build passes --skip flows and
@@ -94,7 +96,7 @@ jobs:
             fi
           fi
           if [ "$INPUT_DRY_RUN" != true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
-            echo "::error::only main publishes; dispatch from $GITHUB_REF with dry_run=true"
+            echo "::error::only main runs this workflow (the r2-publish Environment allows no other ref)"
             exit 1
           fi
 
@@ -158,10 +160,22 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        # state.env is read with sed and checked, never sourced: PREV_SET comes from the manifest
+        # in R2, and this step holds the keys.
+        # TODO(M4, needs a decision before lane Q writes restore-state.sh): the first-run refusal
+        # below ignores dry_run, and the build always passes --previous and --require-flows, so
+        # the plan's I1 dry runs on an empty bucket stop here. Either a first-run dry-run path
+        # (build without --previous and --require-flows, publish nothing), or I1 after I2's Mac
+        # publish (docs/plans/m4-plan.md in the app repository).
         run: |
           scripts/restore-state.sh --job "$INPUT_JOB" --prev build/prev --sources build/sources --data build/data
-          # shellcheck disable=SC1091 # written by restore-state.sh
-          . build/prev/state.env
+          state_value() { sed -n "s/^$1=//p" build/prev/state.env | tail -n 1; }
+          HOLD=$(state_value HOLD)
+          FIRST_RUN=$(state_value FIRST_RUN)
+          if ! [[ $HOLD =~ ^[01]$ && $FIRST_RUN =~ ^[01]$ ]]; then
+            echo "::error::build/prev/state.env: HOLD and FIRST_RUN must each be 0 or 1"
+            exit 1
+          fi
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
           echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
           if [ "$HOLD" != 1 ] && [ "$FIRST_RUN" = 1 ]; then

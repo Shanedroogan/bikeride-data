@@ -26,7 +26,8 @@ A hold (data/hold.json) is checked again first: while one is active nothing is w
 With --dry-run, every step is printed and nothing is written.
 
   --data DIR  The data directory: manifest.json, trip-counts.json, heartbeat.json and the *.bin.xz
-  --prev DIR  What restore-state.sh wrote (state.env, manifest.json)
+  --prev DIR  What restore-state.sh wrote (state.env, manifest.json); state.env is read with
+              sed and PREV_SET checked against ^[0-9a-f]{16}$ or empty, never sourced
   --dry-run   Print the plan; write nothing
 
 Exit status: 0 published (or held), 1 a failure (nothing after the failed step was written),
