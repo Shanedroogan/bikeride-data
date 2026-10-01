@@ -33,6 +33,14 @@ public struct TimetableBuild: Sendable {
     /// cached file, the subway is not built rather than built without entrances. CI passes it,
     /// because a fresh runner has no cache unless the restore step put the last good copy there.
     public var strictSources = false
+    /// The oldest an archived copy may be, in days from when it was first archived to the build
+    /// day, for a feed whose download failed to be built from it (``archivedCopy(of:fetcher:reasons:)``).
+    /// 14 is the plan's coverage alarm: job 7 pages when a system has under 14 days of coverage,
+    /// and a copy first seen longer ago than that has outlived what the plan tolerates before a
+    /// human looks for a successor feed. The gate's 3 days (`coverage.minDays`) would refuse most
+    /// bus copies, which change less often, for no gain: the coverage check and job 7 still bound
+    /// how stale a published schedule can get.
+    public var maxArchivedCopyAgeDays = 14
 
     public init(sourcesDirectory: URL, outputDirectory: URL, reportURL: URL?, systems: [TransitSystem] = TransitSystem.allCases,
                 offline: Bool, today: ServiceDate, compress: Bool = true, runner: any ToolRunner) {
@@ -78,7 +86,9 @@ public struct TimetableBuild: Sendable {
         for system in systems {
             let totalStart = Date()
             var warnings: [String] = []
-            let specs = try selectSources(feeds[system] ?? [], fetcher: fetcher, warnings: &warnings, log: log)
+            var archivedCopies: [String: ArchivedCopy] = [:]
+            let specs = try selectSources(feeds[system] ?? [], fetcher: fetcher, archivedCopies: &archivedCopies,
+                                          warnings: &warnings, log: log)
             var entrances: (list: [SubwayEntrance], report: TimetableSystemReport.AuxiliarySource)?
             if system == .subway {
                 entrances = loadEntrances(warnings: &warnings, log: log)
@@ -86,16 +96,23 @@ public struct TimetableBuild: Sendable {
                     throw SourceError.builtWithoutEntrances(warnings.last ?? "subway entrances unavailable")
                 }
             }
-            let versions = try sourceVersions(specs, fetcher: fetcher, log: log)
+            let versions = try sourceVersions(specs, fetcher: fetcher, archivedCopies: archivedCopies, log: log)
             let parseStart = Date()
             let parsed = try parseFeeds(versions)
             let parseSeconds = Date().timeIntervalSince(parseStart)
             log("  \(system): parsed \(parsed.count) feeds in \(String(format: "%.1f", parseSeconds)) s")
 
             let compileStart = Date()
-            let (data, stats) = try GTFSTimetableCompiler.compile(
+            var (data, stats) = try GTFSTimetableCompiler.compile(
                 system: system, feeds: parsed, entrances: entrances?.list ?? [],
                 options: GTFSCompileOptions(windowStart: windowStart, pathStations: pathStations))
+            // A feed built from its archived copy says so in its row of the source table.
+            for index in stats.sources.indices {
+                guard let copy = archivedCopies[stats.sources[index].name] else { continue }
+                stats.sources[index].status = "cached"
+                stats.sources[index].archivedAt = copy.record.archivedAt
+                stats.sources[index].archiveKey = copy.record.key
+            }
             let compileSeconds = Date().timeIntervalSince(compileStart)
 
             let writeStart = Date()
@@ -183,16 +200,30 @@ public struct TimetableBuild: Sendable {
         return report
     }
 
-    /// Why a ``strictSources`` build stopped.
+    /// Why a build stopped for want of a source.
     public enum SourceError: Error, Equatable, CustomStringConvertible {
-        /// The subway entrances could neither be downloaded nor read from the cached file.
+        /// The subway entrances could neither be downloaded nor read from the cached file
+        /// (``strictSources`` only).
         case builtWithoutEntrances(String)
+        /// A feed with no fallback spec failed to download and had no archived copy to use:
+        /// the download error, then why each archived copy (if any) was refused.
+        case noArchivedCopy(feed: String, download: String, reasons: [String])
 
         public var description: String {
             switch self {
             case .builtWithoutEntrances(let why): "\(why) (--strict-sources: the subway is not built without entrances)"
+            case .noArchivedCopy(let feed, let download, let reasons):
+                "\(feed) not refreshed (\(download)), and no archived copy to build from: \(reasons.joined(separator: "; "))"
             }
         }
+    }
+
+    /// The archived copy a feed is built from when its download failed, and the other archived
+    /// versions it was preferred over because they were refused (too old, or not matching their
+    /// record): those are not passed to the compiler either.
+    struct ArchivedCopy {
+        var record: GTFSSourceArchive.Record
+        var refusedKeys: Set<String>
     }
 
     /// Why a downloaded subway entrances file was refused.
@@ -249,9 +280,11 @@ public struct TimetableBuild: Sendable {
     /// The feeds to parse for one system, refreshing them unless offline. A fallback feed
     /// (``GTFSFeedSpec/isFallback``) is fetched and used only when a primary of its slot fails to
     /// download or has no local zip; a failed primary with a cached zip is still used, and per-date
-    /// selection prefers it wherever it covers. Without a fallback, a failed download is an error.
-    func selectSources(_ all: [GTFSFeedSpec], fetcher: GTFSFetcher, warnings: inout [String],
-                       log: (String) -> Void) throws -> [GTFSFeedSpec] {
+    /// selection prefers it wherever it covers. Without a fallback spec, a failed download falls
+    /// back to the feed's last good archived copy (``archivedCopy(of:fetcher:reasons:)``), noted in
+    /// `archivedCopies` and built from in place of the current zip; with none, it is an error.
+    func selectSources(_ all: [GTFSFeedSpec], fetcher: GTFSFetcher, archivedCopies: inout [String: ArchivedCopy],
+                       warnings: inout [String], log: (String) -> Void) throws -> [GTFSFeedSpec] {
         func exists(_ spec: GTFSFeedSpec) -> Bool { FileManager.default.fileExists(atPath: fetcher.archiveURL(for: spec).path) }
         let fallbackSlots = Set(all.filter(\.isFallback).map(\.slot))
         var failedSlots = Set<String>()
@@ -266,7 +299,17 @@ public struct TimetableBuild: Sendable {
                     let fetched = try fetcher.fetch(spec, warn: warn)
                     log("  fetch \(spec.name): \(fetched.notModified ? "not modified" : "downloaded \(fetched.bytes) bytes")")
                 } catch {
-                    guard fallbackSlots.contains(spec.slot) else { throw error }
+                    guard fallbackSlots.contains(spec.slot) else {
+                        var reasons: [String] = []
+                        guard let copy = archivedCopy(of: spec, fetcher: fetcher, reasons: &reasons) else {
+                            throw SourceError.noArchivedCopy(feed: spec.name, download: "\(error)", reasons: reasons)
+                        }
+                        archivedCopies[spec.name] = copy
+                        warn("\(spec.name) not refreshed (\(error)); using the archived copy \(copy.record.key), first archived \(copy.record.archivedAt)"
+                            + (reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"))
+                        specs.append(spec)
+                        continue
+                    }
                     failedSlots.insert(spec.slot)
                     warnings.append("\(spec.name) not refreshed (\(error))" + (exists(spec) ? "; using the cached zip and the fallback" : "; using the fallback"))
                     log("  warning: \(warnings.last!)")
@@ -296,6 +339,76 @@ public struct TimetableBuild: Sendable {
         return specs
     }
 
+    /// The last good archived copy of `spec` (``GTFSSourceArchive``; in CI, what restore-state.sh
+    /// put there from R2's `sources/`), for when its download failed: the newest version by
+    /// Last-Modified (the compiler's order) that was first archived at most
+    /// ``maxArchivedCopyAgeDays`` before the build day, whose zip has its record's size and
+    /// SHA-256, and whose calendar reads. Each version refused on the way is named in `reasons`;
+    /// nil when none is left. The archive's date is the only one it has: a version is archived
+    /// when first seen and not again, so a feed that has not changed for longer than the limit
+    /// has no usable copy, and fails as it did before the archive was a fallback.
+    func archivedCopy(of spec: GTFSFeedSpec, fetcher: GTFSFetcher, reasons: inout [String]) -> ArchivedCopy? {
+        guard let archive = fetcher.archive else {
+            reasons.append("the build keeps no archive")
+            return nil
+        }
+        let records: [GTFSSourceArchive.Record]
+        do {
+            records = try archive.records(feed: spec.name)
+        } catch {
+            reasons.append("the archive does not read (\(error))")
+            return nil
+        }
+        guard !records.isEmpty else {
+            reasons.append("the archive holds no copy of \(spec.name)")
+            return nil
+        }
+        // Newest first, as the compiler ranks versions of one feed; then the later archived.
+        let ordered = records.sorted { ($0.publishedAt, $0.archivedAt) > ($1.publishedAt, $1.archivedAt) }
+        var refused = Set<String>()
+        for record in ordered {
+            func refuse(_ why: String) {
+                reasons.append("archived copy \(record.key) \(why)")
+                refused.insert(record.key)
+            }
+            guard let archived = Self.isoDate(record.archivedAt) else {
+                refuse("has no readable archive date (\(record.archivedAt))")
+                continue
+            }
+            // Whole days in UTC, the zone archivedAt is written in.
+            let age = today.daysSinceEpoch - Int((archived.timeIntervalSince1970 / 86_400).rounded(.down))
+            guard age <= maxArchivedCopyAgeDays else {
+                refuse("was first archived \(record.archivedAt), \(age) days before \(today.yyyymmdd): over the \(maxArchivedCopyAgeDays)-day limit")
+                continue
+            }
+            let zip = archive.zipURL(feed: spec.name, key: record.key)
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: zip.path)[.size] as? Int) ?? -1
+            guard bytes == record.bytes else {
+                refuse("has \(bytes) bytes, its record \(record.bytes): not used")
+                continue
+            }
+            guard let sha = try? Self.sha256(of: zip, runner: runner), sha == record.sha256 else {
+                refuse("does not match its record's SHA-256: not used")
+                continue
+            }
+            do {
+                _ = try GTFSSourceArchive.coverage(of: ZipGTFSFeed(archive: zip, runner: runner))
+            } catch {
+                refuse("does not read as a GTFS zip (\(error)): not used")
+                continue
+            }
+            return ArchivedCopy(record: record, refusedKeys: refused)
+        }
+        return nil
+    }
+
+    static func isoDate(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: text) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: text)
+    }
+
     /// Every version of the selected feeds to parse: each feed's current zip, followed by the
     /// archived versions (``GTFSSourceArchive``) that differ from it and can still be selected on
     /// some date of the window, named `<feed>@<key8>` with the feed's slot and priority and
@@ -303,18 +416,29 @@ public struct TimetableBuild: Sendable {
     /// version per date. Without archived versions this is exactly the selected feeds, as before.
     /// Online, archived versions that can no longer be selected are deleted; offline, the sources
     /// are only read.
-    func sourceVersions(_ specs: [GTFSFeedSpec], fetcher: GTFSFetcher,
+    ///
+    /// A feed in `archivedCopies` (its download failed) takes that archived copy as its current
+    /// version, under the feed's own name with the copy's ETag and Last-Modified, so it builds the
+    /// same bytes as when that version was downloaded; the sources tree is not changed for it.
+    /// The versions refused in its place are left out, and not deleted.
+    func sourceVersions(_ specs: [GTFSFeedSpec], fetcher: GTFSFetcher, archivedCopies: [String: ArchivedCopy] = [:],
                         log: (String) -> Void) throws -> [GTFSSourceVersion] {
         var versions: [GTFSSourceVersion] = []
         for spec in specs {
-            let currentZip = fetcher.archiveURL(for: spec)
-            let current = fetcher.sourceInfo(for: spec)
-            versions.append(GTFSSourceVersion(spec: spec, zip: currentZip, source: current, archiveKey: nil))
+            let copy = archivedCopies[spec.name]
+            var currentZip = fetcher.archiveURL(for: spec)
+            var current = fetcher.sourceInfo(for: spec)
+            if let copy, let archive = fetcher.archive {
+                currentZip = archive.zipURL(feed: spec.name, key: copy.record.key)
+                current = GTFSSourceInfo(name: spec.name, slot: spec.slot, priority: spec.priority,
+                                         publishedAt: copy.record.publishedAt, etag: copy.record.etag)
+            }
+            versions.append(GTFSSourceVersion(spec: spec, zip: currentZip, source: current, archiveKey: copy?.record.key))
             guard let archive = fetcher.archive else { continue }
-            let records = try archive.records(feed: spec.name)
+            let records = try archive.records(feed: spec.name).filter { !(copy?.refusedKeys.contains($0.key) ?? false) }
             guard !records.isEmpty else { continue }
             // The current zip is normally archived too; that copy is not a separate version.
-            let currentSHA = try Self.sha256(of: currentZip, runner: runner)
+            let currentSHA = try copy?.record.sha256 ?? Self.sha256(of: currentZip, runner: runner)
             let others = records.filter { $0.sha256 != currentSHA }
             guard !others.isEmpty else { continue }
             let currentCoverage = try GTFSSourceArchive.coverage(of: ZipGTFSFeed(archive: currentZip, runner: runner))

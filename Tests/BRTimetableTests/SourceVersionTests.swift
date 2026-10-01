@@ -293,11 +293,12 @@ struct VersionedSources {
     }
 
     @discardableResult
-    func archive(_ files: [String: String], etag: String, lastModified: String) throws -> GTFSSourceArchive.Record {
+    func archive(_ files: [String: String], etag: String, lastModified: String, feed: String = "ferry_test",
+                 now: Date = Date()) throws -> GTFSSourceArchive.Record {
         let staging = root.appendingPathComponent("staging-\(UUID().uuidString).zip")
         defer { try? FileManager.default.removeItem(at: staging) }
         try StoredZip.make(files).write(to: staging)
-        return try archiveStore.add(zip: staging, feed: "ferry_test", url: Self.spec.url, etag: etag, lastModified: lastModified)
+        return try archiveStore.add(zip: staging, feed: feed, url: Self.spec.url, etag: etag, lastModified: lastModified, now: now)
     }
 
     func archiveCurrentCopy(etag: String, lastModified: String) throws {
@@ -318,11 +319,11 @@ struct VersionedSources {
 
     /// Builds tt-ferry from these sources with build day 2026-10-06 (window from 10/05).
     func build(scratch: ScratchDirectory, output: String = "out", offline: Bool = true,
-               runner: any ToolRunner = ProcessToolRunner()) throws -> (Timetable, TimetableBuildReport, URL) {
+               runner: any ToolRunner = ProcessToolRunner(), feeds: [GTFSFeedSpec] = [Self.spec]) throws -> (Timetable, TimetableBuildReport, URL) {
         let out = scratch.url.appendingPathComponent(output)
         var build = TimetableBuild(sourcesDirectory: root, outputDirectory: out, reportURL: nil, systems: [.ferry],
                                    offline: offline, today: date("20261006"), compress: false, runner: runner)
-        build.feeds = [.ferry: [Self.spec]]
+        build.feeds = [.ferry: feeds]
         let report = try build.run()
         let file = out.appendingPathComponent("tt-ferry.bin")
         return (try Timetable(contentsOf: file), report, file)
@@ -371,6 +372,8 @@ final class FakeCurlRunner: ToolRunner, @unchecked Sendable {
     enum Response {
         case ok(Data, etag: String, lastModified: String)
         case notModified
+        /// curl exiting as `--fail` does on a 5xx, having written nothing.
+        case fail
     }
 
     private let real = ProcessToolRunner()
@@ -406,6 +409,8 @@ final class FakeCurlRunner: ToolRunner, @unchecked Sendable {
         case .notModified:
             try Data("HTTP/1.1 304 Not Modified\r\n\r\n".utf8).write(to: URL(fileURLWithPath: value(after: "-D")!))
             return Data("304".utf8)
+        case .fail:
+            throw ToolError.failed(executable: "curl", status: 22, stderr: "curl: (22) The requested URL returned error: 503")
         }
     }
 

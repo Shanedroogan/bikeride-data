@@ -53,6 +53,12 @@ public struct GTFSSystemStats: Codable, Sendable {
         public var tripsKept: Int
         public var frequencyRows: Int
         public var issues: [String: Int]
+        /// `cached` when the feed's download failed and it was built from its last good archived
+        /// copy (``TimetableBuild``); nil for a feed built from its current zip.
+        public var status: String?
+        /// For a `cached` feed: when its copy was first archived (ISO 8601) and its archive key.
+        public var archivedAt: String?
+        public var archiveKey: String?
     }
 
     public struct Coverage: Codable, Sendable {
