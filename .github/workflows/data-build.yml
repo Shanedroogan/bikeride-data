@@ -336,7 +336,9 @@ jobs:
 
       # The set as built: setIds, xz sizes, coverage, gate checks and where flows came from
       # (scripts/set-summary.sh, from the checked manifest; no key outside data/ and sources/),
-      # and the trip-count change the gate accepted (acceptedTripCountChange in reports/gate.json).
+      # the trip-count change the gate accepted (acceptedTripCountChange in reports/gate.json),
+      # and the feeds built from their last good archived copy because their download failed
+      # (status cached in reports/timetables.json), which also raise a warning annotation.
       - name: Summary
         if: always() && inputs.job != 'gc'
         env:
@@ -346,6 +348,16 @@ jobs:
           PUBLISH: ${{ steps.publish.outcome }}
           PUBLISHED: ${{ steps.publish.outputs.published }}
         run: |
+          cached=''
+          if [ -f build/reports/timetables.json ]; then
+            if cached=$(scripts/set-summary.sh --sources build/reports/timetables.json); then
+              if [ -n "$cached" ]; then
+                echo "::warning::a feed was built from its archived copy because its download failed; see the summary"
+              fi
+            else
+              cached="- (timetables.json could not be summarised)"
+            fi
+          fi
           {
             if [ "$HOLD" = 1 ]; then echo "- on hold: nothing was built or published"; fi
             if [ "$FIRST_RUN" = 1 ]; then
@@ -357,6 +369,7 @@ jobs:
             if [ "$PUBLISHED" = 0 ]; then
               echo "- on hold since the restore: the set was not published, and nothing was pruned or collected"
             fi
+            if [ -n "$cached" ]; then echo "$cached"; fi
             # Written by every gate run, so shown even when the gate failed and no manifest exists.
             if [ -f build/reports/gate.json ]; then
               scripts/set-summary.sh --gate build/reports/gate.json || echo "- (gate.json could not be summarised)"

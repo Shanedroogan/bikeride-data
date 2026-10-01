@@ -3,7 +3,8 @@
 # previous one, each artifact's xz size (built or carried), coverage days per system, each gate
 # check's status and where flows came from. Every value comes from a manifest checked first, so
 # nothing but names, digests, numbers and plain status words reaches the public log, and no key
-# outside data/ and sources/ is ever named.
+# outside data/ and sources/ is ever named. --gate and --sources read a report instead, printing
+# only the values that pass a pattern.
 set -euo pipefail
 SCRIPT=set-summary
 # shellcheck source-path=SCRIPTDIR source=lib/common.sh
@@ -13,11 +14,16 @@ if [[ ${1:-} == -h || ${1:-} == --help ]]; then
   cat <<'USAGE'
 USAGE: scripts/set-summary.sh MANIFEST
        scripts/set-summary.sh --gate GATE_JSON
+       scripts/set-summary.sh --sources TIMETABLES_JSON
 
 MANIFEST: the set's summary, as above. --gate: the trip-count change the gate accepted, from
 reports/gate.json's acceptedTripCountChange (and each system's acceptedDates in the tripCounts
 check); written by every gate run, so it is shown even when the gate failed. Only the five system
 names and numbers are printed; nothing when the field is absent.
+--sources: the feeds built from their last good archived copy because their download failed
+(status "cached" in reports/timetables.json's source tables), one line each with the timetable,
+the feed and the day the copy was first archived; nothing when there are none. Only names that
+look like a feed or timetable name, and a date, are printed.
 USAGE
   exit 0
 fi
@@ -37,6 +43,19 @@ if [[ ${1:-} == --gate ]]; then
                | if ($n | type) == "number" then "\($s) (\($n) dates beyond the limit)" else $s end) | join(", ")
              end)
       end' "$2"
+  exit 0
+fi
+if [[ ${1:-} == --sources ]]; then
+  [[ $# -eq 2 ]] || usage_error "--sources takes one timetables.json"
+  jq -e 'type == "object" and (.systems | type == "object")' "$2" >/dev/null 2>&1 || die "$2 is not a timetables report"
+  jq -r '
+    def plain: type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9._-]*$");
+    .systems | to_entries | sort_by(.key)[] | select(.key | test("^tt-(subway|bus|lirr|ferry|path)$")) | .key as $tt
+    | .value | objects | .stats | objects | (.sources // []) | arrays | .[] | objects | select(.status == "cached")
+    | "- **built from an archived copy** (its download failed): \($tt) "
+      + (if (.name | plain) then .name else "(unnamed feed)" end)
+      + (if (.archivedAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) then ", first archived \(.archivedAt[0:10])"
+         else "" end)' "$2"
   exit 0
 fi
 [[ $# -eq 1 ]] || usage_error "one manifest"

@@ -998,4 +998,24 @@ printf 'not json' >"$work/files/gate.json"
 run "$scripts/set-summary.sh" --gate "$work/files/gate.json"; expect_status 1
 run "$scripts/set-summary.sh" --gate; expect_status 64
 
+begin "set-summary --sources: the feeds built from an archived copy (status cached), names and dates only"
+jq -n '{systems: {
+  "tt-bus": {stats: {sources: [{name: "gtfs_b", status: "cached", archivedAt: "2026-10-03T12:00:00Z", archiveKey: "k1"},
+                               {name: "gtfs_m"}, {name: "gtfs_q", status: "downloaded"}]}},
+  "tt-subway": {stats: {sources: [{name: "gtfs_supplemented", status: "cached", archivedAt: "2026-10-05T01:02:03Z"}]}},
+  "tt-path": {stats: {sources: [{name: "`rm -rf /`", status: "cached", archivedAt: "yesterday"}]}},
+  "tt-ferry": "not an entry", "tt-lirr": {stats: {sources: "none"}},
+  "private/flows": {stats: {sources: [{name: "x", status: "cached"}]}}}}' >"$work/files/timetables.json"
+run "$scripts/set-summary.sh" --sources "$work/files/timetables.json"; expect_status 0
+[[ $out == "- **built from an archived copy** (its download failed): tt-bus gtfs_b, first archived 2026-10-03
+- **built from an archived copy** (its download failed): tt-path (unnamed feed)
+- **built from an archived copy** (its download failed): tt-subway gtfs_supplemented, first archived 2026-10-05" ]] ||
+  fail "cached feeds: $out"
+jq -n '{systems: {"tt-bus": {stats: {sources: [{name: "gtfs_b"}]}}}}' >"$work/files/timetables.json"
+run "$scripts/set-summary.sh" --sources "$work/files/timetables.json"; expect_status 0
+[[ -z $out ]] || fail "nothing cached, yet: $out"
+printf '[]' >"$work/files/timetables.json"
+run "$scripts/set-summary.sh" --sources "$work/files/timetables.json"; expect_status 1
+run "$scripts/set-summary.sh" --sources; expect_status 64
+
 finish

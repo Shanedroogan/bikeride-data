@@ -180,6 +180,26 @@ selected; online builds delete it (offline builds only read the sources). This r
 until the calendar ends", which for the hourly supplemented subway feed would keep dozens of
 unused 19 MB zips.
 
+The archive is also the fallback for a failed download. A feed whose slot has a fallback spec
+(PATH's Trillium feed) uses that, as before. Any other feed is built from its last good archived
+copy: the newest by Last-Modified that was first archived at most 14 days before the build day
+(`TimetableBuild.maxArchivedCopyAgeDays`), whose zip has its record's size and SHA-256 and whose
+calendar reads. In CI that is a copy `restore-state.sh` put there from R2's `sources/`. The copy is
+read in place, under the feed's own name with its ETag and Last-Modified, so it builds the same
+bytes as when that version was downloaded, and the sources tree is not changed. Its row in the
+report's source table (`reports/timetables.json`, `systems.<tt>.stats.sources`) has `status:
+"cached"`, `archivedAt` and `archiveKey`, the system gets a warning, and the step summary lists it
+(`set-summary.sh --sources`). Newer copies refused on the way (too old, or not matching their
+record) are named in the warning, not passed to the compiler, and not deleted. With no usable copy
+the run stops as before (`SourceError.noArchivedCopy`, naming why each copy was refused), and the
+next slot retries.
+
+14 days is the plan's coverage alarm (job 7 pages under 14 days of coverage): a copy first seen
+longer ago has outlived what the plan tolerates before a person looks for a successor feed. The
+archive records when a version was first seen, not when it was last confirmed current, so a feed
+that has not changed for over 14 days (the ferry, say) has no usable copy and fails as
+before: the safe direction.
+
 ## R2 (M4)
 
 The design of record for publishing to R2 (the private repository's `docs/plans/m4-plan.md`). The
@@ -294,11 +314,16 @@ planner crash). One run at a time (`concurrency: data-publish`).
 8. The step summary (`set-summary.sh`): setIds, xz sizes built or carried, coverage days, gate
    checks, "flows: carried from set <prev>"; the trip-count change the gate accepted, read from
    `acceptedTripCountChange` in `reports/gate.json` (`set-summary.sh --gate`, shown even when the
-   gate failed); no key outside `data/` and `sources/`.
+   gate failed); the feeds built from their archived copy because their download failed
+   (`set-summary.sh --sources reports/timetables.json`, with a warning annotation); no key
+   outside `data/` and `sources/`.
 
 ### Failures
 
 - A gate, config or manifest failure writes nothing; the previous set stays current.
+- A failed feed download: the slot's fallback spec, else the feed's last good archived copy (at
+  most 14 days old; "Source archive" above), with a warning in the step summary; with neither,
+  the run fails and the next slot retries.
 - Two callers racing: the re-read guard stops the later one; its next run builds on the new set.
 - A publish torn between PUTs: before the dated copy, it leaves only blobs (and perhaps the
   sidecar), which GC removes after 48 h. At the re-read guard or after it (a race, or a failed
