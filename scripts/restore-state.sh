@@ -21,11 +21,17 @@ In order (docs/publish.md, "R2"):
      5xx fails.
   3. timetables and streets: sources/ records whose calendarEnd >= today - 1 into
      <sources>/gtfs/archive/<feed>/ (the builder's archive), each zip checked against its
-     record's sha256 and size; sources/aux/ into <sources>/nyc/. What R2 held goes to
+     record's sha256 and size. sources/aux/subway-entrances.csv and
+     sources/aux/borough-boundaries.geojson into <sources>/nyc/subway-entrances.csv and
+     <sources>/nyc/borough-boundaries-water-included.geojson, unless already there: stamped
+     1970-01-01 UTC with no .etag or .source.json, so the builder's conditional download still
+     fetches a newer file and the copy is used only when that fails. What R2 held goes to
      <prev>/sources-restored.txt for sync-sources.sh prune.
   4. timetables: the streets and stations blobs into --data, by the manifest's sha, checked by
      size, sha256, xz -dc and rawSha256.
   5. timetables and streets: fail if --data holds a flows.bin (flows never reaches the public runner).
+--job flows (the private flows.yml) does steps 1 and 2 only: no sources/ archive, no auxiliary
+files and no blobs; flows.yml restores the flows blob itself.
 
 --blobs-only does step 4 alone, from the <prev>/manifest.json an earlier restore wrote, replacing
 any streets and stations files in --data: the streets job's fallback when the new streets build
@@ -206,8 +212,10 @@ restore_sources() {
     "of the $(wc -l <"$prev/sources-restored.txt" | tr -d ' ') in R2"
 
   # The last good copy of each auxiliary file, used only when its download fails. Its time stamp
-  # goes back to 1970: the fetcher sends If-Modified-Since from it, and a copy stamped "now"
-  # would be answered 304 from then on and never refreshed.
+  # goes back to 1970 (UTC): the fetcher sends If-Modified-Since from it, and a copy stamped "now"
+  # would be answered 304 from then on and never refreshed. Any .etag or .source.json left beside
+  # it described another copy: an old ETag would be answered 304 (If-None-Match wins over
+  # If-Modified-Since) and keep this copy, so they go.
   local pair r2_key local_file
   for pair in "sources/aux/subway-entrances.csv nyc/subway-entrances.csv" \
     "sources/aux/borough-boundaries.geojson nyc/borough-boundaries-water-included.geojson"; do
@@ -218,10 +226,11 @@ restore_sources() {
       continue
     fi
     mkdir -p "$(dirname "$local_file")"
+    rm -f "$local_file.etag" "$local_file.source.json"
     rc=0
     r2_get "$r2_key" "$local_file" || rc=$?
     if [[ $rc -eq 0 ]]; then
-      touch -t 197001010000 "$local_file"
+      TZ=UTC touch -t 197001010000 "$local_file"
       log "restored ${pair#* } (the fallback if its download fails)"
     else
       log "no $r2_key in R2 yet"

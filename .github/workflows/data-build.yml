@@ -115,7 +115,7 @@ jobs:
             echo
             echo "- commit: $GITHUB_SHA"
             if [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
-              echo "- accepted trip-count change: $INPUT_ACCEPT_TRIP_COUNT_CHANGE"
+              echo "- accept_trip_count_change requested: $INPUT_ACCEPT_TRIP_COUNT_CHANGE (what the gate applied is below)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -204,6 +204,10 @@ jobs:
       # streets: the street graph on its own first, so a failed build or a failed sanity route
       # (exit 2, which `all` takes as a warning) is seen here. Never fails the step: the
       # fallback below takes over, and the job fails at the end.
+      # The dated Geofabrik fallback is done in the CLI (lane P): when an extract's -latest
+      # download fails, streets tries its two newest dated copies, so this step fails on a
+      # download only when all three did. --cached-extracts is not passed: a fresh runner has
+      # no extract to fall back to, and the restore below is the fallback here.
       # Under timeout, which signals the whole process group (curl, osmium): a stalled Geofabrik
       # download or osmium ends here with ok=0. A step timeout would only stop the docker exec,
       # and could leave the build writing build/data while the fallback restores into it.
@@ -331,7 +335,8 @@ jobs:
           scripts/gc-data.sh "${args[@]}"
 
       # The set as built: setIds, xz sizes, coverage, gate checks and where flows came from
-      # (scripts/set-summary.sh, from the checked manifest; no key outside data/ and sources/).
+      # (scripts/set-summary.sh, from the checked manifest; no key outside data/ and sources/),
+      # and the trip-count change the gate accepted (acceptedTripCountChange in reports/gate.json).
       - name: Summary
         if: always() && inputs.job != 'gc'
         env:
@@ -351,6 +356,10 @@ jobs:
             fi
             if [ "$PUBLISHED" = 0 ]; then
               echo "- on hold since the restore: the set was not published, and nothing was pruned or collected"
+            fi
+            # Written by every gate run, so shown even when the gate failed and no manifest exists.
+            if [ -f build/reports/gate.json ]; then
+              scripts/set-summary.sh --gate build/reports/gate.json || echo "- (gate.json could not be summarised)"
             fi
             if [ -f build/data/manifest.json ]; then
               echo "- publish step: ${PUBLISH:-not run}"

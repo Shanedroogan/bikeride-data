@@ -307,6 +307,55 @@ cmp -s "$d/sources/nyc/subway-entrances.csv" "$bucket/sources/aux/subway-entranc
   fail "the entrances copy is not stamped 1970: $(ls -l "$d/sources/nyc/subway-entrances.csv")"
 [[ ! -e $d/sources/nyc/borough-boundaries-water-included.geojson ]] || fail "boundaries appeared"
 
+mtime() { if stat -c %Y "$1" 2>/dev/null; then :; else stat -f %m "$1"; fi; }
+
+begin "restore: both aux files to the builder's paths, at 1970-01-01 UTC, without stale sidecars; a local copy is kept"
+printf 'boundaries\n' >"$bucket/sources/aux/borough-boundaries.geojson"
+for job in timetables streets; do
+  d=$(fresh s1$job)
+  mkdir -p "$d/sources/nyc"
+  # Sidecars left from another copy: an old ETag would get a 304 and keep the restored copy.
+  printf '"old"' >"$d/sources/nyc/subway-entrances.csv.etag"
+  printf '{}' >"$d/sources/nyc/borough-boundaries-water-included.geojson.source.json"
+  restore --job "$job" --prev "$d/prev" --sources "$d/sources" --data "$d/data"; expect_status 0
+  for pair in "subway-entrances.csv subway-entrances.csv" "borough-boundaries.geojson borough-boundaries-water-included.geojson"; do
+    file="$d/sources/nyc/${pair#* }"
+    cmp -s "$file" "$bucket/sources/aux/${pair%% *}" || fail "$job: ${pair#* } not restored from sources/aux/${pair%% *}"
+    [[ $(mtime "$file") == 0 ]] || fail "$job: ${pair#* } is stamped $(mtime "$file"), not 0 (1970-01-01 UTC)"
+    [[ ! -e $file.etag && ! -e $file.source.json ]] || fail "$job: a stale sidecar of ${pair#* } survived"
+  done
+done
+d=$(fresh s1kept)
+mkdir -p "$d/sources/nyc"
+printf 'local entrances\n' >"$d/sources/nyc/subway-entrances.csv"
+printf '"local"' >"$d/sources/nyc/subway-entrances.csv.etag"
+age 202609300000 "$d/sources/nyc/subway-entrances.csv"
+before=$(mtime "$d/sources/nyc/subway-entrances.csv")
+: >"$FAKE_AWS_LOG"
+restore --job timetables --prev "$d/prev" --sources "$d/sources" --data "$d/data"; expect_status 0
+[[ $(cat "$d/sources/nyc/subway-entrances.csv") == "local entrances" ]] || fail "the local copy was replaced"
+[[ $(mtime "$d/sources/nyc/subway-entrances.csv") == "$before" && -f $d/sources/nyc/subway-entrances.csv.etag ]] ||
+  fail "the local copy's time stamp or ETag changed"
+expect_no_call "get-object --bucket test-bucket --key sources/aux/subway-entrances.csv"
+expect_call "get-object --bucket test-bucket --key sources/aux/borough-boundaries.geojson"
+rm "$bucket/sources/aux/borough-boundaries.geojson"
+
+begin "restore --job flows: the previous set's documents only; no sources/ and no blobs (flows.yml)"
+d=$(fresh flows1)
+mkdir -p "$d/data"
+printf 'flows from the private runner\n' >"$d/data/flows.bin"
+restore --job flows --prev "$d/prev" --sources "$d/sources" --data "$d/data"; expect_status 0
+cmp -s "$d/prev/manifest.json" "$bucket/data/manifest.json" || fail "manifest not restored"
+cmp -s "$d/prev/heartbeat.json" "$bucket/data/heartbeat.json" || fail "heartbeat not restored"
+[[ -f $d/prev/trip-counts.json ]] || fail "the sidecar was not restored"
+[[ $(sed -n 's/^PREV_SET=//p' "$d/prev/state.env") == "$(current_set)" ]] || fail "state.env: $(cat "$d/prev/state.env")"
+expect_no_call "--prefix sources/"
+expect_no_call "--key sources/"
+expect_no_call "--key data/blobs/"
+[[ ! -e $d/prev/sources-restored.txt && ! -e $d/sources ]] || fail "flows restored sources"
+[[ ! -e $d/data/streets.bin && ! -e $d/data/stations.bin ]] || fail "flows restored blobs"
+[[ -f $d/data/flows.bin ]] || fail "the flows.bin in --data was touched"
+
 begin "restore: a source zip that does not match its record fails"
 printf 'tampered' >"$bucket/sources/gtfs_subway/cur.zip"
 d=$(fresh s2)
@@ -861,6 +910,8 @@ expect_status 0
 cmp -s "$work/local1/reports/flows.json" "$work/macReports/flows.json" || fail "the flows report was not placed"
 [[ $(cat "$FAKE_BRD_LOG") == "all --out $work/local1/data --sources $work/local1/sources --skip flows --require-flows --job all --today "* &&
   $(cat "$FAKE_BRD_LOG") != *--previous* ]] || fail "arguments: $(cat "$FAKE_BRD_LOG")"
+[[ $(cat "$FAKE_BRD_LOG") == *" --strict-sources "* && $(cat "$FAKE_BRD_LOG") == *" --cached-extracts"* ]] ||
+  fail "--sources given: no --strict-sources or --cached-extracts: $(cat "$FAKE_BRD_LOG")"
 [[ -f $bucket/sources/gtfs_subway/mac.zip ]] || fail "the Mac's sources were not uploaded"
 expect_call "put-object --bucket test-bucket --key data/blobs/$(jq -r .artifacts.flows.sha "$work/macData/manifest.json").xz"
 
@@ -880,11 +931,24 @@ expect_err "sanity routes"
 expect_no_call "put-object --bucket test-bucket --key data/"
 [[ $(current_set) == "$mac_set" ]] || fail "published anyway"
 
+begin "publish-local: a subway without entrances stops all (--strict-sources); nothing published"
+: >"$FAKE_AWS_LOG"
+: >"$FAKE_BRD_LOG"
+FAKE_BRD_WARNING="subway entrances unavailable (offline); built without entrances" FAKE_BRD_SET="$work/macNext" \
+  run "$scripts/publish-local.sh" --work "$work/local3b" --env "$work/files/bootstrap.env"
+expect_status 1
+expect_err "stopped with status 1"
+[[ $(cat "$FAKE_BRD_LOG") == *" --strict-sources "* ]] || fail "arguments: $(cat "$FAKE_BRD_LOG")"
+expect_no_call "put-object --bucket test-bucket --key data/"
+[[ $(current_set) == "$mac_set" ]] || fail "published anyway"
+
 begin "publish-local: a later run builds on the set in R2, carrying its flows"
 : >"$FAKE_BRD_LOG"
 FAKE_BRD_SET="$work/macNext" run "$scripts/publish-local.sh" --work "$work/local4" --env "$work/files/bootstrap.env"
 expect_status 0
 [[ $(cat "$FAKE_BRD_LOG") == *"--previous $work/local4/prev/manifest.json" ]] || fail "arguments: $(cat "$FAKE_BRD_LOG")"
+[[ $(cat "$FAKE_BRD_LOG") == *" --strict-sources "* && $(cat "$FAKE_BRD_LOG") != *--cached-extracts* ]] ||
+  fail "no --sources: --strict-sources without --cached-extracts expected: $(cat "$FAKE_BRD_LOG")"
 [[ $(current_set) == "$(jq -r .setId "$work/macNext/manifest.json")" ]] || fail "not published"
 
 begin "publish-local: a hold that begins after the restore stops the publish, the prune and the aux files"
@@ -918,5 +982,20 @@ run "$scripts/set-summary.sh" "$work/setB/manifest.json"; expect_status 0
   fail "sizes: $out"
 [[ $out == *"| subway | 25 | 2026-10-31 | ok |"* && $out == *"| tripCounts | skipped | 1 |"* ]] || fail "coverage or gate: $out"
 [[ $out != *private/* && $out != *history/* ]] || fail "a key outside data/ and sources/: $out"
+
+
+begin "set-summary --gate: acceptedTripCountChange from gate.json, with each system's accepted dates; only known names"
+jq -n '{status: "pass", acceptedTripCountChange: ["path", "subway", "`rm -rf /`", 7],
+        checks: [{name: "tripCounts", status: "pass", metrics: {"subway.acceptedDates": 3, "path.acceptedDates": 0}}]}' \
+  >"$work/files/gate.json"
+run "$scripts/set-summary.sh" --gate "$work/files/gate.json"; expect_status 0
+[[ $out == "- trip-count change accepted by the gate (gate.json): path (0 dates beyond the limit), subway (3 dates beyond the limit)" ]] ||
+  fail "accepted: $out"
+jq -n '{status: "fail", checks: [{name: "tripCounts", status: "fail", metrics: {}}]}' >"$work/files/gate.json"
+run "$scripts/set-summary.sh" --gate "$work/files/gate.json"; expect_status 0
+[[ -z $out ]] || fail "no acceptedTripCountChange, yet: $out"
+printf 'not json' >"$work/files/gate.json"
+run "$scripts/set-summary.sh" --gate "$work/files/gate.json"; expect_status 1
+run "$scripts/set-summary.sh" --gate; expect_status 64
 
 finish

@@ -21,8 +21,9 @@ USAGE: scripts/publish-local.sh --work DIR --env FILE [--flows-from DIR] [--flow
   4. With --flows-from: copy flows.bin and flows.bin.xz into <work>/data and the flows report
      into <work>/reports/flows.json, so the set carries those flows. Required with --first.
   5. $BIKERIDE_DATA all --out <work>/data --sources <work>/sources --skip flows --require-flows
-     --job all --today <build day> [--previous <work>/prev/manifest.json]; then no "built without
-     entrances" warning.
+     --job all --today <build day> --strict-sources [--previous <work>/prev/manifest.json]
+     [--cached-extracts, with --sources: a Geofabrik outage builds on the seeded extract]; then
+     streets must have passed its sanity routes.
   6. sync-sources.sh upload (add-only; also after a failed build), then publish-set.sh, then,
      only when the set went out (not when a hold that began after the restore stopped it),
      sync-sources.sh prune and aux. No GC: that runs only in data-build.yml.
@@ -36,7 +37,8 @@ USAGE: scripts/publish-local.sh --work DIR --env FILE [--flows-from DIR] [--flow
   --flows-report FILE Its reports/flows.json (default <flows-from>/../reports/flows.json; for
                       build/data-m2c it is build/reports-m2c/flows.json)
   --sources DIR       Seed <work>/sources from this cache first (e.g. the OSM extract when
-                      Geofabrik fails)
+                      Geofabrik fails), and pass --cached-extracts so streets uses it when the
+                      -latest and both dated extracts fail
   --first             The first set: no --previous, and the re-read guard expects a 404
   --dry-run           Build, then print the publish plan; write nothing to R2
 
@@ -136,14 +138,13 @@ if [[ -n $flows_from ]]; then
 fi
 
 # 5.
-args=(all --out "$data" --sources "$work/sources" --skip flows --require-flows --job all --today "$BUILD_DAY")
+# --strict-sources: a subway without entrances stops all itself. --cached-extracts only with a
+# seeded cache: on a fresh one there is no extract to fall back to.
+args=(all --out "$data" --sources "$work/sources" --skip flows --require-flows --job all --today "$BUILD_DAY" --strict-sources)
+[[ -z $sources ]] || args+=(--cached-extracts)
 [[ $FIRST_RUN == 1 ]] || args+=(--previous "$prev/manifest.json")
 status=0
 "$bikeride_data" "${args[@]}" || status=$?
-if [[ $status -eq 0 ]] && [[ -f $work/reports/timetables.json ]] && grep -q 'built without entrances' "$work/reports/timetables.json"; then
-  log "the subway was built without entrances: not published"
-  status=1
-fi
 # all takes a failed streets sanity route (streets exit 2) as a warning; a published set may not.
 if [[ $status -eq 0 ]] && ! jq -e '.sanity | type == "array" and all(.pass == true)' "$work/reports/streets.json" >/dev/null 2>&1; then
   log "streets did not pass its sanity routes (reports/streets.json): not published"

@@ -27,13 +27,14 @@ runs with `--require-references`. `--job NAME` (`all`, the default, or the workf
 error (64), on `manifest --job` too. `--accept-trip-count-change LIST` (systems, comma-separated, no
 spaces, as strict as the workflow's check) is passed to `gate`: see `tripCounts` below.
 `--strict-sources` is passed to `timetables`, where it makes "built without entrances" an error:
-with neither a fresh download nor a usable cached `<sources>/nyc/subway-entrances.csv` (an empty
-one counts as none), the subway is not built and the run stops. `build-set.sh` (CI) and
-`publish-local.sh` pass it. A download whose body has no usable rows (data.ny.gov answering 200 with an empty export or a changed header) is
-refused before it is saved, so the cached copy is kept and used, as for a failed download.
-`--cached-extracts` is passed to `streets`: when a Geofabrik extract's `-latest` and both dated
-copies fail, the extract already in `--sources` is used instead of stopping the run. Only the Mac
-fallback passes it (with a seeded `--sources`); data-build restores the last published streets.
+with neither a fresh download nor a usable cached `<sources>/nyc/subway-entrances.csv` (an empty one
+counts as none), the subway is not built and the run stops. `build-set.sh` (CI) and
+`publish-local.sh` pass it. A download whose body has no usable rows (data.ny.gov answering 200 with
+an empty export or a changed header) is refused before it is saved, so the cached copy is kept and
+used, as for a failed download. `--cached-extracts` is passed to `streets`: when a Geofabrik
+extract's `-latest` and both dated copies fail, the extract already in `--sources` is used instead
+of stopping the run. Only the Mac fallback passes it (`publish-local.sh`, when given a `--sources`
+cache to seed from); data-build restores the last published streets.
 
 Before its first step `all` moves `manifest.json`, `trip-counts.json` and `heartbeat.json` from
 `--out` to `<out>/../work/published-before/` (`Pipeline.retirePublished`). They describe the set that
@@ -187,14 +188,14 @@ They run on bash 3.2 (macOS) and later, and need `jq` and `xz` (`Brewfile`, `apt
 
 | Script | Does |
 |---|---|
-| `restore-state.sh` | The hold, the previous set (manifest, heartbeat, sidecar by sha), the source archive and auxiliary files, and for `timetables` the streets and stations blobs; writes `prev/state.env` |
+| `restore-state.sh` | The hold, the previous set (manifest, heartbeat, sidecar by sha), the source archive and auxiliary files, and for `timetables` the streets and stations blobs; `--job flows` (the private `flows.yml`): the hold and the previous set only; writes `prev/state.env` |
 | `build-set.sh` | `bikeride-data all` with the job's arguments (no R2 keys), with `--strict-sources`, then no `flows.bin` |
 | `publish-set.sh` | The only writer of `data/manifest.json` (below) |
 | `sync-sources.sh` | `upload` (add-only), `prune` and `aux` (after a publish) |
 | `gc-data.sh` | GC (below) |
 | `rollback.sh` | Puts an earlier set back and holds publishing |
 | `publish-local.sh` | The Mac fallback, and the first set (M4 I2) |
-| `set-summary.sh` | The step summary of a built set |
+| `set-summary.sh` | The step summary of a built set; `--gate`: the trip-count change `gate.json` records as accepted |
 
 ### Keys
 
@@ -262,9 +263,9 @@ planner crash). One run at a time (`concurrency: data-publish`).
 2. `restore-state.sh`: the hold (while active: exit 0 with a summary line); `prev/manifest.json`,
    `prev/heartbeat.json`, `prev/trip-counts.json`; the `sources/` records still in use
    (`calendarEnd ≥ build day − 1`, each zip checked by sha256) and `sources/aux/` as the builder's
-   cache (stamped 1970, so the conditional download still fetches a newer file); for
-   `timetables`, the streets and stations blobs (sha256, size, `xz -dc`, rawSha256). No
-   `flows.bin` may be in the data directory. A 404 on the manifest is a first run: a dry run
+   cache (stamped 1970 with no `.etag` or `.source.json`, so the conditional download still
+   fetches a newer file); for `timetables`, the streets and stations blobs (sha256, size,
+   `xz -dc`, rawSha256). No `flows.bin` may be in the data directory. A 404 on the manifest is a first run: a dry run
    goes on with `FIRST_RUN=1`; a real run stops (the first set is published from the Mac with
    `publish-local.sh --first`).
 3. `streets` only: `bikeride-data streets` on its own, under a 22-minute `timeout`. If it fails,
@@ -291,7 +292,9 @@ planner crash). One run at a time (`concurrency: data-publish`).
    30 days past their calendar), `sync-sources.sh aux` (the auxiliary files, when they changed;
    the boundaries only when streets was rebuilt) and `gc-data.sh` (alone with `job=gc`).
 8. The step summary (`set-summary.sh`): setIds, xz sizes built or carried, coverage days, gate
-   checks, "flows: carried from set <prev>"; no key outside `data/` and `sources/`.
+   checks, "flows: carried from set <prev>"; the trip-count change the gate accepted, read from
+   `acceptedTripCountChange` in `reports/gate.json` (`set-summary.sh --gate`, shown even when the
+   gate failed); no key outside `data/` and `sources/`.
 
 ### Failures
 
