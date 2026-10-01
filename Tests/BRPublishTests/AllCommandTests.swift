@@ -1,5 +1,5 @@
 @testable import bikeride_data
-import BRBuild
+@testable import BRBuild
 import BRCore
 import Foundation
 import Testing
@@ -130,6 +130,42 @@ struct AllCommandTests {
         #expect(manifest.gate.checks.first { $0.name == "tripCounts" }?.warnings == counts.warnings.count)
         #expect(try SetHeartbeat.load(pipeline.heartbeatURL).job == "timetables")
         #expect(!FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent("flows.bin").path))
+    }
+
+    /// `all --strict-sources` reaches the timetables step: offline, with no subway entrances file,
+    /// the subway is not built. The CLI's timetables step reads the NYC feed names, so the
+    /// synthetic subway feed is written under both of the subway's (`gtfs_supplemented`,
+    /// `gtfs_subway`); the other systems have no zips under their names, so every run stops at
+    /// timetables, and what tells the runs apart is whether the subway, built first, was written.
+    /// The strict check comes before any zip is read: with the flag nothing is written; without
+    /// it the subway is built (with a warning) and the bus stops the step; with the flag and an
+    /// entrances file the subway is built again, so the first stop was the entrances and nothing else.
+    @Test func strictSourcesReachesTheTimetablesStep() throws {
+        let sources = try SyntheticSources()
+        let feed = StoredZip.make(SyntheticSources.feed(.subway, SyntheticSources.FeedOptions(), from: "20261005", to: "20261025"))
+        for spec in NYCFeeds.feeds(for: .subway) {
+            try feed.write(to: sources.gtfs.appendingPathComponent("\(spec.name).zip"))
+            let record = GTFSDownloadRecord(url: spec.url, etag: "\"\(spec.name)-v1\"", lastModified: "Sun, 04 Oct 2026 12:00:00 GMT",
+                                            checkedAt: "2026-10-06T07:00:00Z", downloadedAt: "2026-10-04T12:05:00Z", bytes: 0, notModified: false)
+            try JSONEncoder().encode(record).write(to: sources.gtfs.appendingPathComponent("\(spec.name).zip.json"))
+        }
+        func run(_ name: String, _ extra: [String]) -> (status: Int32, subwayBuilt: Bool) {
+            let out = sources.root.appendingPathComponent("\(name)/data")
+            let status = runAllCommand(Self.common(sources) + ["--out", out.path, "--skip", "streets,stations,config,links,flows,gate,manifest"] + extra)
+            return (status, FileManager.default.fileExists(atPath: out.appendingPathComponent(TimetableBuild.artifactFileName(.subway)).path))
+        }
+
+        let strict = run("strict", ["--strict-sources"])
+        #expect(strict.status == 1 && !strict.subwayBuilt)
+        let lenient = run("lenient", [])
+        #expect(lenient.status == 1 && lenient.subwayBuilt)
+
+        let entrances = TimetableBuild(sourcesDirectory: sources.sources, outputDirectory: sources.root, reportURL: nil, offline: true,
+                                       today: SyntheticSources.today, runner: SyntheticSources.runner).entrancesFile
+        let alpha = SyntheticSources.coordinate(2, 2)
+        try Data((StrictSourcesTests.header + "IRT,Test,M,Alpha,1,Alpha,1,SA,1,Stair,YES,YES,\(alpha.lat),\(alpha.lon),\n").utf8).write(to: entrances)
+        let cached = run("cached", ["--strict-sources"])
+        #expect(cached.status == 1 && cached.subwayBuilt)
     }
 
     /// Both values are checked before anything runs, as strictly as the workflow's own check.
