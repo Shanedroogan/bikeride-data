@@ -76,9 +76,12 @@ struct AllCommandTests {
             == ["flows.bin", "flows.bin.xz", SetManifest.fileName, TripCountSidecar.fileName, SetHeartbeat.fileName])
     }
 
-    /// The bus timetable doubles its trips. The gate fails on tripCounts until a person accepts
-    /// bus (`--accept-trip-count-change bus`, the dispatch input); accepting another system does
-    /// not help. gate.json records the list either way, and the heartbeat names the job.
+    /// data-build's timetables run, as the public runner has it: no flows files in `--out` (it never
+    /// fetches them), `--require-flows`, flows carried from `--previous`. The bus timetable doubles
+    /// its trips. The gate fails on tripCounts until a person accepts bus
+    /// (`--accept-trip-count-change bus`, the dispatch input); accepting another system does not
+    /// help. gate.json records the list either way, the set carries the previous flows entry
+    /// unchanged, and the heartbeat names the job.
     @Test func anAcceptedTripCountChangeReachesTheGateAndIsRecorded() throws {
         let sources = try SyntheticSources()
         var pipeline = try PipelineTests.published(sources)
@@ -90,6 +93,9 @@ struct AllCommandTests {
         let built = try pipeline.run(skip: [.streets, .stations, .config, .flows, .gate, .manifest])
         #expect(built.status == 0 && built.ran.map(\.step) == [.timetables, .links], "\(built) \(pipeline.errors)")
         try FileManager.default.removeItem(at: pipeline.report("streets"))
+        for file in [pipeline.out.appendingPathComponent("flows.bin"), pipeline.out.appendingPathComponent("flows.bin.xz"), pipeline.report("flows")] {
+            try FileManager.default.removeItem(at: file)
+        }
 
         let gateURL = pipeline.reports.appendingPathComponent(GateReport.fileName)
         let arguments = Self.common(sources) + [
@@ -115,10 +121,15 @@ struct AllCommandTests {
         #expect(counts.status == .pass && counts.failures.isEmpty && counts.metrics["bus.acceptedDates"] == 21)
         #expect(counts.warnings.filter { $0.hasPrefix("accepted: bus ") }.count == 21)
         #expect(counts.warnings.contains("accepted: bus 2026-10-05: 4 trips vs 2 (the previous build's same date), +100.0%"))
+        #expect(gate.carriedForward == ["flows"] && gate.check("flows")?.status == .skipped)
+        let before = try SetManifest.load(previous)
         let manifest = try SetManifest.load(pipeline.manifestURL)
-        #expect(try manifest.gate.status == .pass && manifest.carriedForward.isEmpty && manifest.previousSetId == SetManifest.load(previous).setId)
+        #expect(manifest.gate.status == .pass && manifest.carriedForward == ["flows"] && manifest.previousSetId == before.setId)
+        #expect(manifest.artifacts["flows"] != nil && manifest.artifacts["flows"] == before.artifacts["flows"])
+        #expect(manifest.artifacts["tt-bus"] != before.artifacts["tt-bus"])
         #expect(manifest.gate.checks.first { $0.name == "tripCounts" }?.warnings == counts.warnings.count)
         #expect(try SetHeartbeat.load(pipeline.heartbeatURL).job == "timetables")
+        #expect(!FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent("flows.bin").path))
     }
 
     /// Both values are checked before anything runs, as strictly as the workflow's own check.
