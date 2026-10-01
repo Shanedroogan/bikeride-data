@@ -4,20 +4,23 @@ name: Data build
 # through the GitHub API (workflow_dispatch: timetables at 03:15 and 13:00, streets Sundays at
 # 05:00, America/New_York), never by `schedule:`, which GitHub may delay or drop.
 #
-# M4 S0 skeleton: the shape, the guards and the pins are final; the scripts it calls are stubs
-# that parse their arguments and stop with 69 before any R2 call, so every run fails at the
-# restore (or, for gc, the GC) step until M4 lane Q fills them in.
-#
 # Guards:
 # - The R2 keys live in the Environment r2-publish, restricted to main. GitHub refuses a job from
 #   any other ref at start, dry run or not, so only main can run this workflow at all (every
 #   step that matters reads R2, even on a dry run). The input check below also refuses a real run
 #   off main: a second guard should the restriction ever be lifted, not a way to run a branch.
 # - Inputs reach the scripts only through env:, never spliced into a run: line.
-# - Each R2 step gets the keys in its own env:; the checkout and the Swift build never see them.
-# - Flows never reaches this runner (docs/publish.md, "R2"): every build passes --skip flows and
-#   carries flows forward from the previous set; restore-state.sh fails if a flows.bin is present.
-# - No upload-artifact, no set -x: logs and artifacts of a public repository are public.
+# - Each R2 step gets the keys in its own env:; the checkout, the Swift build and the set build
+#   never see them.
+# - Flows never reaches this runner (docs/publish.md, "R2"): every build skips flows and carries
+#   it from the previous set; restore-state.sh and build-set.sh fail if a flows.bin is present,
+#   and publish-set.sh --no-flows-upload refuses a set whose flows was built here.
+# - No upload-artifact, no set -x, and a cache of .build only: logs, artifacts and caches of a
+#   public repository are public.
+#
+# A first run (no data/manifest.json in R2) is built only as a dry run: without --previous and
+# --require-flows, publishing nothing (M4 I1). A real first run stops at the restore: the first
+# set is published from the Mac (scripts/publish-local.sh --first).
 on:
   workflow_dispatch:
     inputs:
@@ -99,12 +102,20 @@ jobs:
             echo "::error::only main runs this workflow (the r2-publish Environment allows no other ref)"
             exit 1
           fi
+          {
+            echo "### Data build: $INPUT_JOB$([ "$INPUT_DRY_RUN" = true ] && echo ' (dry run)')"
+            echo
+            echo "- commit: $GITHUB_SHA"
+            if [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
+              echo "- accepted trip-count change: $INPUT_ACCEPT_TRIP_COUNT_CHANGE"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      # The CLI's tools (apt-packages.txt), curl for the downloads, tzdata for America/New_York.
-      # The container runs as root and the workspace belongs to the runner user: without
-      # safe.directory git refuses the repository (as the private nightly.yml).
+      # The CLI's tools and jq (apt-packages.txt), curl for the downloads, tzdata for
+      # America/New_York. The container runs as root and the workspace belongs to the runner
+      # user: without safe.directory git refuses the repository (as the private nightly.yml).
       - name: System tools
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -128,8 +139,9 @@ jobs:
         if: inputs.job != 'gc'
         run: echo "id=$(swift --version 2>&1 | head -n 1 | sha256sum | cut -c 1-16)" >> "$GITHUB_OUTPUT"
 
-      # .build only: no data, sources or reports are ever cached (a public repository's caches
-      # can be read by its forks' pull requests).
+      # .build only: no data, sources, reports or trip data are ever cached (a public
+      # repository's caches can be read by its forks' pull requests). Everything this job
+      # downloads or builds lives under build/, outside the cached path.
       - name: Cache .build
         if: inputs.job != 'gc'
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
@@ -152,6 +164,9 @@ jobs:
           done
           echo "BIKERIDE_DATA=$(swift build -c release --show-bin-path)/bikeride-data" >> "$GITHUB_ENV"
 
+      # The hold, the previous set, the source archive and (timetables) streets and stations.
+      # A first run is allowed only on a dry run. state.env is read with sed and checked, never
+      # sourced: PREV_SET comes from the manifest in R2, and this step holds the keys.
       - name: Restore the previous set and the sources
         id: restore
         if: inputs.job != 'gc'
@@ -160,59 +175,70 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
-        # state.env is read with sed and checked, never sourced: PREV_SET comes from the manifest
-        # in R2, and this step holds the keys.
-        # TODO(M4, needs a decision before lane Q writes restore-state.sh): the first-run refusal
-        # below ignores dry_run, and the build always passes --previous and --require-flows, so
-        # the plan's I1 dry runs on an empty bucket stop here. Either a first-run dry-run path
-        # (build without --previous and --require-flows, publish nothing), or I1 after I2's Mac
-        # publish (docs/plans/m4-plan.md in the app repository).
         run: |
-          scripts/restore-state.sh --job "$INPUT_JOB" --prev build/prev --sources build/sources --data build/data
+          args=(--job "$INPUT_JOB" --prev build/prev --sources build/sources --data build/data)
+          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--allow-first-run); fi
+          scripts/restore-state.sh "${args[@]}"
           state_value() { sed -n "s/^$1=//p" build/prev/state.env | tail -n 1; }
           HOLD=$(state_value HOLD)
           FIRST_RUN=$(state_value FIRST_RUN)
-          if ! [[ $HOLD =~ ^[01]$ && $FIRST_RUN =~ ^[01]$ ]]; then
-            echo "::error::build/prev/state.env: HOLD and FIRST_RUN must each be 0 or 1"
+          BUILD_DAY=$(state_value BUILD_DAY)
+          if ! [[ $HOLD =~ ^[01]$ && $FIRST_RUN =~ ^[01]$ && $BUILD_DAY =~ ^[0-9]{8}$ ]]; then
+            echo "::error::build/prev/state.env: HOLD, FIRST_RUN or BUILD_DAY is unreadable"
             exit 1
           fi
-          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
-          echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
-          if [ "$HOLD" != 1 ] && [ "$FIRST_RUN" = 1 ]; then
-            echo "::error::no data/manifest.json in R2: the first set is published from the Mac (scripts/publish-local.sh --first)"
-            exit 1
+          {
+            echo "hold=$HOLD"
+            echo "first_run=$FIRST_RUN"
+            echo "build_day=$BUILD_DAY"
+          } >> "$GITHUB_OUTPUT"
+
+      # streets: the street graph on its own first, so a failed build or a failed sanity route
+      # (exit 2, which `all` takes as a warning) is seen here. Never fails the step: the
+      # fallback below takes over, and the job fails at the end.
+      - name: Build streets
+        id: streets
+        if: inputs.job == 'streets' && steps.restore.outputs.hold == '0'
+        timeout-minutes: 25
+        run: |
+          status=0
+          "$BIKERIDE_DATA" streets --sources build/sources --out build/data || status=$?
+          if [ "$status" = 0 ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::streets stopped with status $status (2: a sanity route failed); publishing the timetables on the published streets and stations"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
 
-      # timetables: everything but streets, stations and flows, which are carried from the
-      # previous set (streets and stations restored into build/data for links and the gate).
-      # streets: everything but flows.
-      # TODO(M4 lane Q): the streets fallbacks. If the Geofabrik -latest download fails, the CLI
-      # tries the dated extracts (lane P); if that fails too, or the streets sanity check returns
-      # 2, restore streets and stations, run the timetables command line, publish, and fail the
-      # job at the end with "streets not rebuilt".
+      - name: Restore the published streets and stations (fallback)
+        if: steps.streets.outputs.ok == '0'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+        run: scripts/restore-state.sh --blobs-only --prev build/prev --data build/data
+
+      # No R2 keys: bikeride-data downloads only public sources.
       - name: Build the set
-        if: inputs.job != 'gc' && steps.restore.outputs.hold != '1'
+        if: inputs.job != 'gc' && steps.restore.outputs.hold == '0'
+        timeout-minutes: 30
+        env:
+          STREETS_OK: ${{ steps.streets.outputs.ok }}
         run: |
-          args=(all --out build/data --sources build/sources --previous build/prev/manifest.json
-            --require-flows --job "$INPUT_JOB")
-          case $INPUT_JOB in
-            timetables) args+=(--skip 'streets,stations,flows') ;;
-            streets) args+=(--skip flows) ;;
-          esac
+          job=$INPUT_JOB
+          if [ "$STREETS_OK" = 0 ]; then job=streets-restored; fi
+          args=(--job "$job" --prev build/prev --data build/data --sources build/sources)
+          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
           if [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
             args+=(--accept-trip-count-change "$INPUT_ACCEPT_TRIP_COUNT_CHANGE")
           fi
-          "$BIKERIDE_DATA" "${args[@]}"
-          # Flows is carried in the manifest, never present here.
-          if [ -e build/data/flows.bin ] || [ -e build/data/flows.bin.xz ]; then
-            echo "::error::build/data holds flows files; flows never reaches the public runner"
-            exit 1
-          fi
+          scripts/build-set.sh "${args[@]}"
 
       # Add-only, and also after a failed build: a source version first seen by a run that then
       # failed is kept. Real runs only.
       - name: Upload new source versions (add-only)
-        if: always() && inputs.job != 'gc' && !inputs.dry_run && steps.restore.outcome == 'success' && steps.restore.outputs.hold != '1'
+        if: always() && inputs.job != 'gc' && !inputs.dry_run && steps.restore.outcome == 'success' && steps.restore.outputs.hold == '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
@@ -222,30 +248,36 @@ jobs:
 
       - name: Publish the set
         id: publish
-        if: inputs.job != 'gc' && steps.restore.outputs.hold != '1'
+        if: inputs.job != 'gc' && steps.restore.outputs.hold == '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
         run: |
-          args=(--data build/data --prev build/prev)
+          args=(--data build/data --prev build/prev --no-flows-upload)
           if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
           scripts/publish-set.sh "${args[@]}"
 
-      # Deletions only after a publish succeeded.
-      - name: Prune source versions
+      # Deletions, and the last good copy of the auxiliary files, only after a publish succeeded.
+      # The borough boundaries only when streets was rebuilt on them.
+      - name: Prune source versions and keep the auxiliary files
         if: inputs.job != 'gc' && steps.publish.outcome == 'success'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_DATA_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_DATA_BUCKET }}
+          BUILD_DAY: ${{ steps.restore.outputs.build_day }}
+          STREETS_OK: ${{ steps.streets.outputs.ok }}
         run: |
-          args=(prune --sources build/sources --restored build/prev/sources-restored.txt
-            --today "$(TZ=America/New_York date +%Y%m%d)")
-          if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
-          scripts/sync-sources.sh "${args[@]}"
+          dry=()
+          if [ "$INPUT_DRY_RUN" = true ]; then dry=(--dry-run); fi
+          scripts/sync-sources.sh prune --sources build/sources --restored build/prev/sources-restored.txt \
+            --today "$BUILD_DAY" "${dry[@]}"
+          files=entrances
+          if [ "$STREETS_OK" = 1 ]; then files=entrances,boundaries; fi
+          scripts/sync-sources.sh aux --sources build/sources --files "$files" "${dry[@]}"
 
       - name: Garbage-collect data/
         if: inputs.job == 'gc' || steps.publish.outcome == 'success'
@@ -259,20 +291,35 @@ jobs:
           if [ "$INPUT_DRY_RUN" = true ]; then args+=(--dry-run); fi
           scripts/gc-data.sh "${args[@]}"
 
-      # TODO(M4 lane Q): setId and the previous setId, xz sizes, coverage days per system, each
-      # gate check's status, "flows: carried from set <prev>". No key outside data/ and sources/.
+      # The set as built: setIds, xz sizes, coverage, gate checks and where flows came from
+      # (scripts/set-summary.sh, from the checked manifest; no key outside data/ and sources/).
       - name: Summary
-        if: always()
+        if: always() && inputs.job != 'gc'
         env:
-          CHECKED: ${{ steps.check.outcome }}
+          HOLD: ${{ steps.restore.outputs.hold }}
+          FIRST_RUN: ${{ steps.restore.outputs.first_run }}
+          STREETS_OK: ${{ steps.streets.outputs.ok }}
+          PUBLISH: ${{ steps.publish.outcome }}
         run: |
           {
-            echo "### Data build: $INPUT_JOB"
-            echo
-            echo "- dry run: $INPUT_DRY_RUN"
-            echo "- commit: $GITHUB_SHA"
-            # Only a checked input is echoed.
-            if [ "$CHECKED" = success ] && [ -n "$INPUT_ACCEPT_TRIP_COUNT_CHANGE" ]; then
-              echo "- accepted trip-count change: $INPUT_ACCEPT_TRIP_COUNT_CHANGE"
+            if [ "$HOLD" = 1 ]; then echo "- on hold: nothing was built or published"; fi
+            if [ "$FIRST_RUN" = 1 ]; then
+              echo "- first run (no set in R2): built without --previous and --require-flows; nothing was published"
+            fi
+            if [ "$STREETS_OK" = 0 ]; then
+              echo "- **streets not rebuilt**: the timetables were published on the published streets and stations"
+            fi
+            if [ -f build/data/manifest.json ]; then
+              echo "- publish step: ${PUBLISH:-not run}"
+              echo
+              scripts/set-summary.sh build/data/manifest.json || echo "(the manifest could not be summarised)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Last, after the timetables were published on the old streets: the run is red, and the
+      # failed-run email says why.
+      - name: Streets not rebuilt
+        if: always() && steps.streets.outputs.ok == '0'
+        run: |
+          echo "::error::streets not rebuilt (its build or a sanity route failed); see the Build streets step"
+          exit 1

@@ -1,0 +1,123 @@
+name: CI
+
+# The package's tests on Linux, and the publishing scripts' tests against the stand-in AWS CLI.
+# No secrets, no R2, no network beyond the toolchain image, apt and the pinned actionlint: it
+# runs on every push and pull request, forks included.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  swift:
+    name: Swift package (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The image data-build.yml builds with, pinned by the same digest.
+    container:
+      image: swift:6.4-noble@sha256:64bab762bc73a3fda6d9ebc559258bd6d7660c10a705bb25ecacad2f99d066f9
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # tzdata: the engine asks for America/New_York explicitly. xz/unzip: the CLI shells out to
+      # them. zip: tests that build GTFS zips (skipped without it). The osmium the streets tests
+      # need is stubbed.
+      - name: System tools
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tzdata xz-utils unzip zip
+
+      - name: Toolchain version
+        id: toolchain
+        run: |
+          swift --version
+          echo "id=$(swift --version 2>&1 | head -n 1 | sha256sum | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+
+      # Keyed on what the build compiles, so a source change makes a new cache (with the newest
+      # one of the same toolchain as a base). Saved from main only: a branch's cache is visible
+      # only to that branch, and pull requests from forks must not write one.
+      - name: Restore .build
+        id: build-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Sources/**', 'Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ steps.toolchain.outputs.id }}-
+
+      # Retried: SwiftPM 6.4's planner sometimes segfaults while planning on Linux (exit 139,
+      # before any compile). Only the build is retried; the tests run once, with --skip-build.
+      - name: Build tests (retry on SwiftPM planner crashes)
+        timeout-minutes: 15
+        run: |
+          for attempt in 1 2 3; do
+            if swift build --build-tests; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "::warning::swift build --build-tests failed (attempt $attempt); retrying"
+          done
+
+      # Right after the build, so a test failure on main still saves it.
+      - name: Save .build (main only)
+        if: github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .build
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
+      # Serial so a hang names its test.
+      - name: Test
+        timeout-minutes: 12
+        run: swift test --skip-build --no-parallel
+
+      # The time model also runs under a non-UTC host zone.
+      - name: Test again with TZ=Asia/Tokyo
+        timeout-minutes: 12
+        env:
+          TZ: Asia/Tokyo
+        run: swift test --skip-build
+
+  scripts:
+    name: Publishing scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: "1.7.8"
+      ACTIONLINT_SHA256: "be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # shellcheck, jq and xz come with the runner image.
+      - name: shellcheck
+        run: |
+          shellcheck --version | head -n 2
+          shellcheck scripts/*.sh scripts/lib/*.sh scripts/test/*.sh scripts/test/fake-aws
+
+      # The workflows, with shellcheck over their run: blocks. Pinned by checksum (the release's
+      # actionlint_1.7.8_checksums.txt).
+      - name: actionlint
+        run: |
+          tarball="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$tarball" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+      # Against scripts/test/fake-aws: no network, no bucket, made-up keys.
+      - name: Script tests
+        run: |
+          scripts/test/r2-test.sh
+          scripts/test/publish-test.sh

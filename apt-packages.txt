@@ -1,3 +1,4 @@
 osmium-tool
 xz-utils
 unzip
+jq
