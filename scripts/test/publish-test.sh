@@ -273,12 +273,14 @@ expect_status 1
 expect_err "cannot read data/hold.json"
 
 # Source records: <feed>/<key>.zip with its record, as GTFSSourceArchive writes them.
-make_record() { # DIR FEED KEY CALENDAR_END CONTENT
+# ARCHIVED_AT and LAST_MODIFIED (an HTTP date) order the versions of one feed, as the compiler does.
+make_record() { # DIR FEED KEY CALENDAR_END CONTENT [ARCHIVED_AT [LAST_MODIFIED]]
   mkdir -p "$1/$2"
   printf '%s' "$5" >"$1/$2/$3.zip"
   jq -n -cj --arg feed "$2" --arg key "$3" --arg end "$4" --arg sha "$(sha "$1/$2/$3.zip")" --argjson bytes "$(size "$1/$2/$3.zip")" \
-    '{feed: $feed, key: $key, url: "https://example.invalid/x.zip", etag: $key, lastModified: "", sha256: $sha, bytes: $bytes,
-      archivedAt: "2026-10-01T00:00:00Z", coverage: []} + (if $end == "-" then {} else {calendarStart: "20260901", calendarEnd: $end} end)' \
+    --arg at "${6:-2026-10-01T00:00:00Z}" --arg modified "${7:-}" \
+    '{feed: $feed, key: $key, url: "https://example.invalid/x.zip", etag: $key, lastModified: $modified, sha256: $sha, bytes: $bytes,
+      archivedAt: $at, coverage: []} + (if $end == "-" then {} else {calendarStart: "20260901", calendarEnd: $end} end)' \
     >"$1/$2/$3.json"
 }
 
@@ -707,6 +709,113 @@ run "$scripts/sync-sources.sh" prune --sources "$d/sources" --restored "$d/prev/
 expect_status 1
 expect_err "every record would look pruned"
 expect_no_call "delete-object"
+
+# prune_fixture NAME: gtfs_bus/v1 in R2 and restored, then dropped by the build because v2, downloaded
+# by this run (Last-Modified a day later), covers it; v2 is in the local archive only, as after a
+# failed upload. Sets d.
+prune_fixture() {
+  reset_bucket
+  make_record "$bucket/sources" gtfs_bus v1 20261031 "bus v1" 2026-09-01T03:20:00Z "Mon, 31 Aug 2026 22:00:00 GMT"
+  d=$(fresh "$1")
+  restore --job timetables --prev "$d/prev" --sources "$d/sources" --data "$d/data" --allow-first-run; expect_status 0
+  make_record "$d/sources/gtfs/archive" gtfs_bus v2 20261231 "bus v2" 2026-10-07T07:20:00Z "Tue, 01 Sep 2026 22:00:00 GMT"
+  rm "$d/sources/gtfs/archive/gtfs_bus/v1.zip" "$d/sources/gtfs/archive/gtfs_bus/v1.json"
+}
+prune_run() { run "$scripts/sync-sources.sh" prune --sources "$d/sources" --restored "$d/prev/sources-restored.txt" --today "$DAY" "$@"; }
+
+begin "sources prune: a version whose newer copy did not reach R2 is kept; once it has, the version goes"
+prune_fixture p1
+: >"$FAKE_AWS_LOG"
+GITHUB_STEP_SUMMARY="$work/files/p1.md" prune_run
+expect_status 0
+expect_no_call "delete-object"
+expect_err "kept gtfs_bus/v1 (pruned by this build): no copy of gtfs_bus at least as new is confirmed in R2"
+grep -q "kept 1 source versions" "$work/files/p1.md" || fail "no warning in the step summary: $(cat "$work/files/p1.md")"
+[[ -f $bucket/sources/gtfs_bus/v1.zip && -f $bucket/sources/gtfs_bus/v1.json ]] || fail "v1 deleted with no newer copy in R2"
+# The next run's upload puts v2; then v1 goes, its record first.
+run "$scripts/sync-sources.sh" upload --sources "$d/sources"; expect_status 0
+: >"$FAKE_AWS_LOG"
+prune_run --dry-run
+expect_status 0
+expect_err "[dry run] would delete sources/gtfs_bus/v1.zip"
+expect_no_call "delete-object"
+prune_run
+expect_status 0
+[[ ! -e $bucket/sources/gtfs_bus/v1.zip && ! -e $bucket/sources/gtfs_bus/v1.json ]] || fail "v1 not pruned"
+[[ -f $bucket/sources/gtfs_bus/v2.zip && -f $bucket/sources/gtfs_bus/v2.json ]] || fail "v2 gone"
+expect_call "head-object --bucket test-bucket --key sources/gtfs_bus/v2.zip"
+[[ $(line_of "^delete-object sources/gtfs_bus/v1.json") -lt $(line_of "^delete-object sources/gtfs_bus/v1.zip") ]] ||
+  fail "zip deleted before its record"
+
+begin "sources prune: an older copy, or a newer one R2 holds with another size or MD5, does not count"
+prune_fixture p2
+# Only an older version is in R2 and the local archive besides v1.
+make_record "$d/sources/gtfs/archive" gtfs_bus v0 20261031 "bus v0" 2026-08-01T03:20:00Z "Fri, 31 Jul 2026 22:00:00 GMT"
+cp "$d/sources/gtfs/archive/gtfs_bus/v0."* "$bucket/sources/gtfs_bus/"
+# v2 in R2 with its size but other bytes (as an add-only upload leaves a differing key).
+mkdir -p "$bucket/sources/gtfs_bus"
+cp "$d/sources/gtfs/archive/gtfs_bus/v2.json" "$bucket/sources/gtfs_bus/v2.json"
+printf 'bus V2' >"$bucket/sources/gtfs_bus/v2.zip"
+prune_run
+expect_status 0
+expect_no_call "delete-object"
+expect_err "kept gtfs_bus/v1"
+# The same bytes, but R2 reports it a byte short.
+cp "$d/sources/gtfs/archive/gtfs_bus/v2.zip" "$bucket/sources/gtfs_bus/v2.zip"
+: >"$FAKE_AWS_LOG"
+FAKE_AWS_FAIL="head-object:sources/gtfs_bus/v2.zip:short" prune_run
+expect_status 0
+expect_no_call "delete-object"
+expect_err "kept gtfs_bus/v1"
+prune_run
+expect_status 0
+[[ ! -e $bucket/sources/gtfs_bus/v1.zip && -f $bucket/sources/gtfs_bus/v0.zip ]] || fail "v1 not pruned once v2 matched, or v0 pruned"
+
+begin "sources prune: no version the live set names is pruned, current or archived"
+prune_fixture p3
+# Two more versions R2 would lose: one the build dropped, one 30 days past its calendar. The live
+# set names v1 as current and the ended one as an archived version; make_record's ETag is the key.
+make_record "$bucket/sources" gtfs_bus ended 20260801 "bus ended" 2026-07-01T03:20:00Z
+make_record "$bucket/sources" gtfs_bus gone 20261031 "bus gone" 2026-08-15T03:20:00Z
+printf 'gtfs_bus/gone\t20261031\t1\ngtfs_bus/ended\t20260801\t0\n' >>"$d/prev/sources-restored.txt"
+run "$scripts/sync-sources.sh" upload --sources "$d/sources"; expect_status 0
+mkdir -p "$bucket/data"
+jq -c '.sources = {"tt-bus": [
+    {name: "gtfs_bus", feed: "gtfs_bus", etag: "v1", feedVersion: "", datesSelected: 20, firstSelected: "20261007", lastSelected: "20261031"},
+    {name: "gtfs_bus@ended", feed: "gtfs_bus", etag: "ended", feedVersion: "", datesSelected: 0, firstSelected: null, lastSelected: null}]}' \
+  "$work/setA/manifest.json" >"$bucket/data/manifest.json"
+: >"$FAKE_AWS_LOG"
+prune_run
+expect_status 0
+expect_err "kept gtfs_bus/v1 (pruned by this build): the live set was built from it"
+expect_err "kept gtfs_bus/ended (calendar ended 20260801): the live set was built from it"
+[[ -f $bucket/sources/gtfs_bus/v1.zip && -f $bucket/sources/gtfs_bus/ended.zip ]] || fail "a live version was pruned"
+[[ ! -e $bucket/sources/gtfs_bus/gone.zip && ! -e $bucket/sources/gtfs_bus/gone.json ]] || fail "gone not pruned"
+
+begin "sources prune: a failed LIST, GET or HEAD keeps everything"
+prune_fixture p4
+run "$scripts/sync-sources.sh" upload --sources "$d/sources"; expect_status 0
+install_set "$work/setA"
+for rule in "list-objects-v2:sources/:500" "get-object:data/manifest.json:403" "get-object:data/manifest.json:network" \
+  "get-object:sources/gtfs_bus/v1.json:500" "head-object:sources/gtfs_bus/v2.zip:500" "head-object:sources/gtfs_bus/v2.json:403"; do
+  : >"$FAKE_AWS_LOG"
+  GITHUB_STEP_SUMMARY="$work/files/p4.md" FAKE_AWS_FAIL="$rule" prune_run
+  expect_status 0
+  expect_no_call "delete-object"
+  expect_err "nothing was pruned"
+  grep -q "nothing was pruned" "$work/files/p4.md" || fail "$rule: no warning in the step summary"
+  rm -f "$work/files/p4.md"
+done
+[[ -f $bucket/sources/gtfs_bus/v1.zip && -f $bucket/sources/gtfs_bus/v1.json ]] || fail "v1 deleted after a failed read"
+printf '{}' >"$bucket/data/manifest.json"
+prune_run
+expect_status 0
+expect_err "data/manifest.json is not a manifest these scripts accept: nothing was pruned"
+expect_no_call "delete-object"
+rm "$bucket/data/manifest.json"
+prune_run
+expect_status 0
+[[ ! -e $bucket/sources/gtfs_bus/v1.zip ]] || fail "v1 not pruned once every read succeeded"
 
 begin "sources aux: the last good copy is replaced only when it changed, and only the files named"
 reset_bucket

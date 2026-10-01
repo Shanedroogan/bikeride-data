@@ -242,7 +242,7 @@ to it (open question 16); `private/flows/` stays in `bike-ride`. Without the spl
 | `data/manifest.json` | `publish-set.sh` | The current set | Overwritten |
 | `data/heartbeat.json` | `publish-set.sh` | Written last by every successful run | Overwritten |
 | `data/hold.json` | `rollback.sh`, or by hand | `{reason, until}`: publishing paused | Removed by hand, or at `until` |
-| `sources/<feed>/<key>.{zip,json}` | data-build | The GTFS source archive (above) | The build's prune, plus `calendarEnd < today − 30` |
+| `sources/<feed>/<key>.{zip,json}` | data-build | The GTFS source archive (above) | The build's prune, plus `calendarEnd < today − 30`, while a copy of the feed at least as new is confirmed and the live set does not name it |
 | `sources/aux/{subway-entrances.csv,borough-boundaries.geojson}` | data-build | The last good copy of each | Overwritten |
 | `private/flows/reports/<rawSha256>.json` | the private `flows.yml` | `reports/flows.json` of each published flows build | 400 days |
 | `private/flows/sources/station_information-<last_updated>.json` | the private `flows.yml` | The GBFS input of that build | 400 days |
@@ -320,7 +320,7 @@ planner crash). One run at a time (`concurrency: data-publish`).
    the previous one (or it is still a 404 on a first run); PUT `data/manifest.json`; PUT
    `data/heartbeat.json`, last. On a dry run every read runs and every write is printed.
 7. After a set was published (`published=1`; on a dry run, would have been): `sync-sources.sh prune` (the versions this build dropped, and those
-   30 days past their calendar), `sync-sources.sh aux` (the auxiliary files, when they changed;
+   30 days past their calendar; see "Source archive prune" below), `sync-sources.sh aux` (the auxiliary files, when they changed;
    the boundaries only when streets was rebuilt) and `gc-data.sh` (alone with `job=gc`).
 8. The step summary (`set-summary.sh`): setIds, xz sizes built or carried, coverage days, gate
    checks, "flows: carried from set <prev>"; the trip-count change the gate accepted, read from
@@ -350,6 +350,30 @@ planner crash). One run at a time (`concurrency: data-publish`).
 - `tripCounts` beyond ±35 % stops the run unless a person dispatches with
   `accept_trip_count_change` (`all --accept-trip-count-change`; recorded in `gate.json` as
   `acceptedTripCountChange`, for the step summary).
+
+### Source archive prune
+
+The prune deletes only after a publish, and never a feed's last copy. The upload before it is
+add-only and does not hold back the set, so the newer version that made the build drop an older
+one may not be in R2 (its upload failed); deleting the older one would leave the archive fallback
+nothing to fall back to. So a version the plan names (dropped by this build, or 30 days past its
+calendar) is deleted only when:
+
+- the live set (`data/manifest.json`, read after the publish) does not name it in `sources`, as
+  current or as an archived `<feed>@<key8>`, by its record's ETag: the fallback finds the live
+  version by ETag and uses no copy without it (404: no live set, nothing to keep for it);
+- R2 holds another version of the feed, not itself in the plan and not older (Last-Modified,
+  then `archivedAt`, the compiler's order; a tie counts, since a feed with no Last-Modified has
+  its current and new zip archived in the same second), confirmed whole: one in this build's
+  archive must match its record locally and HEAD to the local size and MD5 (the ETag of a
+  single-part PUT) for both its zip and its record; one only in R2 by its record and a HEAD of
+  its zip with the record's bytes, as `publish-set.sh` confirms a carried blob.
+
+`--max-deletions` applies to the plan before these checks. Every read (one LIST of `sources/`,
+the manifest, the planned versions' records, the HEADs) comes before the first delete; a failed
+read other than a 404 deletes nothing, and a version kept for want of a newer copy is warned
+about in the step summary, with exit 0 so the auxiliary files are still kept. The next publish
+tries again.
 
 ### GC
 

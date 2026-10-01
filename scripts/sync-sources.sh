@@ -22,7 +22,14 @@ USAGE: scripts/sync-sources.sh upload --sources DIR [--dry-run]
           Mac's cache (M4 I2).
   prune   After a successful publish only: delete the records this build pruned (restored, in
           --restored, and no longer in the archive) and those whose calendarEnd < today - 30,
-          the .json first, then the .zip.
+          the .json first, then the .zip. A version is kept, never deleted, when the live set
+          (data/manifest.json) names it, current or archived (by ETag), or when R2 holds no
+          other copy of its feed that is not older (Last-Modified, then archivedAt, as the
+          compiler orders them) and confirmed whole: a copy from this build's archive by HEAD
+          with its zip's and record's local size and MD5 (a newer version whose upload failed
+          does not count), one only in R2 by its record and a HEAD of its zip with the record's
+          bytes. Every read comes before the first delete; a failed LIST, GET or HEAD (not a
+          404) deletes nothing and warns in the summary, exit 0.
   aux     After a successful publish only: PUT the auxiliary files the build used when they
           differ from R2's copy (by MD5): entrances (nyc/subway-entrances.csv as
           sources/aux/subway-entrances.csv), boundaries (nyc/borough-boundaries-water-included.geojson
@@ -119,6 +126,167 @@ upload() {
   [[ $bad == 0 ]] || die "some local records were not uploaded (above)"
 }
 
+# The sort stamp of a record, as GTFSSourceArchive.Record orders versions of one feed:
+# [Last-Modified as ISO 8601 (else archivedAt), archivedAt]. jq compares arrays element by element.
+# shellcheck disable=SC2016 # a jq program, not shell
+STAMP='def stamp: [((.lastModified | try (strptime("%a, %d %b %Y %H:%M:%S GMT") | todate) catch null) // .archivedAt), .archivedAt];'
+
+# keep_all WHY: a read the guard needs failed; nothing is deleted.
+keep_all() {
+  summary "warning: $1: nothing was pruned (the next publish tries again)"
+}
+
+# confirm_copy FEED KEY RECORD: whether R2 holds version KEY of FEED whole. 0 confirmed; 1 not; 2
+# a HEAD failed (not a 404). A version in the local archive must match its record there, and R2
+# must hold its zip and record with the local sizes and MD5s (the ETag of a single-part PUT). A
+# version only in R2 (RECORD, read from there) must have its record listed and its zip HEAD to the
+# record's bytes, as publish-set.sh confirms a carried blob. Results are cached in
+# $work/confirmed.
+confirm_copy() {
+  local feed=$1 k=$2 record=$3 dir="$archive/$1" cached ext key local_file bytes sha md5 rc line result=0
+  cached=$(awk -F '\t' -v id="$feed/$k" '$1 == id { print $2 }' "$work/confirmed")
+  [[ -z $cached ]] || return "$cached"
+  if ! jq -e --arg feed "$feed" --arg key "$k" '.feed == $feed and .key == $key
+      and (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and (.bytes | type == "number")' "$record" >/dev/null 2>&1; then
+    result=1
+  elif [[ -f $dir/$k.json ]]; then
+    if [[ -f $dir/$k.zip ]]; then
+      sha=$(sha256_of "$dir/$k.zip") || die "cannot hash $dir/$k.zip"
+      [[ $sha == "$(jq -r .sha256 "$record")" && $(size_of "$dir/$k.zip") == "$(jq -r .bytes "$record")" ]] || result=1
+    else
+      result=1
+    fi
+    for ext in zip json; do
+      [[ $result == 0 ]] || break
+      key="sources/$feed/$k.$ext"
+      local_file="$dir/$k.$ext"
+      bytes=$(size_of "$local_file")
+      # The listing first: a key it does not show (an upload that failed) needs no HEAD.
+      if [[ $(awk -F '\t' -v key="$key" '$1 == key { print $2 }' "$work/listing") != "$bytes" ]]; then
+        result=1
+        break
+      fi
+      md5=$(md5_of "$local_file") || die "cannot hash $local_file"
+      rc=0
+      line=$("$R2" head "$key") || rc=$?
+      case $rc in
+        0) [[ $(printf '%s' "$line" | cut -f1) == "$bytes" && $(printf '%s' "$line" | cut -f2) == "$md5" ]] || result=1 ;;
+        "$R2_NOT_FOUND") result=1 ;;
+        *) result=2 ;;
+      esac
+    done
+  else
+    rc=0
+    line=$("$R2" head "sources/$feed/$k.zip") || rc=$?
+    case $rc in
+      0) [[ $(printf '%s' "$line" | cut -f1) == "$(jq -r .bytes "$record")" ]] || result=1 ;;
+      "$R2_NOT_FOUND") result=1 ;;
+      *) result=2 ;;
+    esac
+  fi
+  [[ $result == 2 ]] || printf '%s/%s\t%s\n' "$feed" "$k" "$result" >>"$work/confirmed"
+  return "$result"
+}
+
+# newer_copy FEED KEY RECORD: 0 when a version of FEED other than KEY, not itself a prune
+# candidate and not older than RECORD (the sort stamp; a tie counts, as the current and the new
+# zip are archived in the same second when a feed sends no Last-Modified), is confirmed in R2
+# (confirm_copy); 1 when none is; 2 when a read failed (not a 404). The versions looked at are
+# those in the local archive (this build's) and those R2 lists.
+newer_copy() {
+  local feed=$1 k=$2 record=$3 other other_record ok rc
+  {
+    if [[ -d $archive/$feed ]]; then
+      find "$archive/$feed" -mindepth 1 -maxdepth 1 -type f -name '*.json' -exec basename {} .json \;
+    fi
+    awk -F '\t' -v dir="sources/$feed/" 'index($1, dir) == 1 && $1 ~ /\.json$/ { k = substr($1, length(dir) + 1); print substr(k, 1, length(k) - 5) }' \
+      "$work/listing"
+  } | LC_ALL=C sort -u >"$work/others"
+  while IFS= read -r other; do
+    [[ $other =~ $plain && $other != "$k" ]] || continue
+    awk -F '\t' -v f="$feed" -v k="$other" '$1 == f && $2 == k { found = 1 } END { exit !found }' "$work/candidates" && continue
+    if [[ -f $archive/$feed/$other.json ]]; then
+      other_record="$archive/$feed/$other.json"
+    else
+      other_record="$work/other.json"
+      rc=0
+      "$R2" get "sources/$feed/$other.json" "$other_record" || rc=$?
+      case $rc in 0) ;; "$R2_NOT_FOUND") continue ;; *) return 2 ;; esac
+    fi
+    ok=$(jq -n --slurpfile d "$record" --slurpfile o "$other_record" "$STAMP"'
+      ($o[0] | (.lastModified | type == "string") and (.archivedAt | type == "string"))
+      and (($o[0] | stamp) >= ($d[0] | stamp))' 2>/dev/null) || ok=false
+    [[ $ok == true ]] || continue
+    rc=0
+    confirm_copy "$feed" "$other" "$other_record" || rc=$?
+    [[ $rc == 1 ]] || return "$rc"
+  done <"$work/others"
+  return 1
+}
+
+# guard: from the candidates, the plan of deletions: a version is deleted only when R2 holds a
+# confirmed copy of its feed at least as new (newer_copy), and never when the live set
+# (data/manifest.json) names it. Every read is done before any delete; a failed read (anything
+# but a 404) keeps everything: returns 1 with the reason printed.
+guard() {
+  local feed k why rc etag kept=0
+  rc=0
+  "$R2" list sources/ >"$work/listing" || rc=$?
+  [[ $rc -eq 0 ]] || { keep_all "cannot list sources/ (r2 exit $rc)"; return 1; }
+  : >"$work/live"
+  rc=0
+  "$R2" get data/manifest.json "$work/live-manifest.json" || rc=$?
+  case $rc in
+    0)
+      jq -e "$MANIFEST_CHECK" "$work/live-manifest.json" >/dev/null 2>&1 ||
+        { keep_all "data/manifest.json is not a manifest these scripts accept"; return 1; }
+      # Every version the live set names, as current or as an archived <feed>@<key8>: the feed
+      # and the ETag (as JSON, so it stays one field).
+      jq -r '.sources // {} | objects | .[] | arrays | .[] | objects
+          | select((.feed | type == "string") and (.etag | type == "string") and .etag != "")
+          | "\(.feed)\t\(.etag | @json)"' "$work/live-manifest.json" >"$work/live" 2>/dev/null ||
+        { keep_all "cannot read the sources of data/manifest.json"; return 1; }
+      ;;
+    "$R2_NOT_FOUND") log "no data/manifest.json: no live set to keep a version for" ;;
+    *) keep_all "cannot read data/manifest.json (r2 exit $rc)"; return 1 ;;
+  esac
+  : >"$work/confirmed"
+  : >"$work/plan"
+  while IFS=$'\t' read -r feed k why; do
+    rc=0
+    "$R2" get "sources/$feed/$k.json" "$work/record.json" || rc=$?
+    case $rc in
+      0) ;;
+      "$R2_NOT_FOUND") log "kept sources/$feed/$k.zip ($why): its record is no longer in R2"; kept=$((kept + 1)); continue ;;
+      *) keep_all "cannot read sources/$feed/$k.json (r2 exit $rc)"; return 1 ;;
+    esac
+    if ! jq -e --arg feed "$feed" --arg key "$k" '.feed == $feed and .key == $key and (.etag | type == "string")
+        and (.lastModified | type == "string") and (.archivedAt | type == "string")' "$work/record.json" >/dev/null 2>&1; then
+      log "kept $feed/$k ($why): its record in R2 does not read as one"
+      kept=$((kept + 1))
+      continue
+    fi
+    etag=$(jq -r '.etag | @json' "$work/record.json") || die "cannot read sources/$feed/$k.json"
+    if grep -Fxq -- "$feed"$'\t'"$etag" "$work/live"; then
+      log "kept $feed/$k ($why): the live set was built from it"
+      continue
+    fi
+    rc=0
+    newer_copy "$feed" "$k" "$work/record.json" || rc=$?
+    case $rc in
+      0)
+        printf 'sources/%s/%s.json\t%s\n' "$feed" "$k" "$why" >>"$work/plan"
+        printf 'sources/%s/%s.zip\t%s\n' "$feed" "$k" "$why" >>"$work/plan"
+        ;;
+      1) log "kept $feed/$k ($why): no copy of $feed at least as new is confirmed in R2"; kept=$((kept + 1)) ;;
+      *) keep_all "cannot read a newer copy of $feed in R2"; return 1 ;;
+    esac
+  done <"$work/candidates"
+  if [[ $kept -gt 0 ]]; then
+    summary "warning: kept $kept source versions that would have been pruned: no newer copy of their feed is confirmed in R2 (a failed upload?); the next publish tries again"
+  fi
+}
+
 prune() {
   local oldest path end was_restored feed k count=0 why
   [[ -f $restored ]] || die "$restored is missing: run restore-state.sh first"
@@ -126,7 +294,7 @@ prune() {
     die "$archive is missing, yet sources were restored into it: every record would look pruned; stopping"
   fi
   oldest=$(day_add "$today" -30) || die "cannot count back from $today"
-  : >"$work/plan"
+  : >"$work/candidates"
   while IFS=$'\t' read -r path end was_restored; do
     feed=${path%%/*}
     k=${path#*/}
@@ -139,13 +307,18 @@ prune() {
       why="calendar ended $end"
     fi
     [[ -n $why ]] || continue
-    printf 'sources/%s/%s.json\t%s\n' "$feed" "$k" "$why" >>"$work/plan"
-    printf 'sources/%s/%s.zip\t%s\n' "$feed" "$k" "$why" >>"$work/plan"
+    printf '%s\t%s\t%s\n' "$feed" "$k" "$why" >>"$work/candidates"
   done <"$restored"
-  count=$(wc -l <"$work/plan" | tr -d ' ')
+  count=$(($(wc -l <"$work/candidates") * 2))
   if [[ $count -gt $max_deletions ]]; then
     die "the prune plan deletes $count objects, more than --max-deletions $max_deletions: nothing was deleted; check it with --dry-run"
   fi
+  if [[ $count -eq 0 ]]; then
+    log "pruned 0 source versions"
+    return 0
+  fi
+  guard || return 0
+  count=$(wc -l <"$work/plan" | tr -d ' ')
   while IFS=$'\t' read -r path why; do
     log "deleting $path ($why)"
     r2_delete "$path"

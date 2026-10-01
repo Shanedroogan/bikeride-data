@@ -304,6 +304,9 @@ jobs:
 
       # Deletions, and the last good copy of the auxiliary files, only after a set was published
       # (not when a hold stopped it). The borough boundaries only when streets was rebuilt on them.
+      # The prune never deletes a version the live set names, nor one with no copy of its feed at
+      # least as new confirmed in R2 (the upload above may have failed); a failed read deletes
+      # nothing and warns, exit 0, so the aux step still runs (docs/publish.md).
       - name: Prune source versions and keep the auxiliary files
         if: ${{ !cancelled() && inputs.job != 'gc' && steps.publish.outcome == 'success' && steps.publish.outputs.published == '1' }}
         env:
