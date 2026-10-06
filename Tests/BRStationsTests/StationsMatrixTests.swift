@@ -1,4 +1,4 @@
-import BRBuild
+@testable import BRBuild
 import BRCore
 import BRGeo
 import BRStreetCore
@@ -116,6 +116,41 @@ struct MatrixCity {
         let many = StationsBuilder.matrix(for: fixture.stations, graph: fixture.city.graph, profile: .eBike, threads: 5)
         #expect(one.matrix == many.matrix)
         #expect(one.stats.reachablePairs == many.stats.reachablePairs)
+        // The report's figures too, the mean to the last bit (only the thread count differs).
+        var oneStats = one.stats
+        oneStats.threads = many.stats.threads
+        #expect(oneStats == many.stats)
+        #expect(one.stats.meanKilometers.bitPattern == many.stats.meanKilometers.bitPattern)
+    }
+
+    /// The workers hand their rows in as they finish, in any order; the rows are added in row
+    /// order, so meanKilometers is the same to the last bit whatever the order. 1e16 is so large
+    /// that adding 1 to it is lost while adding 2 is not, so these row sums added as they come give
+    /// more than one total.
+    @Test func rowFiguresAddUpTheSameInAnyOrder() {
+        let rows: [StationsBuilder.MatrixRow] = [
+            (row: 0, reachable: 2, sameSegment: 0, maxDecameters: 40, sumMeters: 1),
+            (row: 1, reachable: 3, sameSegment: 1, maxDecameters: 900, sumMeters: 1e16),
+            (row: 2, reachable: 0, sameSegment: 0, maxDecameters: 0, sumMeters: 0),
+            (row: 3, reachable: 1, sameSegment: 0, maxDecameters: 12, sumMeters: 1),
+            (row: 4, reachable: 4, sameSegment: 2, maxDecameters: 75, sumMeters: 3),
+            (row: 5, reachable: 2, sameSegment: 0, maxDecameters: 30, sumMeters: 1),
+        ]
+        var expected = StationMatrixStats()
+        expected.reachablePairs = 12
+        expected.sameSegmentPairs = 3
+        expected.maxDecameters = 900
+        expected.isolatedOrigins = 1
+        expected.meanKilometers = rows.reduce(0.0) { $0 + $1.sumMeters } / 12 / 1000   // in row order
+
+        var asTheyCome = Set<UInt64>()
+        for order in permutations(rows) {
+            asTheyCome.insert(order.reduce(0.0) { $0 + $1.sumMeters }.bitPattern)
+            var stats = StationMatrixStats()
+            StationsBuilder.add(order, to: &stats)
+            #expect(stats == expected && stats.meanKilometers.bitPattern == expected.meanKilometers.bitPattern, "\(order.map(\.row))")
+        }
+        #expect(asTheyCome.count > 1)   // the row sums are ones whose order shows in the total
     }
 
     @Test func largerRandomCityAgreesWithTheReference() throws {
@@ -170,5 +205,17 @@ struct MatrixCityReference {
         }
         guard let best else { return StationsFormat.unreachable }
         return UInt16(((a.distanceMeters + best.meters + b.distanceMeters) / 10).rounded())
+    }
+}
+
+/// Every order of `items` (n! of them).
+private func permutations<T>(_ items: [T]) -> [[T]] {
+    guard let first = items.first else { return [[]] }
+    return permutations(Array(items.dropFirst())).flatMap { rest in
+        (0...rest.count).map { index in
+            var order = rest
+            order.insert(first, at: index)
+            return order
+        }
     }
 }

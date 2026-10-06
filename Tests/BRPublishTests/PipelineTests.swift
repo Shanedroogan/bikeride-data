@@ -479,6 +479,40 @@ struct PipelineTests {
         #expect(!pipeline.publishedFiles.isEmpty && !FileManager.default.fileExists(atPath: pipeline.out.appendingPathComponent("flows.bin").path))
     }
 
+    /// data-build's timetables job on a fresh runner: the data directory holds only the streets
+    /// and stations restore-state.sh put there (no config, no reports), and build-set.sh skips
+    /// streets, stations and flows but never config (m4-plan decision 8: config is rebuilt every
+    /// run). So the config that goes out is in the data directory and configReferences checks it
+    /// against the new tt-* and stations; it is not carried forward, which would fail the gate
+    /// (``aCarriedForwardConfigCannotVouchForNewTimetables``). Rebuilt from the same `Data/`, it is
+    /// the previous set's config byte for byte.
+    @Test func aFreshTimetablesRunRebuildsTheConfigItIsCheckedAgainst() throws {
+        var pipeline = try Self.published(try SyntheticSources())
+        pipeline.previous = try pipeline.keepAsPrevious("previous")
+        let before = try SetManifest.load(pipeline.previous!)
+        let restored: Set<String> = ["streets.bin", "streets.bin.xz", "stations.bin", "stations.bin.xz"]
+        for name in try FileManager.default.contentsOfDirectory(atPath: pipeline.out.path) where !restored.contains(name) {
+            try FileManager.default.removeItem(at: pipeline.out.appendingPathComponent(name))
+        }
+        try FileManager.default.removeItem(at: pipeline.reports)
+        pipeline.requireFlows = true
+        pipeline.job = .timetables
+
+        let outcome = try pipeline.run(skip: [.streets, .stations, .flows])
+        #expect(outcome.status == 0, "\(outcome) \(pipeline.errors) \(pipeline.gateReport?.checks.filter { $0.status == .fail } ?? [])")
+        #expect(outcome.ran.map(\.step) == [.timetables, .config, .links, .gate, .manifest, .heartbeat])
+        let gate = try #require(pipeline.gateReport)
+        #expect(gate.status == .pass && gate.carriedForward == ["flows"] && gate.artifacts["config"] != nil)
+        let references = try #require(gate.check("configReferences"))
+        #expect(references.status == .pass && references.failures.isEmpty, "\(references)")
+        #expect(gate.check("streets")?.status == .skipped)   // restored unchanged, no report: checked when it was built
+
+        let manifest = try SetManifest.load(pipeline.manifestURL)
+        #expect(manifest.carriedForward == ["flows"] && manifest.previousSetId == before.setId)
+        #expect(manifest.artifacts["config"] != nil && manifest.artifacts["config"] == before.artifacts["config"])
+        #expect(manifest.minAppFormat == before.minAppFormat)
+    }
+
     /// minAppFormat comes from the config the set has: a fresh config.bin's value, else the
     /// previous manifest's (carried with the config). A carried config whose manifest predates
     /// the mirror has nothing to carry, and the manifest refuses rather than guess.

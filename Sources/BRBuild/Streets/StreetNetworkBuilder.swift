@@ -536,6 +536,13 @@ enum LargeComponents {
         }
         return kept
     }
+
+    /// The total of `meters` (each key once), summed in key order. A Dictionary's order changes
+    /// from process to process, and a sum of doubles depends on the order it adds in, so summing
+    /// the values as they come would change a report's last digit between runs on the same inputs.
+    static func totalMeters<Key: Comparable>(_ meters: some Sequence<(key: Key, value: Double)>) -> Double {
+        meters.sorted { $0.key < $1.key }.reduce(0.0) { $0 + $1.value }
+    }
 }
 
 // MARK: - Pieces, merging, components
@@ -787,9 +794,8 @@ struct PieceNetwork {
             walking.union(Int(first(piece)), Int(last(piece)))
         }
         let walkMeasured = measure { keep[$0] && attributes[$0].walk ? walking.find(Int(first($0))) : nil }
-        // Summed in key order: a Dictionary's order changes per process, and so would the last
-        // digit of walkIslandShare.
-        let allWalkMeters = walkMeasured.meters.keys.sorted().reduce(0.0) { $0 + walkMeasured.meters[$1]! }
+        // Summed in key order, so the last digit of walkIslandShare is the same on every run.
+        let allWalkMeters = LargeComponents.totalMeters(walkMeasured.meters)
         let walkRoots = largeRoots(walkMeasured)
         for piece in 0..<pieceCount where keep[piece] && attributes[piece].walk
             && !walkRoots.contains(walking.find(Int(first(piece)))) {

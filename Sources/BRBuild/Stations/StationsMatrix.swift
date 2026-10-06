@@ -236,7 +236,7 @@ public enum StationsBuilder {
         }
         let seeds: [[SearchSeed]] = points.map { $0?.searchSeeds(in: graph, profile: profile, direction: .forward) ?? [] }
         let output = SharedBuffer<UInt16>(count: n * n, repeating: StationsFormat.unreachable)
-        let rowStats = LockedCollector<(row: Int, reachable: Int, sameSegment: Int, maxDecameters: Int, sumMeters: Double)>()
+        let rowStats = LockedCollector<MatrixRow>()
 
         graph.withView { view in
             let costs = (0..<view.edgeCount).map { profile.costMs(ofEdge: $0, in: view) ?? CSRGraph.unusable }
@@ -304,19 +304,29 @@ public enum StationsBuilder {
         stats.stations = n
         stats.pairs = n * max(0, n - 1)
         stats.threads = max(1, min(threads, n))
+        add(rowStats.drain(), to: &stats)
+        stats.isolatedOrigins += points.filter { $0 == nil }.count
+        stats.unreachablePairs = stats.pairs - stats.reachablePairs
+        return (output.toArray(), stats)
+    }
+
+    /// One origin's figures in ``matrix(for:graph:profile:threads:)``: its row, the pairs it
+    /// reaches, how many of those run along a shared segment, its longest entry and the sum of
+    /// its reachable pairs' meters.
+    typealias MatrixRow = (row: Int, reachable: Int, sameSegment: Int, maxDecameters: Int, sumMeters: Double)
+
+    /// Adds the rows' figures to `stats` and sets its mean. The rows come in the order the workers
+    /// finished; they are added in row order, because the sum of doubles depends on the order and
+    /// meanKilometers would otherwise change in its last digit from run to run.
+    static func add(_ rows: [MatrixRow], to stats: inout StationMatrixStats) {
         var sumMeters = 0.0
-        // In row order, not the order the workers finished: the sum of doubles depends on it.
-        let rows = rowStats.drain().sorted { $0.row < $1.row }
-        for row in rows {
+        for row in rows.sorted(by: { $0.row < $1.row }) {
             stats.reachablePairs += row.reachable
             stats.sameSegmentPairs += row.sameSegment
             stats.maxDecameters = max(stats.maxDecameters, row.maxDecameters)
             if row.reachable == 0 { stats.isolatedOrigins += 1 }
             sumMeters += row.sumMeters
         }
-        stats.isolatedOrigins += points.filter { $0 == nil }.count
-        stats.unreachablePairs = stats.pairs - stats.reachablePairs
         stats.meanKilometers = stats.reachablePairs > 0 ? sumMeters / Double(stats.reachablePairs) / 1000 : 0
-        return (output.toArray(), stats)
     }
 }

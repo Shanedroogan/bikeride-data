@@ -314,4 +314,33 @@ import Testing
         let shareOnly = try FixtureStreets.build(options: options, extraRegions: [StreetRegion(code: 900, name: "Island", area: square)])
         #expect(shareOnly.node(5, 5) == nil)
     }
+
+    /// walkIslandShare's denominator, the length of every walking component, is summed in key
+    /// order, so it does not depend on the order a Dictionary hands the components out in (which
+    /// changes from process to process). 1e16 is so large that adding 1 to it is lost while adding
+    /// 2 is not, so the same five lengths summed as they come give more than one total; every order
+    /// gives the key-order total, bit for bit.
+    @Test func walkingComponentLengthsSumTheSameInAnyOrder() {
+        let lengths: [(key: Int, value: Double)] = [(4, 1), (1, 1e16), (5, 3), (2, 1), (3, 1)]
+        let keyOrder = lengths.sorted { $0.key < $1.key }.reduce(0.0) { $0 + $1.value }
+        var asTheyCome = Set<UInt64>()
+        for order in permutations(lengths) {
+            asTheyCome.insert(order.reduce(0.0) { $0 + $1.value }.bitPattern)
+            #expect(LargeComponents.totalMeters(order).bitPattern == keyOrder.bitPattern, "\(order.map(\.key))")
+        }
+        #expect(asTheyCome.count > 1)   // the lengths are ones whose order shows in the total
+        #expect(LargeComponents.totalMeters(Dictionary(uniqueKeysWithValues: lengths.map { ($0.key, $0.value) })).bitPattern == keyOrder.bitPattern)
+    }
+}
+
+/// Every order of `items` (n! of them).
+private func permutations<T>(_ items: [T]) -> [[T]] {
+    guard let first = items.first else { return [[]] }
+    return permutations(Array(items.dropFirst())).flatMap { rest in
+        (0...rest.count).map { index in
+            var order = rest
+            order.insert(first, at: index)
+            return order
+        }
+    }
 }
