@@ -921,6 +921,8 @@ gc_fixture
 printf 'orphan young' >"$bucket/data/blobs/$(printf 'a%.0s' $(seq 64)).xz"
 age 202610070000 "$bucket/data/blobs/$(printf 'a%.0s' $(seq 64)).xz"
 printf 'orphan old' >"$bucket/data/blobs/$(printf 'b%.0s' $(seq 64)).xz"
+# Dated, not the clock's: a file written now is under 48 h old from NOW after 2026-10-05.
+age 202609010000 "$bucket/data/blobs/$(printf 'b%.0s' $(seq 64)).xz"
 put_hold '{"reason":"x"}'
 run "$scripts/gc-data.sh" --now "$NOW"; expect_status 0
 # Retained: the newest 7 (S12..S6) and the last 30 days (from 2026-09-07: S7..S12, inside the 7).
