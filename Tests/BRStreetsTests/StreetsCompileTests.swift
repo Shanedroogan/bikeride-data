@@ -333,6 +333,51 @@ import Testing
     }
 }
 
+/// The component filter itself, on a network built here rather than from the fixture.
+@Suite struct ComponentFilterTests {
+    /// walkIslandShare as the filter reports it, not only the helper it should sum with. One
+    /// walking piece of 1e16 meters (nodes 0 and 1, so its component's key is the smallest) and
+    /// 30 one-meter walking islands, each tied to node 0 by a bike-only piece so the first step
+    /// keeps them. Summed in key order the ones are all lost (1e16 + 1 is 1e16), so the share is
+    /// exactly 30 / 1e16; summed in the order a Dictionary hands them out, it is not whenever two
+    /// ones come first. A Dictionary's order follows its storage address, so each run below comes
+    /// after a new allocation of another size: an arrival-order sum fails with high probability.
+    @Test func walkIslandShareIsTheKeyOrderSumOnEveryRun() {
+        let islands = 30
+        let nodes = 2 * (islands + 1)
+        var walk = WayRule(), bike = WayRule()
+        walk.walk = true
+        bike.bikeForward = true
+        bike.bikeBackward = true
+        var network = PieceNetwork(
+            nodeIDs: (0..<Int64(nodes)).map { $0 }, latE7: Array(repeating: 0, count: nodes),
+            lonE7: Array(repeating: 0, count: nodes), isVertex: Array(repeating: true, count: nodes),
+            rules: [walk, bike], names: [], parks: nil)
+        network.addPiece(points: [0, 1], rule: 0, name: -1)
+        for island in 1...islands {
+            network.addPiece(points: [Int32(2 * island), Int32(2 * island + 1)], rule: 0, name: -1)
+            network.addPiece(points: [0, Int32(2 * island)], rule: 1, name: -1)
+        }
+        network.lengths = [1e16] + Array(repeating: 1, count: network.pieceCount - 1)
+
+        let keyOrder = Array(repeating: 1.0, count: islands).reduce(1e16, +)
+        #expect(keyOrder == 1e16)
+        #expect([1, 1, 1e16].reduce(0, +) != 1e16)   // the order of these lengths shows in a sum
+        let expected = Double(islands) / keyOrder
+
+        var keepAlive: [[Int]] = []
+        for run in 0..<20 {
+            var copy = network
+            var stats = StreetBuildStats()
+            copy.restrictToLargestComponents(minimumShare: 0.05, regions: nil, stats: &stats)
+            #expect(stats.walkIslandMeters == Double(islands), "run \(run)")
+            #expect(stats.walkIslandShare.bitPattern == expected.bitPattern, "run \(run): \(stats.walkIslandShare)")
+            keepAlive.append(Array(repeating: run, count: 40 + run))
+        }
+        #expect(keepAlive.count == 20)
+    }
+}
+
 /// Every order of `items` (n! of them).
 private func permutations<T>(_ items: [T]) -> [[T]] {
     guard let first = items.first else { return [[]] }
