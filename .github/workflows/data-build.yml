@@ -248,8 +248,10 @@ jobs:
             echo "ok=0" >> "$GITHUB_OUTPUT"
           fi
 
+      # inputs.job is checked too: on a timetables job "Streets result" is skipped, its output is
+      # null, and GitHub's expressions compare null == '0' as 0 == 0 (true).
       - name: Restore the published streets and stations (fallback)
-        if: steps.streets_result.outputs.ok == '0'
+        if: inputs.job == 'streets' && steps.streets_result.outputs.ok == '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_DATA_ACCESS_KEY_ID || (inputs.dry_run && secrets.R2_ACCESS_KEY_ID) || '' }}
@@ -387,7 +389,7 @@ jobs:
       # Last, after the timetables were published on the old streets: the run is red, and the
       # failed-run email says why.
       - name: Streets not rebuilt
-        if: always() && steps.streets_result.outputs.ok == '0'
+        if: always() && inputs.job == 'streets' && steps.streets_result.outputs.ok == '0'
         run: |
           echo "::error::streets not rebuilt (its build or a sanity route failed); see the Build streets step"
           exit 1
